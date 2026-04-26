@@ -96,6 +96,14 @@ def test_job_editor_ctrl_s_saves_without_navigating():
 
 
 def test_history_tables_use_styled_status_labels():
+    job_run = SimpleNamespace(
+        id=3,
+        job_name="backup",
+        trigger="manual",
+        status="canceled",
+        started_at="2026-04-26 20:59",
+        ended_at="2026-04-26 21:00",
+    )
     step_run = SimpleNamespace(
         id=1,
         step_name="Music",
@@ -113,6 +121,7 @@ def test_history_tables_use_styled_status_labels():
     )
 
     history_html = templates.get_template("runs.html").render(
+        job_runs=[job_run],
         step_runs=[step_run],
         console_runs=[console_run],
     )
@@ -122,12 +131,44 @@ def test_history_tables_use_styled_status_labels():
         env_lines="",
         steps_text="",
         command_previews=[],
+        job_runs=[job_run],
         runs=[step_run],
     )
 
     assert '<span class="run-status canceled">Canceled</span>' in history_html
     assert '<span class="run-status success">Success</span>' in history_html
     assert '<span class="run-status canceled">Canceled</span>' in job_html
+
+
+def test_history_pages_link_to_whole_job_runs():
+    job_run = SimpleNamespace(
+        id=3,
+        job_name="backup",
+        trigger="manual",
+        status="success",
+        started_at="2026-04-26 20:59",
+        ended_at="2026-04-26 21:00",
+    )
+
+    history_html = templates.get_template("runs.html").render(
+        job_runs=[job_run],
+        step_runs=[],
+        console_runs=[],
+    )
+    job_html = templates.get_template("job_detail.html").render(
+        job=SimpleNamespace(id=1, name="backup", cron="", enabled=True),
+        schedule_summary="Never",
+        env_lines="",
+        steps_text="",
+        command_previews=[],
+        job_runs=[job_run],
+        runs=[],
+    )
+
+    assert "<h2>Job runs</h2>" in history_html
+    assert '<a href="/job-runs/3">Open</a>' in history_html
+    assert "<h2>Recent job runs</h2>" in job_html
+    assert '<a href="/job-runs/3">Open</a>' in job_html
 
 
 def test_job_summaries_show_human_schedule_without_raw_cron():
@@ -142,6 +183,7 @@ def test_job_summaries_show_human_schedule_without_raw_cron():
         env_lines="",
         steps_text="",
         command_previews=[],
+        job_runs=[],
         runs=[],
     )
 

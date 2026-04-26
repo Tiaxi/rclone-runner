@@ -166,6 +166,13 @@ async def job_detail(request: Request, job_id: int, _: AuthRequired, db: DbSessi
     job = db.get(JobRecord, job_id)
     if job is None:
         return RedirectResponse("/jobs", status_code=303)
+    job_runs = (
+        db.query(JobRunRecord)
+        .filter_by(job_id=job_id)
+        .order_by(JobRunRecord.started_at.desc())
+        .limit(20)
+        .all()
+    )
     runs = (
         db.query(JobStepRunRecord)
         .join(JobStepRunRecord.job_run)
@@ -183,6 +190,7 @@ async def job_detail(request: Request, job_id: int, _: AuthRequired, db: DbSessi
             "env_lines": env_to_lines(job.env_json),
             "steps_text": _steps_to_text(job.steps),
             "command_previews": _command_previews(job),
+            "job_runs": job_runs,
             "runs": runs,
         },
     )
@@ -253,7 +261,7 @@ async def _run_job(
 
 @app.get("/runs", response_class=HTMLResponse)
 async def runs(request: Request, _: AuthRequired, db: DbSession) -> Response:
-    job_runs = db.query(JobRecord).all()
+    job_runs = db.query(JobRunRecord).order_by(JobRunRecord.started_at.desc()).limit(100).all()
     recent = (
         db.query(JobStepRunRecord).order_by(JobStepRunRecord.started_at.desc()).limit(100).all()
     )
@@ -651,7 +659,9 @@ def _job_run_step_rows(job_run: JobRunRecord, db) -> list[dict[str, object]]:
             rows = []
             for step in job.steps:
                 step_run = step_run_by_step_id.get(step.id)
-                status = step_run.status if step_run is not None else "pending"
+                status = (
+                    step_run.status if step_run is not None else _unstarted_step_status(job_run)
+                )
                 rows.append(
                     {
                         "key": f"step-{step.id}",
@@ -683,6 +693,12 @@ def _active_step_run(job_run: JobRunRecord) -> JobStepRunRecord | None:
     if step_runs:
         return step_runs[-1]
     return None
+
+
+def _unstarted_step_status(job_run: JobRunRecord) -> str:
+    if job_run.status == "canceled":
+        return "canceled"
+    return "pending"
 
 
 def _run_status_payload(run: JobStepRunRecord) -> dict[str, object]:

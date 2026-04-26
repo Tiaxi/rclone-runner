@@ -195,6 +195,46 @@ async def test_job_run_status_includes_running_and_pending_steps():
             ]
 
 
+async def test_job_run_status_marks_unstarted_steps_canceled_after_cancellation():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = _create_job(db, step_names=["first", "second"])
+            job_run = JobRunRecord(
+                job_id=job.id,
+                job_name=job.name,
+                trigger="manual",
+                status="canceled",
+                started_at=main.utc_now(),
+                ended_at=main.utc_now(),
+            )
+            db.add(job_run)
+            db.flush()
+            first_step = job.steps[0]
+            step_run = JobStepRunRecord(
+                job_run_id=job_run.id,
+                step_id=first_step.id,
+                step_name=first_step.name,
+                argv_json='["rclone", "lsd", "secret:"]',
+                status="canceled",
+                exit_code=None,
+                log_path=str(Path(tmpdir) / "run.log"),
+                started_at=job_run.started_at,
+                ended_at=job_run.ended_at,
+            )
+            db.add(step_run)
+            db.commit()
+
+            payload = await main.job_run_status(job_run.id, None, db)
+
+            assert [
+                (step["name"], step["status"], step["run_id"]) for step in payload["steps"]
+            ] == [
+                ("first", "canceled", step_run.id),
+                ("second", "canceled", None),
+            ]
+
+
 async def test_job_run_detail_renders_whole_run_tracker():
     request = Request({"type": "http", "method": "GET", "path": "/job-runs/1", "headers": []})
     with tempfile.TemporaryDirectory() as tmpdir:
