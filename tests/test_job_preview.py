@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
@@ -110,15 +111,15 @@ def test_history_tables_use_styled_status_labels():
         job_name="backup",
         trigger="manual",
         status="canceled",
-        started_at="2026-04-26 20:59",
-        ended_at="2026-04-26 21:00",
+        started_at=datetime(2026, 4, 26, 17, 59, tzinfo=UTC),
+        ended_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
     )
     step_run = SimpleNamespace(
         id=1,
         step_name="Music",
         status="canceled",
         exit_code=None,
-        started_at="2026-04-26 21:00",
+        started_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
         job_run=SimpleNamespace(trigger="manual"),
     )
     console_run = SimpleNamespace(
@@ -126,7 +127,7 @@ def test_history_tables_use_styled_status_labels():
         command="lsd remote:",
         status="success",
         exit_code=0,
-        started_at="2026-04-26 21:01",
+        started_at=datetime(2026, 4, 26, 18, 1, tzinfo=UTC),
     )
 
     history_html = templates.get_template("runs.html").render(
@@ -155,8 +156,8 @@ def test_history_pages_link_to_whole_job_runs():
         job_name="backup",
         trigger="manual",
         status="success",
-        started_at="2026-04-26 20:59",
-        ended_at="2026-04-26 21:00",
+        started_at=datetime(2026, 4, 26, 17, 59, tzinfo=UTC),
+        ended_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
     )
 
     history_html = templates.get_template("runs.html").render(
@@ -178,6 +179,53 @@ def test_history_pages_link_to_whole_job_runs():
     assert '<a href="/job-runs/3">Open</a>' in history_html
     assert "<h2>Recent job runs</h2>" in job_html
     assert '<a href="/job-runs/3">Open</a>' in job_html
+
+
+def test_job_history_tables_format_times_in_configured_timezone():
+    job_run = SimpleNamespace(
+        id=3,
+        job_name="backup",
+        trigger="manual",
+        status="success",
+        started_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
+        ended_at=datetime(2026, 4, 26, 18, 1, tzinfo=UTC),
+    )
+    step_run = SimpleNamespace(
+        id=1,
+        step_name="Music",
+        status="success",
+        exit_code=0,
+        started_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
+        job_run=SimpleNamespace(trigger="manual"),
+    )
+    console_run = SimpleNamespace(
+        id=2,
+        command="lsd remote:",
+        status="success",
+        exit_code=0,
+        started_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
+    )
+
+    history_html = templates.get_template("runs.html").render(
+        job_runs=[job_run],
+        step_runs=[step_run],
+        console_runs=[console_run],
+    )
+    job_html = templates.get_template("job_detail.html").render(
+        job=SimpleNamespace(id=1, name="backup", cron="", enabled=True),
+        schedule_summary="Never",
+        env_lines="",
+        steps_text="",
+        command_previews=[],
+        job_runs=[job_run],
+        runs=[step_run],
+    )
+
+    assert "2026-04-26 21:00:00 EEST" in history_html
+    assert "2026-04-26 21:01:00 EEST" in history_html
+    assert "2026-04-26 18:00:00+00:00" not in history_html
+    assert "2026-04-26 21:00:00 EEST" in job_html
+    assert "2026-04-26 18:00:00+00:00" not in job_html
 
 
 def test_job_summaries_show_human_schedule_without_raw_cron():

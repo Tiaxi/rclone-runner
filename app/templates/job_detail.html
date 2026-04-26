@@ -22,8 +22,8 @@
       {% for run in job_runs %}
       <tr>
         <td><span class="badge {{ 'dry-run' if 'dry-run' in run.trigger else '' }}">{{ run_mode_label(run.trigger) }}</span></td>
-        <td>{{ run.started_at }}</td>
-        <td>{{ run.ended_at if run.ended_at is not none else "Running" }}</td>
+        <td>{{ format_local_time(run.started_at) }}</td>
+        <td>{{ format_local_time(run.ended_at) if run.ended_at is not none else "Running" }}</td>
         <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
         <td><a href="/job-runs/{{ run.id }}">Open</a></td>
       </tr>
@@ -43,7 +43,7 @@
       <tr>
         <td>{{ run.step_name }}</td>
         <td><span class="badge {{ 'dry-run' if 'dry-run' in run.job_run.trigger else '' }}">{{ run_mode_label(run.job_run.trigger) }}</span></td>
-        <td>{{ run.started_at }}</td>
+        <td>{{ format_local_time(run.started_at) }}</td>
         <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
         <td>{{ run_exit_label(run) }}</td>
         <td><a href="/runs/{{ run.id }}">Log</a></td>

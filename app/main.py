@@ -272,7 +272,7 @@ async def runs(request: Request, _: AuthRequired, db: DbSession) -> Response:
         request,
         "runs.html",
         {
-            "jobs": job_runs,
+            "job_runs": job_runs,
             "step_runs": recent,
             "console_runs": console_runs,
         },

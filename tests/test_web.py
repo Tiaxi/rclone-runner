@@ -276,6 +276,29 @@ async def test_job_run_detail_renders_whole_run_tracker():
             assert "Active log" in html
 
 
+async def test_history_page_receives_job_runs():
+    request = Request({"type": "http", "method": "GET", "path": "/runs", "headers": []})
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = _create_job(db)
+            db.add(
+                JobRunRecord(
+                    job_id=job.id,
+                    job_name=job.name,
+                    trigger="manual",
+                    status="success",
+                    started_at=main.utc_now(),
+                    ended_at=main.utc_now(),
+                )
+            )
+            db.commit()
+
+            response = await main.runs(request, None, db)
+
+            assert response.context["job_runs"][0].job_name == "backup"
+
+
 @pytest.mark.asyncio
 async def test_cancel_run_requests_parent_job_cancellation(monkeypatch):
     called = []
