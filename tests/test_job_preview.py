@@ -24,6 +24,24 @@ def test_base_template_links_svg_favicon():
     assert '<img class="brand-mark" src="/static/favicon.svg" alt="" aria-hidden="true">' in html
 
 
+def test_base_template_supports_theme_detection_and_toggle():
+    html = templates.get_template("base.html").render()
+    login_html = templates.get_template("login.html").render()
+    css = Path("app/static/styles.css").read_text()
+
+    assert 'localStorage.getItem("theme")' in html
+    assert 'localStorage.getItem("theme")' in login_html
+    assert 'matchMedia("(prefers-color-scheme: dark)")' in html
+    assert 'matchMedia("(prefers-color-scheme: dark)")' in login_html
+    assert "document.documentElement.dataset.theme = theme;" in html
+    assert "document.documentElement.dataset.theme = theme;" in login_html
+    assert 'id="theme-toggle"' in html
+    assert 'aria-label="Switch color theme"' in html
+    assert 'localStorage.setItem("theme", nextTheme)' in html
+    assert 'html[data-theme="dark"]' in css
+    assert "color-scheme: dark" in css
+
+
 def test_jobs_page_renders_ongoing_activity_sections():
     started_at = datetime(2026, 4, 26, 18, 0, tzinfo=UTC)
     job_run = SimpleNamespace(

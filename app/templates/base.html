@@ -5,6 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Rclone Runner{% endblock %}</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <script>
+      (() => {
+        const systemTheme = () => window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        let storedTheme = null;
+        try {
+          storedTheme = localStorage.getItem("theme");
+        } catch {
+          storedTheme = null;
+        }
+        const theme = storedTheme === "light" || storedTheme === "dark" ? storedTheme : systemTheme();
+        document.documentElement.dataset.theme = theme;
+      })();
+    </script>
     <link rel="stylesheet" href="/static/styles.css">
   </head>
   <body>
@@ -19,12 +32,38 @@
         <a href="/console">Console</a>
         <a href="/settings">Settings</a>
       </nav>
-      <form method="post" action="/logout">
-        <button class="ghost" type="submit">Log out</button>
-      </form>
+      <div class="topbar-actions">
+        <button class="ghost theme-toggle" id="theme-toggle" type="button" aria-label="Switch color theme">Theme</button>
+        <form method="post" action="/logout">
+          <button class="ghost" type="submit">Log out</button>
+        </form>
+      </div>
     </header>
     <main class="page">
       {% block content %}{% endblock %}
     </main>
+    <script>
+      (() => {
+        const toggle = document.getElementById("theme-toggle");
+        if (!toggle) {
+          return;
+        }
+        const setLabel = () => {
+          const theme = document.documentElement.dataset.theme === "dark" ? "Dark" : "Light";
+          toggle.textContent = `Theme: ${theme}`;
+        };
+        toggle.addEventListener("click", () => {
+          const nextTheme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+          document.documentElement.dataset.theme = nextTheme;
+          try {
+            localStorage.setItem("theme", nextTheme);
+          } catch {
+            // Ignore storage failures; the in-page theme still changes.
+          }
+          setLabel();
+        });
+        setLabel();
+      })();
+    </script>
   </body>
 </html>
