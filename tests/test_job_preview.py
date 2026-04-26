@@ -66,6 +66,21 @@ def test_step_run_buttons_do_not_create_nested_forms():
     assert 'id="dry-run-step-2" method="post" action="/jobs/1/steps/2/dry-run"' in html
 
 
+def test_job_editor_ctrl_s_submits_save_form():
+    html = templates.get_template("_job_editor.html").render(
+        job=None,
+        schedule_summary="Never",
+        env_lines="",
+        steps_text="",
+        command_previews=[],
+    )
+
+    assert '<form id="job-editor-form"' in html
+    assert 'event.key.toLowerCase() !== "s"' in html
+    assert "event.ctrlKey || event.metaKey" in html
+    assert "jobForm.requestSubmit()" in html
+
+
 def test_history_tables_use_styled_status_labels():
     step_run = SimpleNamespace(
         id=1,

@@ -1,4 +1,4 @@
-<form method="post" action="{{ '/jobs/' ~ job.id if job else '/jobs' }}" class="form-grid">
+<form id="job-editor-form" method="post" action="{{ '/jobs/' ~ job.id if job else '/jobs' }}" class="form-grid">
   <label>Name <input name="name" value="{{ job.name if job else '' }}" placeholder="Nightly media backup" required></label>
   <label>Cron <input name="cron" value="{{ job.cron if job else '' }}" placeholder="0 2 * * * or leave empty for Never"></label>
   <div class="field-note">Schedule: {{ schedule_summary }}</div>
@@ -53,6 +53,15 @@
 
 <script>
   (() => {
+    const jobForm = document.querySelector("#job-editor-form");
+    document.addEventListener("keydown", (event) => {
+      if (!jobForm || event.key.toLowerCase() !== "s" || !(event.ctrlKey || event.metaKey)) {
+        return;
+      }
+      event.preventDefault();
+      jobForm.requestSubmit();
+    });
+
     document.querySelectorAll("[data-copy-command]").forEach((button) => {
       button.addEventListener("click", async () => {
         const command = button.dataset.copyCommand;
