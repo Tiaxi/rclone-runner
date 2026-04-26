@@ -67,9 +67,10 @@
       const state = await response.json();
       if (statusText && state.status) {
         statusText.textContent = state.status.charAt(0).toUpperCase() + state.status.slice(1);
+        statusText.className = `run-status ${state.status}`;
       }
       if (exitCode) {
-        exitCode.textContent = state.exit_code ?? "Pending";
+        exitCode.textContent = state.exit_label ?? "Pending";
       }
       if (finishedAt) {
         finishedAt.textContent = state.finished_at ?? "Running";

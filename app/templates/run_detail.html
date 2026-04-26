@@ -4,14 +4,32 @@
 <div class="page-header">
   <div>
     <h1>{{ run.step_name }}</h1>
-    <p class="run-meta">
-      {{ run_mode_label(run.job_run.trigger) }} ·
-      Status <span id="run-status">{{ run.status|capitalize }}</span> ·
-      Exit <span id="run-exit-code">{{ run.exit_code if run.exit_code is not none else "Pending" }}</span> ·
-      Started {{ format_local_time(run.started_at) }} ·
-      Finished <span id="run-finished-at">{{ format_local_time(run.ended_at) if run.ended_at is not none else "Running" }}</span> ·
-      Elapsed <span id="run-elapsed">{{ format_duration(run.started_at, run.ended_at) if run.ended_at is not none else format_duration(run.started_at, utc_now()) }}</span>
-    </p>
+    <div class="run-summary" aria-live="polite">
+      <div class="run-summary-item primary">
+        <span class="run-summary-label">Status</span>
+        <span id="run-status" class="run-status {{ run.status }}">{{ run.status|capitalize }}</span>
+      </div>
+      <div class="run-summary-item">
+        <span class="run-summary-label">Mode</span>
+        <span>{{ run_mode_label(run.job_run.trigger) }}</span>
+      </div>
+      <div class="run-summary-item">
+        <span class="run-summary-label">Exit</span>
+        <span id="run-exit-code">{{ run_exit_label(run) }}</span>
+      </div>
+      <div class="run-summary-item">
+        <span class="run-summary-label">Elapsed</span>
+        <span id="run-elapsed">{{ format_duration(run.started_at, run.ended_at) if run.ended_at is not none else format_duration(run.started_at, utc_now()) }}</span>
+      </div>
+      <div class="run-summary-item">
+        <span class="run-summary-label">Started</span>
+        <span>{{ format_local_time(run.started_at) }}</span>
+      </div>
+      <div class="run-summary-item">
+        <span class="run-summary-label">Finished</span>
+        <span id="run-finished-at">{{ format_local_time(run.ended_at) if run.ended_at is not none else "Running" }}</span>
+      </div>
+    </div>
   </div>
   <div class="button-row">
     {% if run.status == "running" %}

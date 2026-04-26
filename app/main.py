@@ -54,6 +54,7 @@ templates.env.globals["run_mode_label"] = run_mode_label
 templates.env.globals["format_local_time"] = lambda value: _format_local_time(value)
 templates.env.globals["format_duration"] = lambda start, end: _format_duration(start, end)
 templates.env.globals["utc_now"] = utc_now
+templates.env.globals["run_exit_label"] = lambda run: _exit_label(run.status, run.exit_code)
 
 LOG_CHUNK_LINES = 200
 
@@ -125,9 +126,9 @@ async def new_job(request: Request, _: AuthRequired) -> Response:
         "job_form.html",
         {
             "job": None,
-            "schedule_summary": cron_summary("0 2 * * *"),
-            "env_lines": "BW_LIMIT=8M",
-            "steps_text": "Sync Music|sync /media/Musiikki secret:/Musiikki",
+            "schedule_summary": cron_summary(""),
+            "env_lines": "",
+            "steps_text": "",
             "command_previews": [],
         },
     )
@@ -570,12 +571,23 @@ def _run_status_payload(run: JobStepRunRecord) -> dict[str, object]:
         "status": run.status,
         "job_status": run.job_run.status,
         "exit_code": run.exit_code,
+        "exit_label": _exit_label(run.status, run.exit_code),
         "started_at": _format_local_time(run.started_at),
         "finished_at": finished_at,
         "elapsed": _format_seconds(elapsed_seconds),
         "elapsed_seconds": elapsed_seconds,
         "can_cancel": run.status == "running",
     }
+
+
+def _exit_label(status: str, exit_code: int | None) -> str:
+    if exit_code is not None:
+        return str(exit_code)
+    if status == "canceled":
+        return "Canceled"
+    if status == "skipped":
+        return "Skipped"
+    return "Pending"
 
 
 def _console_log_path(started_at: datetime) -> Path:

@@ -1,16 +1,16 @@
 <form method="post" action="{{ '/jobs/' ~ job.id if job else '/jobs' }}" class="form-grid">
-  <label>Name <input name="name" value="{{ job.name if job else 'Google Drive backups' }}" required></label>
-  <label>Cron <input name="cron" value="{{ job.cron if job else '0 2 * * *' }}" placeholder="Leave empty for Never"></label>
+  <label>Name <input name="name" value="{{ job.name if job else '' }}" placeholder="Nightly media backup" required></label>
+  <label>Cron <input name="cron" value="{{ job.cron if job else '' }}" placeholder="0 2 * * * or leave empty for Never"></label>
   <div class="field-note">Schedule: {{ schedule_summary }}</div>
   <label class="checkbox"><input type="checkbox" name="enabled" {% if not job or job.enabled %}checked{% endif %}> Enabled</label>
   <label class="full">Common rclone args
-    <textarea name="common_args" rows="3"> {{- job.common_args if job else '--fast-list --transfers=20 --checkers=40 --tpslimit=10 --drive-chunk-size=32M --max-backlog 200000 --verbose --bwlimit ${BW_LIMIT}' -}}</textarea>
+    <textarea name="common_args" rows="3" placeholder="--fast-list --transfers=20 --checkers=40 --verbose --bwlimit ${BW_LIMIT}"> {{- job.common_args if job else '' -}}</textarea>
   </label>
   <label class="full">Environment
-    <textarea name="env_lines" rows="4">{{ env_lines }}</textarea>
+    <textarea name="env_lines" rows="4" placeholder="BW_LIMIT=8M">{{ env_lines }}</textarea>
   </label>
   <label class="full">Steps
-    <textarea name="steps_text" rows="10">{{ steps_text }}</textarea>
+    <textarea name="steps_text" rows="10" placeholder="Sync Music|sync /media/Musiikki remote:/Musiikki">{{ steps_text }}</textarea>
   </label>
   <section class="full command-preview">
     <h2>Full commands</h2>

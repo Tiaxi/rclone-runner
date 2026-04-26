@@ -22,6 +22,21 @@ async def test_login_page_renders_with_current_starlette_template_api():
     assert response.template.name == "login.html"
 
 
+async def test_new_job_page_uses_empty_values_with_hints():
+    request = Request({"type": "http", "method": "GET", "path": "/jobs/new", "headers": []})
+
+    response = await main.new_job(request, None)
+    html = response.body.decode()
+
+    assert 'name="name" value=""' in html
+    assert 'name="cron" value=""' in html
+    assert "Google Drive backups" not in html
+    assert "--fast-list --transfers=20 --checkers=40 --verbose --bwlimit ${BW_LIMIT}" in html
+    assert 'placeholder="BW_LIMIT=8M"></textarea>' in html
+    assert 'placeholder="Sync Music|sync /media/Musiikki remote:/Musiikki"></textarea>' in html
+    assert 'placeholder="Nightly media backup"' in html
+
+
 @pytest.mark.asyncio
 async def test_manual_run_redirects_to_live_step_before_executor_finishes(monkeypatch):
     started = asyncio.Event()
@@ -63,6 +78,7 @@ async def test_run_status_reports_running_and_finished_metadata():
 
             assert running["status"] == "running"
             assert running["exit_code"] is None
+            assert running["exit_label"] == "Pending"
             assert running["finished_at"] is None
             assert running["can_cancel"] is True
             assert running["elapsed_seconds"] >= 0
@@ -76,8 +92,20 @@ async def test_run_status_reports_running_and_finished_metadata():
 
             assert finished["status"] == "success"
             assert finished["exit_code"] == 0
+            assert finished["exit_label"] == "0"
             assert finished["finished_at"] is not None
             assert finished["can_cancel"] is False
+
+            step_run.status = "canceled"
+            step_run.exit_code = None
+            db.commit()
+
+            canceled = await main.run_status(step_run.id, None, db)
+
+            assert canceled["status"] == "canceled"
+            assert canceled["exit_code"] is None
+            assert canceled["exit_label"] == "Canceled"
+            assert canceled["can_cancel"] is False
 
 
 async def test_run_log_append_returns_new_bytes():
