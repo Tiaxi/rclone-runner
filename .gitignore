@@ -10,3 +10,4 @@ data/
 logs/
 .superpowers/
 .codex
+.worktrees/
