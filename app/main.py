@@ -572,21 +572,29 @@ async def console_terminal(websocket: WebSocket) -> None:
             nonlocal command_task, input_queue
             await send_state("running")
             write_log(f"$ {display_argv(argv)}\r\n")
-            exit_code = await bridge_pty(argv, input_queue.get, send_and_log)
-            ended_at = utc_now()
-            exit_line = f"\r\n[process exited with code {exit_code}]\r\n"
-            write_log(exit_line)
-            await send_output(exit_line)
-            with SessionLocal() as db:
-                record = _finish_console_run_record(db, run_id, exit_code, ended_at)
-                if record is not None:
-                    await websocket.send_json(
-                        {"type": "history", "run": _console_history_row(record)}
-                    )
-            command_task = None
-            input_queue = None
-            await send_output("rclone> ")
-            await send_state("idle")
+            try:
+                exit_code = await bridge_pty(argv, input_queue.get, send_and_log)
+                ended_at = utc_now()
+                exit_line = f"\r\n[process exited with code {exit_code}]\r\n"
+                write_log(exit_line)
+                await send_output(exit_line)
+                with SessionLocal() as db:
+                    record = _finish_console_run_record(db, run_id, exit_code, ended_at)
+                    if record is not None:
+                        await websocket.send_json(
+                            {"type": "history", "run": _console_history_row(record)}
+                        )
+                await send_output("rclone> ")
+                await send_state("idle")
+            except asyncio.CancelledError:
+                ended_at = utc_now()
+                write_log("\r\n[process canceled]\r\n")
+                with SessionLocal() as db:
+                    _cancel_console_run_record(db, run_id, ended_at)
+                raise
+            finally:
+                command_task = None
+                input_queue = None
 
         command_task = asyncio.create_task(run())
 
@@ -603,6 +611,8 @@ async def console_terminal(websocket: WebSocket) -> None:
     except WebSocketDisconnect, RuntimeError, json.JSONDecodeError:
         if command_task is not None and not command_task.done():
             command_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await command_task
 
 
 @app.get("/settings", response_class=HTMLResponse)
@@ -820,6 +830,18 @@ def _finish_console_run_record(
         return None
     record.status = "success" if exit_code == 0 else "failed"
     record.exit_code = exit_code
+    record.ended_at = ended_at
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+def _cancel_console_run_record(db, run_id: int, ended_at: datetime) -> ConsoleRunRecord | None:
+    record = db.get(ConsoleRunRecord, run_id)
+    if record is None:
+        return None
+    record.status = "canceled"
+    record.exit_code = None
     record.ended_at = ended_at
     db.commit()
     db.refresh(record)

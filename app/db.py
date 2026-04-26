@@ -158,7 +158,7 @@ def _needs_lifecycle_rebuild(inspector, table: str) -> bool:
 
 def _copy_lifecycle_rows(connection, inspector, table: str) -> None:
     old_columns = {column["name"] for column in inspector.get_columns(f"{table}_old")}
-    status_expr = "status" if "status" in old_columns else "'success'"
+    status_expr = _lifecycle_status_expr(old_columns)
     if table == "job_runs":
         connection.exec_driver_sql(
             """
@@ -191,6 +191,14 @@ def _copy_lifecycle_rows(connection, inspector, table: str) -> None:
             FROM console_runs_old
             """
         )
+
+
+def _lifecycle_status_expr(old_columns: set[str]) -> str:
+    if "status" in old_columns:
+        return "status"
+    if "exit_code" in old_columns:
+        return "CASE WHEN exit_code = 0 THEN 'success' ELSE 'failed' END"
+    return "'success'"
 
 
 def get_db() -> Session:

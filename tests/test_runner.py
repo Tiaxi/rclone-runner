@@ -244,6 +244,37 @@ async def test_live_runner_cancel_marks_job_canceled_and_skips_remaining_steps()
             assert len(calls) == 1
 
 
+@pytest.mark.asyncio
+async def test_live_runner_marks_executor_exception_as_failed():
+    async def executor(argv, env, log_path):
+        raise FileNotFoundError("rclone")
+
+    job = Job(
+        id=42,
+        name="backup",
+        common_args="",
+        env={},
+        steps=[JobStep(id=1, name="one", command="lsd secret:")],
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        runner = LiveJobRunner(Path(tmpdir), session_factory=session_factory, executor=executor)
+        first_step = runner.start_job(job, trigger="manual")
+        assert first_step is not None
+
+        await runner.wait_for_job_run(first_step.job_run_id)
+
+        with session_factory() as db:
+            job_run = db.get(JobRunRecord, first_step.job_run_id)
+            step_run = db.get(JobStepRunRecord, first_step.id)
+            assert job_run.status == "failed"
+            assert job_run.ended_at is not None
+            assert step_run.status == "failed"
+            assert step_run.exit_code is None
+            assert step_run.ended_at is not None
+
+
 def _session_factory(database_path: Path, expire_on_commit: bool = False):
     engine = create_engine(f"sqlite:///{database_path}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)

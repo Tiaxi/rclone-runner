@@ -5,6 +5,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db import Base, ConsoleRunRecord
 from app.main import (
+    _cancel_console_run_record,
     _console_history_row,
     _console_log_path,
     _finish_console_run_record,
@@ -65,6 +66,26 @@ def test_console_run_is_recorded_while_running_and_finished_later(tmp_path):
         assert finished.status == "success"
         assert finished.exit_code == 0
         assert finished.ended_at == ended_at.replace(tzinfo=None)
+
+
+def test_console_run_can_be_finalized_as_canceled(tmp_path):
+    session_factory = _session_factory(tmp_path / "runs.db")
+    started_at = datetime(2026, 4, 26, 12, 0, tzinfo=UTC)
+    ended_at = datetime(2026, 4, 26, 12, 0, 1, tzinfo=UTC)
+    with session_factory() as db:
+        run_id = _start_console_run_record(
+            db,
+            "version",
+            ["rclone", "version"],
+            tmp_path / "console.log",
+            started_at,
+        )
+
+        canceled = _cancel_console_run_record(db, run_id, ended_at)
+
+        assert canceled.status == "canceled"
+        assert canceled.exit_code is None
+        assert canceled.ended_at == ended_at.replace(tzinfo=None)
 
 
 def _session_factory(database_path):

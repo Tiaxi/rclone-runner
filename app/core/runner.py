@@ -223,6 +223,7 @@ class LiveJobRunner:
         run_stamp: str,
     ) -> None:
         job_status = "success"
+        step_run: JobStepRunRecord | None = None
         try:
             for index, step in enumerate(selected_steps):
                 if index == 0:
@@ -242,6 +243,10 @@ class LiveJobRunner:
             job_status = "canceled"
             self._cancel_running_step(job_run_id)
             raise
+        except Exception:
+            job_status = "failed"
+            if step_run is not None:
+                self._finish_step_run(step_run.id, "failed", None)
         finally:
             self._finish_job_run(job_run_id, job_status)
 
