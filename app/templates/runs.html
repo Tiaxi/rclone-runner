@@ -6,7 +6,7 @@
 <h2>Job runs</h2>
 <section class="table-wrap">
   <table>
-    <thead><tr><th>Job</th><th>Mode</th><th>Started</th><th>Finished</th><th>Status</th><th>Run</th></tr></thead>
+    <thead><tr><th>Job</th><th>Mode</th><th>Started</th><th>Finished</th><th>Status</th><th>Run</th><th></th></tr></thead>
     <tbody>
       {% for run in job_runs %}
       <tr>
@@ -16,9 +16,14 @@
         <td>{{ format_local_time(run.ended_at) if run.ended_at is not none else "Running" }}</td>
         <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
         <td><a href="/job-runs/{{ run.id }}">Open</a></td>
+        <td>
+          <form method="post" action="/job-runs/{{ run.id }}/delete">
+            <button class="danger small" type="submit">Delete</button>
+          </form>
+        </td>
       </tr>
       {% else %}
-      <tr><td colspan="6">No job runs recorded.</td></tr>
+      <tr><td colspan="7">No job runs recorded.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -32,7 +37,7 @@
 <h2>Job step runs</h2>
 <section class="table-wrap">
   <table>
-    <thead><tr><th>Step</th><th>Mode</th><th>Started</th><th>Status</th><th>Exit</th><th>Log</th></tr></thead>
+    <thead><tr><th>Step</th><th>Mode</th><th>Started</th><th>Status</th><th>Exit</th><th>Log</th><th></th></tr></thead>
     <tbody>
       {% for run in step_runs %}
       <tr>
@@ -42,9 +47,14 @@
         <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
         <td>{{ run_exit_label(run) }}</td>
         <td><a href="/runs/{{ run.id }}">Open</a></td>
+        <td>
+          <form method="post" action="/runs/{{ run.id }}/delete">
+            <button class="danger small" type="submit">Delete</button>
+          </form>
+        </td>
       </tr>
       {% else %}
-      <tr><td colspan="6">No job runs recorded.</td></tr>
+      <tr><td colspan="7">No job runs recorded.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -58,7 +68,7 @@
 <h2>Console runs</h2>
 <section class="table-wrap">
   <table>
-    <thead><tr><th>Command</th><th>Started</th><th>Status</th><th>Exit</th><th>Log</th></tr></thead>
+    <thead><tr><th>Command</th><th>Started</th><th>Status</th><th>Exit</th><th>Log</th><th></th></tr></thead>
     <tbody>
       {% for run in console_runs %}
       <tr>
@@ -67,9 +77,14 @@
         <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
         <td>{{ run.exit_code if run.exit_code is not none else "Pending" }}</td>
         <td><a href="/console/runs/{{ run.id }}">Open</a></td>
+        <td>
+          <form method="post" action="/console/runs/{{ run.id }}/delete">
+            <button class="danger small" type="submit">Delete</button>
+          </form>
+        </td>
       </tr>
       {% else %}
-      <tr><td colspan="5">No console runs recorded.</td></tr>
+      <tr><td colspan="6">No console runs recorded.</td></tr>
       {% endfor %}
     </tbody>
   </table>

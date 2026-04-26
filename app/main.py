@@ -369,8 +369,17 @@ async def job_run_status(job_run_id: int, _: AuthRequired, db: DbSession) -> dic
 
 @app.post("/job-runs/{job_run_id}/cancel")
 async def cancel_job_run(job_run_id: int, _: AuthRequired, db: DbSession) -> Response:
-    runner.cancel_job_run(job_run_id)
+    if not runner.cancel_job_run(job_run_id):
+        _mark_job_run_canceled(db, job_run_id)
     return RedirectResponse(f"/job-runs/{job_run_id}", status_code=303)
+
+
+@app.post("/job-runs/{job_run_id}/delete")
+async def delete_job_run(job_run_id: int, _: AuthRequired, db: DbSession) -> Response:
+    job_run = db.get(JobRunRecord, job_run_id)
+    if job_run is not None:
+        _delete_job_run(db, job_run)
+    return RedirectResponse("/runs", status_code=303)
 
 
 @app.get("/runs/{run_id}", response_class=HTMLResponse)
@@ -428,9 +437,17 @@ async def run_log_append(
 @app.post("/runs/{run_id}/cancel")
 async def cancel_run(run_id: int, _: AuthRequired, db: DbSession) -> Response:
     run = db.get(JobStepRunRecord, run_id)
-    if run is not None:
-        runner.cancel_job_run(run.job_run_id)
+    if run is not None and not runner.cancel_job_run(run.job_run_id):
+        _mark_job_run_canceled(db, run.job_run_id)
     return RedirectResponse(f"/runs/{run_id}", status_code=303)
+
+
+@app.post("/runs/{run_id}/delete")
+async def delete_run(run_id: int, _: AuthRequired, db: DbSession) -> Response:
+    run = db.get(JobStepRunRecord, run_id)
+    if run is not None:
+        _delete_step_run(db, run)
+    return RedirectResponse("/runs", status_code=303)
 
 
 @app.get("/runs/{run_id}/log/raw")
@@ -495,6 +512,14 @@ async def raw_console_log(run_id: int, _: AuthRequired, db: DbSession) -> Respon
     if run is None:
         return RedirectResponse("/console", status_code=303)
     return _raw_log_response(Path(run.log_path))
+
+
+@app.post("/console/runs/{run_id}/delete")
+async def delete_console_run(run_id: int, _: AuthRequired, db: DbSession) -> Response:
+    run = db.get(ConsoleRunRecord, run_id)
+    if run is not None:
+        _delete_console_run(db, run)
+    return RedirectResponse("/runs", status_code=303)
 
 
 @app.websocket("/console/terminal")
@@ -676,6 +701,45 @@ def _clear_history(db) -> int:
     db.query(JobRunRecord).delete(synchronize_session=False)
     db.commit()
     return deleted_records
+
+
+def _mark_job_run_canceled(db, job_run_id: int) -> None:
+    now = utc_now()
+    job_run = db.get(JobRunRecord, job_run_id)
+    if job_run is None or job_run.status != "running":
+        return
+    job_run.status = "canceled"
+    job_run.ended_at = now
+    for step_run in job_run.step_runs:
+        if step_run.status == "running":
+            step_run.status = "canceled"
+            step_run.exit_code = None
+            step_run.ended_at = now
+    db.commit()
+
+
+def _delete_job_run(db, job_run: JobRunRecord) -> None:
+    for step_run in list(job_run.step_runs):
+        _delete_log_file(Path(step_run.log_path))
+    db.delete(job_run)
+    db.commit()
+
+
+def _delete_step_run(db, step_run: JobStepRunRecord) -> None:
+    _delete_log_file(Path(step_run.log_path))
+    db.delete(step_run)
+    db.commit()
+
+
+def _delete_console_run(db, run: ConsoleRunRecord) -> None:
+    _delete_log_file(Path(run.log_path))
+    db.delete(run)
+    db.commit()
+
+
+def _delete_log_file(path: Path) -> None:
+    if path.exists():
+        path.unlink()
 
 
 def _console_history_rows(records: list[ConsoleRunRecord]) -> list[dict[str, object]]:

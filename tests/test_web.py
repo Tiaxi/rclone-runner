@@ -460,6 +460,90 @@ async def test_clear_history_removes_run_records_and_logs_but_keeps_jobs():
             assert not console_log_path.exists()
 
 
+async def test_cancel_stale_running_job_marks_it_canceled(monkeypatch):
+    class FakeRunner:
+        def cancel_job_run(self, job_run_id):
+            return False
+
+    monkeypatch.setattr(main, "runner", FakeRunner())
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            step_run = _create_running_step_run(db)
+            job_run_id = step_run.job_run_id
+
+            response = await main.cancel_job_run(job_run_id, None, db)
+
+            assert response.status_code == 303
+            job_run = db.get(JobRunRecord, job_run_id)
+            assert job_run.status == "canceled"
+            assert job_run.ended_at is not None
+            assert step_run.status == "canceled"
+            assert step_run.ended_at is not None
+
+
+async def test_delete_individual_job_run_removes_steps_and_logs():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        log_path = Path(tmpdir) / "run.log"
+        log_path.write_text("run", encoding="utf-8")
+        with session_factory() as db:
+            step_run = _create_running_step_run(db, log_path=log_path)
+            job_run_id = step_run.job_run_id
+
+            response = await main.delete_job_run(job_run_id, None, db)
+
+            assert response.status_code == 303
+            assert response.headers["location"] == "/runs"
+            assert db.get(JobRunRecord, job_run_id) is None
+            assert db.get(JobStepRunRecord, step_run.id) is None
+            assert not log_path.exists()
+
+
+async def test_delete_individual_step_run_removes_log_only_for_that_step():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        log_path = Path(tmpdir) / "run.log"
+        log_path.write_text("run", encoding="utf-8")
+        with session_factory() as db:
+            step_run = _create_running_step_run(db, log_path=log_path)
+            job_run_id = step_run.job_run_id
+
+            response = await main.delete_run(step_run.id, None, db)
+
+            assert response.status_code == 303
+            assert response.headers["location"] == "/runs"
+            assert db.get(JobRunRecord, job_run_id) is not None
+            assert db.get(JobStepRunRecord, step_run.id) is None
+            assert not log_path.exists()
+
+
+async def test_delete_individual_console_run_removes_log():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        log_path = Path(tmpdir) / "console.log"
+        log_path.write_text("console", encoding="utf-8")
+        with session_factory() as db:
+            run = ConsoleRunRecord(
+                status="success",
+                command="version",
+                argv_json='["rclone", "version"]',
+                exit_code=0,
+                log_path=str(log_path),
+                started_at=main.utc_now(),
+                ended_at=main.utc_now(),
+            )
+            db.add(run)
+            db.commit()
+
+            response = await main.delete_console_run(run.id, None, db)
+
+            assert response.status_code == 303
+            assert response.headers["location"] == "/runs"
+            assert db.get(ConsoleRunRecord, run.id) is None
+            assert not log_path.exists()
+
+
 @pytest.mark.asyncio
 async def test_cancel_run_requests_parent_job_cancellation(monkeypatch):
     called = []

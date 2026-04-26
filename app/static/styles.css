@@ -118,6 +118,11 @@ button.danger:hover,
   background: #7f2d27;
 }
 
+button.small,
+.button.small {
+  padding: 6px 10px;
+}
+
 .secondary,
 .ghost {
   background: transparent;

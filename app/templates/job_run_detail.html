@@ -42,6 +42,9 @@
       <button class="danger" type="submit">Stop</button>
     </form>
     {% endif %}
+    <form method="post" action="/job-runs/{{ job_run.id }}/delete">
+      <button class="danger" type="submit">Delete</button>
+    </form>
     <a class="button secondary" href="/runs">History</a>
   </div>
 </div>
