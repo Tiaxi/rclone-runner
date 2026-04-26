@@ -5,13 +5,19 @@
   <div>
     <h1>{{ run.command }}</h1>
     <p>
-      Exit {{ run.exit_code }} ·
+      Status {{ run.status|capitalize }} ·
+      Exit {{ run.exit_code if run.exit_code is not none else "Pending" }} ·
       Started {{ format_local_time(run.started_at) }} ·
-      Finished {{ format_local_time(run.ended_at) }} ·
-      Elapsed {{ format_duration(run.started_at, run.ended_at) }}
+      Finished {{ format_local_time(run.ended_at) if run.ended_at is not none else "Running" }} ·
+      Elapsed {{ format_duration(run.started_at, run.ended_at) if run.ended_at is not none else format_duration(run.started_at, utc_now()) }}
     </p>
   </div>
-  <a class="button secondary" href="/console">Back</a>
+  <div class="button-row">
+    <form method="post" action="/console/runs/{{ run.id }}/delete">
+      <button class="danger" type="submit">Delete</button>
+    </form>
+    <a class="button secondary" href="/console">Back</a>
+  </div>
 </div>
 {% include "_executed_command.html" %}
 {% include "_log_viewer.html" %}

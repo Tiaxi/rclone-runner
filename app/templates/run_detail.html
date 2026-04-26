@@ -4,14 +4,45 @@
 <div class="page-header">
   <div>
     <h1>{{ run.step_name }}</h1>
-    <p>
-      {{ run_mode_label(run.job_run.trigger) }} · Exit {{ run.exit_code }} ·
-      Started {{ format_local_time(run.started_at) }} ·
-      Finished {{ format_local_time(run.ended_at) }} ·
-      Elapsed {{ format_duration(run.started_at, run.ended_at) }}
-    </p>
+    <div class="run-summary" aria-live="polite">
+      <div class="run-summary-item primary">
+        <span class="run-summary-label">Status</span>
+        <span id="run-status" class="run-status {{ run.status }}">{{ run.status|capitalize }}</span>
+      </div>
+      <div class="run-summary-item">
+        <span class="run-summary-label">Mode</span>
+        <span>{{ run_mode_label(run.job_run.trigger) }}</span>
+      </div>
+      <div class="run-summary-item">
+        <span class="run-summary-label">Exit</span>
+        <span id="run-exit-code">{{ run_exit_label(run) }}</span>
+      </div>
+      <div class="run-summary-item">
+        <span class="run-summary-label">Elapsed</span>
+        <span id="run-elapsed">{{ format_duration(run.started_at, run.ended_at) if run.ended_at is not none else format_duration(run.started_at, utc_now()) }}</span>
+      </div>
+      <div class="run-summary-item">
+        <span class="run-summary-label">Started</span>
+        <span>{{ format_local_time(run.started_at) }}</span>
+      </div>
+      <div class="run-summary-item">
+        <span class="run-summary-label">Finished</span>
+        <span id="run-finished-at">{{ format_local_time(run.ended_at) if run.ended_at is not none else "Running" }}</span>
+      </div>
+    </div>
   </div>
-  <a class="button secondary" href="/runs">Back</a>
+  <div class="button-row">
+    {% if run.status == "running" %}
+    <form id="cancel-run-form" method="post" action="/runs/{{ run.id }}/cancel">
+      <button class="danger" type="submit">Stop</button>
+    </form>
+    {% endif %}
+    <form method="post" action="/runs/{{ run.id }}/delete">
+      <button class="danger" type="submit">Delete</button>
+    </form>
+    <a class="button secondary" href="/job-runs/{{ run.job_run_id }}">Full run</a>
+    <a class="button secondary" href="/runs">Back</a>
+  </div>
 </div>
 {% include "_executed_command.html" %}
 {% include "_log_viewer.html" %}

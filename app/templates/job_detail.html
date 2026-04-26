@@ -4,7 +4,7 @@
 <div class="page-header">
   <div>
     <h1>{{ job.name }}</h1>
-    <p>{{ schedule_summary }}{% if job.cron %} · <code>{{ job.cron }}</code>{% endif %} · {{ "Enabled" if job.enabled else "Disabled" }}</p>
+    <p>{{ schedule_summary }} · {{ "Enabled" if job.enabled else "Disabled" }}</p>
   </div>
   <div class="button-row">
     <form method="post" action="/jobs/{{ job.id }}/run"><button type="submit">Run now</button></form>
@@ -14,21 +14,42 @@
 
 {% include "_job_editor.html" %}
 
+<h2 class="section-heading">Recent job runs</h2>
+<section class="table-wrap">
+  <table>
+    <thead><tr><th>Mode</th><th>Started</th><th>Finished</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+      {% for run in job_runs %}
+      <tr>
+        <td><span class="badge {{ 'dry-run' if 'dry-run' in run.trigger else '' }}">{{ run_mode_label(run.trigger) }}</span></td>
+        <td>{{ format_local_time(run.started_at) }}</td>
+        <td>{{ format_local_time(run.ended_at) if run.ended_at is not none else "Running" }}</td>
+        <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
+        <td><a href="/job-runs/{{ run.id }}">Open</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5">No job runs yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
 <h2>Recent step runs</h2>
 <section class="table-wrap">
   <table>
-    <thead><tr><th>Step</th><th>Mode</th><th>Started</th><th>Exit</th><th></th></tr></thead>
+    <thead><tr><th>Step</th><th>Mode</th><th>Started</th><th>Status</th><th>Exit</th><th></th></tr></thead>
     <tbody>
       {% for run in runs %}
       <tr>
         <td>{{ run.step_name }}</td>
         <td><span class="badge {{ 'dry-run' if 'dry-run' in run.job_run.trigger else '' }}">{{ run_mode_label(run.job_run.trigger) }}</span></td>
-        <td>{{ run.started_at }}</td>
-        <td>{{ run.exit_code }}</td>
+        <td>{{ format_local_time(run.started_at) }}</td>
+        <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
+        <td>{{ run_exit_label(run) }}</td>
         <td><a href="/runs/{{ run.id }}">Log</a></td>
       </tr>
       {% else %}
-      <tr><td colspan="5">No runs yet.</td></tr>
+      <tr><td colspan="6">No runs yet.</td></tr>
       {% endfor %}
     </tbody>
   </table>

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from app.core.logs import read_log_chunk
+from app.core.logs import read_log_append, read_log_chunk
 
 
 def test_reads_last_lines_without_loading_entire_log(tmp_path: Path):
@@ -33,3 +33,21 @@ def test_missing_log_returns_pruned_message(tmp_path: Path):
     assert chunk.text == "Log file has been pruned or is not available."
     assert not chunk.has_more
     assert chunk.next_before is None
+
+
+def test_reads_log_append_from_byte_offset(tmp_path: Path):
+    log_path = tmp_path / "run.log"
+    log_path.write_text("one\n", encoding="utf-8")
+    offset = log_path.stat().st_size
+    with log_path.open("a", encoding="utf-8") as log_file:
+        log_file.write("two\n")
+
+    append = read_log_append(log_path, offset=offset)
+
+    assert append == {"text": "two\n", "offset": log_path.stat().st_size}
+
+
+def test_missing_append_log_returns_empty_payload(tmp_path: Path):
+    append = read_log_append(tmp_path / "missing.log", offset=12)
+
+    assert append == {"text": "", "offset": 0}

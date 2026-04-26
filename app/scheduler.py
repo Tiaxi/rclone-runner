@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -9,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.core.schedule import normalize_cron
-from app.db import JobRecord, SessionLocal, record_to_job, save_job_run
+from app.db import JobRecord, SessionLocal, record_to_job
 from app.runner_service import runner
 
 scheduler = AsyncIOScheduler(timezone=ZoneInfo(settings.timezone))
@@ -33,7 +32,7 @@ def sync_schedules(session: Session) -> None:
         if not normalize_cron(record.cron):
             continue
         scheduler.add_job(
-            scheduled_run,
+            _run_and_record,
             cron_trigger(record.cron),
             args=[record.id],
             id=f"job-{record.id}",
@@ -43,14 +42,9 @@ def sync_schedules(session: Session) -> None:
         )
 
 
-def scheduled_run(job_id: int) -> None:
-    asyncio.create_task(_run_and_record(job_id))
-
-
 async def _run_and_record(job_id: int) -> None:
     with SessionLocal() as session:
         record = session.get(JobRecord, job_id)
         if record is None:
             return
-        result = await runner.run_job(record_to_job(record), trigger="schedule")
-        save_job_run(session, result)
+        runner.start_job(record_to_job(record), trigger="schedule")

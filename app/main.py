@@ -4,7 +4,9 @@ import asyncio
 import json
 from contextlib import suppress
 from datetime import UTC, datetime
+from math import ceil
 from pathlib import Path
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Form, Request, WebSocket
@@ -17,7 +19,7 @@ from starlette.websockets import WebSocketDisconnect
 from app.auth import SESSION_KEY, AuthRequired, verify_password
 from app.config import settings
 from app.core.commands import CommandPolicyError, build_rclone_argv, parse_console_command
-from app.core.logs import read_log_chunk
+from app.core.logs import read_log_append, read_log_chunk
 from app.core.models import utc_now
 from app.core.pty_console import bridge_pty, display_argv
 from app.core.retention import prune_logs
@@ -26,6 +28,7 @@ from app.db import (
     ConsoleRunRecord,
     DbSession,
     JobRecord,
+    JobRunRecord,
     JobStepRecord,
     JobStepRunRecord,
     SessionLocal,
@@ -33,7 +36,6 @@ from app.db import (
     init_db,
     parse_env_lines,
     record_to_job,
-    save_job_run,
 )
 from app.runner_service import runner
 from app.scheduler import scheduler, sync_schedules
@@ -54,8 +56,11 @@ def run_mode_label(trigger: str) -> str:
 templates.env.globals["run_mode_label"] = run_mode_label
 templates.env.globals["format_local_time"] = lambda value: _format_local_time(value)
 templates.env.globals["format_duration"] = lambda start, end: _format_duration(start, end)
+templates.env.globals["utc_now"] = utc_now
+templates.env.globals["run_exit_label"] = lambda run: _exit_label(run.status, run.exit_code)
 
 LOG_CHUNK_LINES = 200
+HISTORY_PAGE_SIZE = 25
 
 
 def create_app() -> FastAPI:
@@ -115,7 +120,31 @@ async def index(_: AuthRequired) -> Response:
 @app.get("/jobs", response_class=HTMLResponse)
 async def jobs(request: Request, _: AuthRequired, db: DbSession) -> Response:
     records = db.query(JobRecord).order_by(JobRecord.name).all()
-    return templates.TemplateResponse(request, "jobs.html", {"jobs": _job_rows(records)})
+    ongoing_job_runs = (
+        db.query(JobRunRecord).filter_by(status="running").order_by(JobRunRecord.started_at).all()
+    )
+    ongoing_step_runs = (
+        db.query(JobStepRunRecord)
+        .filter_by(status="running")
+        .order_by(JobStepRunRecord.started_at)
+        .all()
+    )
+    ongoing_console_runs = (
+        db.query(ConsoleRunRecord)
+        .filter_by(status="running")
+        .order_by(ConsoleRunRecord.started_at)
+        .all()
+    )
+    return templates.TemplateResponse(
+        request,
+        "jobs.html",
+        {
+            "jobs": _job_rows(records),
+            "ongoing_job_runs": _ongoing_job_run_rows(ongoing_job_runs),
+            "ongoing_step_runs": ongoing_step_runs,
+            "ongoing_console_runs": ongoing_console_runs,
+        },
+    )
 
 
 @app.get("/jobs/new", response_class=HTMLResponse)
@@ -125,9 +154,9 @@ async def new_job(request: Request, _: AuthRequired) -> Response:
         "job_form.html",
         {
             "job": None,
-            "schedule_summary": cron_summary("0 2 * * *"),
-            "env_lines": "BW_LIMIT=8M",
-            "steps_text": "Sync Music|sync /media/Musiikki secret:/Musiikki",
+            "schedule_summary": cron_summary(""),
+            "env_lines": "",
+            "steps_text": "",
             "command_previews": [],
         },
     )
@@ -164,6 +193,13 @@ async def job_detail(request: Request, job_id: int, _: AuthRequired, db: DbSessi
     job = db.get(JobRecord, job_id)
     if job is None:
         return RedirectResponse("/jobs", status_code=303)
+    job_runs = (
+        db.query(JobRunRecord)
+        .filter_by(job_id=job_id)
+        .order_by(JobRunRecord.started_at.desc())
+        .limit(20)
+        .all()
+    )
     runs = (
         db.query(JobStepRunRecord)
         .join(JobStepRunRecord.job_run)
@@ -181,6 +217,7 @@ async def job_detail(request: Request, job_id: int, _: AuthRequired, db: DbSessi
             "env_lines": env_to_lines(job.env_json),
             "steps_text": _steps_to_text(job.steps),
             "command_previews": _command_previews(job),
+            "job_runs": job_runs,
             "runs": runs,
         },
     )
@@ -239,34 +276,111 @@ async def _run_job(
     job = db.get(JobRecord, job_id)
     if job is None:
         return RedirectResponse("/jobs", status_code=303)
-    result = await runner.run_job(
+    first_step_run = runner.start_job(
         record_to_job(job), trigger=trigger, dry_run=dry_run, step_id=step_id
     )
-    run_record = save_job_run(db, result)
-    first_step_run = db.query(JobStepRunRecord).filter_by(job_run_id=run_record.id).first()
     if first_step_run is None:
         return RedirectResponse("/runs", status_code=303)
+    if step_id is None:
+        return RedirectResponse(f"/job-runs/{first_step_run.job_run_id}", status_code=303)
     return RedirectResponse(f"/runs/{first_step_run.id}", status_code=303)
 
 
 @app.get("/runs", response_class=HTMLResponse)
-async def runs(request: Request, _: AuthRequired, db: DbSession) -> Response:
-    job_runs = db.query(JobRecord).all()
-    recent = (
-        db.query(JobStepRunRecord).order_by(JobStepRunRecord.started_at.desc()).limit(100).all()
+async def runs(
+    request: Request,
+    _: AuthRequired,
+    db: DbSession,
+    job_page: int = 1,
+    step_page: int = 1,
+    console_page: int = 1,
+) -> Response:
+    job_query = db.query(JobRunRecord).order_by(JobRunRecord.started_at.desc())
+    step_query = db.query(JobStepRunRecord).order_by(JobStepRunRecord.started_at.desc())
+    console_query = db.query(ConsoleRunRecord).order_by(ConsoleRunRecord.started_at.desc())
+    job_runs, job_pagination = _paginated_history(
+        job_query,
+        page=job_page,
+        page_param="job_page",
+        other_pages={"step_page": step_page, "console_page": console_page},
     )
-    console_runs = (
-        db.query(ConsoleRunRecord).order_by(ConsoleRunRecord.started_at.desc()).limit(50).all()
+    recent, step_pagination = _paginated_history(
+        step_query,
+        page=step_page,
+        page_param="step_page",
+        other_pages={"job_page": job_page, "console_page": console_page},
+    )
+    console_runs, console_pagination = _paginated_history(
+        console_query,
+        page=console_page,
+        page_param="console_page",
+        other_pages={"job_page": job_page, "step_page": step_page},
     )
     return templates.TemplateResponse(
         request,
         "runs.html",
         {
-            "jobs": job_runs,
+            "job_runs": job_runs,
             "step_runs": recent,
             "console_runs": console_runs,
+            "job_pagination": job_pagination,
+            "step_pagination": step_pagination,
+            "console_pagination": console_pagination,
         },
     )
+
+
+@app.get("/job-runs/{job_run_id}", response_class=HTMLResponse)
+async def job_run_detail(
+    request: Request, job_run_id: int, _: AuthRequired, db: DbSession
+) -> Response:
+    job_run = db.get(JobRunRecord, job_run_id)
+    if job_run is None:
+        return RedirectResponse("/runs", status_code=303)
+    active_step_run = _active_step_run(job_run)
+    context = {
+        "job_run": job_run,
+        "step_rows": _job_run_step_rows(job_run, db),
+        "active_step_run": active_step_run,
+        "job_run_status_url": f"/job-runs/{job_run.id}/status",
+        "job_run_cancel_url": f"/job-runs/{job_run.id}/cancel",
+    }
+    if active_step_run is not None:
+        log_path = Path(active_step_run.log_path)
+        context |= {
+            "run": active_step_run,
+            "argv": json.loads(active_step_run.argv_json),
+            "log_chunk": read_log_chunk(log_path, limit=LOG_CHUNK_LINES),
+            "log_chunk_url": f"/runs/{active_step_run.id}/log/chunk",
+            "log_append_url": f"/runs/{active_step_run.id}/log/append",
+            "log_status_url": f"/runs/{active_step_run.id}/status",
+            "log_append_offset": _log_size(log_path),
+            "raw_log_url": f"/runs/{active_step_run.id}/log/raw",
+        }
+    return templates.TemplateResponse(request, "job_run_detail.html", context)
+
+
+@app.get("/job-runs/{job_run_id}/status")
+async def job_run_status(job_run_id: int, _: AuthRequired, db: DbSession) -> dict[str, object]:
+    job_run = db.get(JobRunRecord, job_run_id)
+    if job_run is None:
+        return {"status": "missing", "can_cancel": False, "steps": []}
+    return _job_run_status_payload(job_run, db)
+
+
+@app.post("/job-runs/{job_run_id}/cancel")
+async def cancel_job_run(job_run_id: int, _: AuthRequired, db: DbSession) -> Response:
+    if not runner.cancel_job_run(job_run_id):
+        _mark_job_run_canceled(db, job_run_id)
+    return RedirectResponse(f"/job-runs/{job_run_id}", status_code=303)
+
+
+@app.post("/job-runs/{job_run_id}/delete")
+async def delete_job_run(job_run_id: int, _: AuthRequired, db: DbSession) -> Response:
+    job_run = db.get(JobRunRecord, job_run_id)
+    if job_run is not None:
+        _delete_job_run(db, job_run)
+    return RedirectResponse("/runs", status_code=303)
 
 
 @app.get("/runs/{run_id}", response_class=HTMLResponse)
@@ -275,14 +389,19 @@ async def run_detail(request: Request, run_id: int, _: AuthRequired, db: DbSessi
     if run is None:
         return RedirectResponse("/runs", status_code=303)
     log_chunk = read_log_chunk(Path(run.log_path), limit=LOG_CHUNK_LINES)
+    log_size = _log_size(Path(run.log_path))
     return templates.TemplateResponse(
         request,
         "run_detail.html",
         {
             "run": run,
             "argv": json.loads(run.argv_json),
+            "job_run_step_count": len(run.job_run.step_runs),
             "log_chunk": log_chunk,
             "log_chunk_url": f"/runs/{run.id}/log/chunk",
+            "log_append_url": f"/runs/{run.id}/log/append",
+            "log_status_url": f"/runs/{run.id}/status",
+            "log_append_offset": log_size,
             "raw_log_url": f"/runs/{run.id}/log/raw",
         },
     )
@@ -296,6 +415,40 @@ async def run_log_chunk(
     if run is None:
         return {"text": "", "next_before": None, "has_more": False}
     return _log_chunk_payload(Path(run.log_path), before)
+
+
+@app.get("/runs/{run_id}/status")
+async def run_status(run_id: int, _: AuthRequired, db: DbSession) -> dict[str, object]:
+    run = db.get(JobStepRunRecord, run_id)
+    if run is None:
+        return {"status": "missing", "can_cancel": False}
+    return _run_status_payload(run)
+
+
+@app.get("/runs/{run_id}/log/append")
+async def run_log_append(
+    run_id: int, _: AuthRequired, db: DbSession, offset: int = 0
+) -> dict[str, object]:
+    run = db.get(JobStepRunRecord, run_id)
+    if run is None:
+        return {"text": "", "offset": 0}
+    return read_log_append(Path(run.log_path), offset)
+
+
+@app.post("/runs/{run_id}/cancel")
+async def cancel_run(run_id: int, _: AuthRequired, db: DbSession) -> Response:
+    run = db.get(JobStepRunRecord, run_id)
+    if run is not None and not runner.cancel_job_run(run.job_run_id):
+        _mark_job_run_canceled(db, run.job_run_id)
+    return RedirectResponse(f"/runs/{run_id}", status_code=303)
+
+
+@app.post("/runs/{run_id}/delete")
+async def delete_run(run_id: int, _: AuthRequired, db: DbSession) -> Response:
+    run = db.get(JobStepRunRecord, run_id)
+    if run is not None:
+        _delete_step_run(db, run)
+    return RedirectResponse("/runs", status_code=303)
 
 
 @app.get("/runs/{run_id}/log/raw")
@@ -327,6 +480,7 @@ async def console_run_detail(
     if run is None:
         return RedirectResponse("/console", status_code=303)
     log_chunk = read_log_chunk(Path(run.log_path), limit=LOG_CHUNK_LINES)
+    log_size = _log_size(Path(run.log_path))
     return templates.TemplateResponse(
         request,
         "console_run_detail.html",
@@ -335,6 +489,9 @@ async def console_run_detail(
             "argv": json.loads(run.argv_json),
             "log_chunk": log_chunk,
             "log_chunk_url": f"/console/runs/{run.id}/log/chunk",
+            "log_append_url": "",
+            "log_status_url": "",
+            "log_append_offset": log_size,
             "raw_log_url": f"/console/runs/{run.id}/log/raw",
         },
     )
@@ -356,6 +513,14 @@ async def raw_console_log(run_id: int, _: AuthRequired, db: DbSession) -> Respon
     if run is None:
         return RedirectResponse("/console", status_code=303)
     return _raw_log_response(Path(run.log_path))
+
+
+@app.post("/console/runs/{run_id}/delete")
+async def delete_console_run(run_id: int, _: AuthRequired, db: DbSession) -> Response:
+    run = db.get(ConsoleRunRecord, run_id)
+    if run is not None:
+        _delete_console_run(db, run)
+    return RedirectResponse("/runs", status_code=303)
 
 
 @app.websocket("/console/terminal")
@@ -390,7 +555,10 @@ async def console_terminal(websocket: WebSocket) -> None:
         started_at = utc_now()
         log_path = _console_log_path(started_at)
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.touch(exist_ok=True)
         input_queue = asyncio.Queue()
+        with SessionLocal() as db:
+            run_id = _start_console_run_record(db, command, argv, log_path, started_at)
 
         def write_log(text: str) -> None:
             with log_path.open("a", encoding="utf-8") as log_file:
@@ -404,28 +572,29 @@ async def console_terminal(websocket: WebSocket) -> None:
             nonlocal command_task, input_queue
             await send_state("running")
             write_log(f"$ {display_argv(argv)}\r\n")
-            exit_code = await bridge_pty(argv, input_queue.get, send_and_log)
-            ended_at = utc_now()
-            exit_line = f"\r\n[process exited with code {exit_code}]\r\n"
-            write_log(exit_line)
-            await send_output(exit_line)
-            with SessionLocal() as db:
-                record = ConsoleRunRecord(
-                    command=command,
-                    argv_json=json.dumps(argv),
-                    exit_code=exit_code,
-                    log_path=str(log_path),
-                    started_at=started_at,
-                    ended_at=ended_at,
-                )
-                db.add(record)
-                db.commit()
-                db.refresh(record)
-                await websocket.send_json({"type": "history", "run": _console_history_row(record)})
-            command_task = None
-            input_queue = None
-            await send_output("rclone> ")
-            await send_state("idle")
+            try:
+                exit_code = await bridge_pty(argv, input_queue.get, send_and_log)
+                ended_at = utc_now()
+                exit_line = f"\r\n[process exited with code {exit_code}]\r\n"
+                write_log(exit_line)
+                await send_output(exit_line)
+                with SessionLocal() as db:
+                    record = _finish_console_run_record(db, run_id, exit_code, ended_at)
+                    if record is not None:
+                        await websocket.send_json(
+                            {"type": "history", "run": _console_history_row(record)}
+                        )
+                await send_output("rclone> ")
+                await send_state("idle")
+            except asyncio.CancelledError:
+                ended_at = utc_now()
+                write_log("\r\n[process canceled]\r\n")
+                with SessionLocal() as db:
+                    _cancel_console_run_record(db, run_id, ended_at)
+                raise
+            finally:
+                command_task = None
+                input_queue = None
 
         command_task = asyncio.create_task(run())
 
@@ -442,10 +611,18 @@ async def console_terminal(websocket: WebSocket) -> None:
     except WebSocketDisconnect, RuntimeError, json.JSONDecodeError:
         if command_task is not None and not command_task.done():
             command_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await command_task
 
 
 @app.get("/settings", response_class=HTMLResponse)
-async def settings_page(request: Request, _: AuthRequired, db: DbSession) -> Response:
+async def settings_page(
+    request: Request,
+    _: AuthRequired,
+    db: DbSession,
+    pruned: int | None = None,
+    cleared: int | None = None,
+) -> Response:
     count = _prunable_logs(db)
     return templates.TemplateResponse(
         request,
@@ -453,14 +630,22 @@ async def settings_page(request: Request, _: AuthRequired, db: DbSession) -> Res
         {
             "settings": settings,
             "known_logs": len(count),
+            "pruned": pruned,
+            "cleared": cleared,
         },
     )
 
 
 @app.post("/settings/prune")
 async def prune(_: AuthRequired, db: DbSession) -> Response:
-    prune_logs(_prunable_logs(db), keep_days=settings.retention_days)
-    return RedirectResponse("/settings", status_code=303)
+    deleted = prune_logs(_prunable_logs(db), keep_days=settings.retention_days)
+    return RedirectResponse(f"/settings?pruned={deleted}", status_code=303)
+
+
+@app.post("/settings/clear-history")
+async def clear_history(_: AuthRequired, db: DbSession) -> Response:
+    cleared = _clear_history(db)
+    return RedirectResponse(f"/settings?cleared={cleared}", status_code=303)
 
 
 def _replace_steps(job: JobRecord, steps_text: str) -> None:
@@ -516,8 +701,151 @@ def _prunable_logs(db) -> list[tuple[Path, datetime]]:
     return step_logs + console_logs
 
 
+def _clear_history(db) -> int:
+    logs = _prunable_logs(db)
+    deleted_records = db.query(JobRunRecord).count() + db.query(ConsoleRunRecord).count()
+    for path, _started_at in logs:
+        if path.exists():
+            path.unlink()
+    db.query(ConsoleRunRecord).delete(synchronize_session=False)
+    db.query(JobStepRunRecord).delete(synchronize_session=False)
+    db.query(JobRunRecord).delete(synchronize_session=False)
+    db.commit()
+    return deleted_records
+
+
+def _mark_job_run_canceled(db, job_run_id: int) -> None:
+    now = utc_now()
+    job_run = db.get(JobRunRecord, job_run_id)
+    if job_run is None or job_run.status != "running":
+        return
+    job_run.status = "canceled"
+    job_run.ended_at = now
+    for step_run in job_run.step_runs:
+        if step_run.status == "running":
+            step_run.status = "canceled"
+            step_run.exit_code = None
+            step_run.ended_at = now
+    db.commit()
+
+
+def _delete_job_run(db, job_run: JobRunRecord) -> None:
+    for step_run in list(job_run.step_runs):
+        _delete_log_file(Path(step_run.log_path))
+    db.delete(job_run)
+    db.commit()
+
+
+def _delete_step_run(db, step_run: JobStepRunRecord) -> None:
+    _delete_log_file(Path(step_run.log_path))
+    db.delete(step_run)
+    db.commit()
+
+
+def _delete_console_run(db, run: ConsoleRunRecord) -> None:
+    _delete_log_file(Path(run.log_path))
+    db.delete(run)
+    db.commit()
+
+
+def _delete_log_file(path: Path) -> None:
+    if path.exists():
+        path.unlink()
+
+
 def _console_history_rows(records: list[ConsoleRunRecord]) -> list[dict[str, object]]:
     return [_console_history_row(record) for record in records]
+
+
+def _paginated_history(query, page: int, page_param: str, other_pages: dict[str, int]):
+    current_page = max(1, page)
+    total_items = query.count()
+    total_pages = max(1, ceil(total_items / HISTORY_PAGE_SIZE))
+    offset = (current_page - 1) * HISTORY_PAGE_SIZE
+    items = query.offset(offset).limit(HISTORY_PAGE_SIZE).all()
+    has_next = current_page < total_pages
+    pagination = {
+        "page": current_page,
+        "total_pages": total_pages,
+        "has_previous": current_page > 1,
+        "has_next": has_next,
+        "previous_url": _history_page_url(
+            page_param, current_page - 1, other_pages, _history_section_id(page_param)
+        )
+        if current_page > 1
+        else None,
+        "next_url": _history_page_url(
+            page_param, current_page + 1, other_pages, _history_section_id(page_param)
+        )
+        if has_next
+        else None,
+        "target": _history_section_id(page_param),
+    }
+    return items, pagination
+
+
+def _history_page_url(
+    page_param: str, page: int, other_pages: dict[str, int], section_id: str | None = None
+) -> str:
+    params = {page_param: max(1, page)}
+    for name, value in other_pages.items():
+        params[name] = max(1, value)
+    url = "/runs?" + urlencode(params)
+    if section_id is not None:
+        url += f"#{section_id}"
+    return url
+
+
+def _history_section_id(page_param: str) -> str:
+    return {
+        "job_page": "job-runs-section",
+        "step_page": "step-runs-section",
+        "console_page": "console-runs-section",
+    }[page_param]
+
+
+def _start_console_run_record(
+    db, command: str, argv: list[str], log_path: Path, started_at: datetime
+) -> int:
+    record = ConsoleRunRecord(
+        status="running",
+        command=command,
+        argv_json=json.dumps(argv),
+        exit_code=None,
+        log_path=str(log_path),
+        started_at=started_at,
+        ended_at=None,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return record.id
+
+
+def _finish_console_run_record(
+    db, run_id: int, exit_code: int, ended_at: datetime
+) -> ConsoleRunRecord | None:
+    record = db.get(ConsoleRunRecord, run_id)
+    if record is None:
+        return None
+    record.status = "success" if exit_code == 0 else "failed"
+    record.exit_code = exit_code
+    record.ended_at = ended_at
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+def _cancel_console_run_record(db, run_id: int, ended_at: datetime) -> ConsoleRunRecord | None:
+    record = db.get(ConsoleRunRecord, run_id)
+    if record is None:
+        return None
+    record.status = "canceled"
+    record.exit_code = None
+    record.ended_at = ended_at
+    db.commit()
+    db.refresh(record)
+    return record
 
 
 def _console_history_row(record: ConsoleRunRecord) -> dict[str, object]:
@@ -527,6 +855,126 @@ def _console_history_row(record: ConsoleRunRecord) -> dict[str, object]:
         "started_at": _format_local_time(record.started_at),
         "exit_code": record.exit_code,
     }
+
+
+def _ongoing_job_run_rows(records: list[JobRunRecord]) -> list[dict[str, object]]:
+    return [
+        {
+            "run": record,
+            "current_step": active_step.step_name if active_step is not None else "Starting",
+        }
+        for record in records
+        for active_step in [_active_step_run(record)]
+    ]
+
+
+def _job_run_status_payload(job_run: JobRunRecord, db) -> dict[str, object]:
+    finished_at = _format_local_time(job_run.ended_at) if job_run.ended_at is not None else None
+    end = job_run.ended_at or utc_now()
+    elapsed_seconds = _duration_seconds(job_run.started_at, end)
+    active_step_run = _active_step_run(job_run)
+    return {
+        "status": job_run.status,
+        "started_at": _format_local_time(job_run.started_at),
+        "finished_at": finished_at,
+        "elapsed": _format_seconds(elapsed_seconds),
+        "elapsed_seconds": elapsed_seconds,
+        "can_cancel": job_run.status == "running",
+        "active_step_run_id": active_step_run.id if active_step_run is not None else None,
+        "steps": [_job_run_step_payload(row) for row in _job_run_step_rows(job_run, db)],
+    }
+
+
+def _job_run_step_payload(row: dict[str, object]) -> dict[str, object]:
+    step_run = row["run"]
+    status = str(row["status"])
+    return {
+        "key": row["key"],
+        "name": row["name"],
+        "status": status,
+        "run_id": step_run.id if step_run is not None else None,
+        "exit_label": _exit_label(status, step_run.exit_code if step_run is not None else None),
+    }
+
+
+def _job_run_step_rows(job_run: JobRunRecord, db) -> list[dict[str, object]]:
+    step_runs = sorted(job_run.step_runs, key=lambda item: item.started_at)
+    step_run_by_step_id = {
+        step_run.step_id: step_run for step_run in step_runs if step_run.step_id is not None
+    }
+    if job_run.job_id is not None and "step" not in job_run.trigger:
+        job = db.get(JobRecord, job_run.job_id)
+        if job is not None:
+            rows = []
+            for step in job.steps:
+                step_run = step_run_by_step_id.get(step.id)
+                status = (
+                    step_run.status if step_run is not None else _unstarted_step_status(job_run)
+                )
+                rows.append(
+                    {
+                        "key": f"step-{step.id}",
+                        "name": step.name,
+                        "status": status,
+                        "run": step_run,
+                    }
+                )
+            return rows
+
+    return [
+        {
+            "key": f"step-{step_run.step_id}"
+            if step_run.step_id is not None
+            else f"run-{step_run.id}",
+            "name": step_run.step_name,
+            "status": step_run.status,
+            "run": step_run,
+        }
+        for step_run in step_runs
+    ]
+
+
+def _active_step_run(job_run: JobRunRecord) -> JobStepRunRecord | None:
+    step_runs = sorted(job_run.step_runs, key=lambda item: item.started_at)
+    running = [step_run for step_run in step_runs if step_run.status == "running"]
+    if running:
+        return running[-1]
+    if step_runs:
+        return step_runs[-1]
+    return None
+
+
+def _unstarted_step_status(job_run: JobRunRecord) -> str:
+    if job_run.status == "canceled":
+        return "canceled"
+    return "pending"
+
+
+def _run_status_payload(run: JobStepRunRecord) -> dict[str, object]:
+    finished_at = _format_local_time(run.ended_at) if run.ended_at is not None else None
+    end = run.ended_at or utc_now()
+    elapsed_seconds = _duration_seconds(run.started_at, end)
+    return {
+        "status": run.status,
+        "job_status": run.job_run.status,
+        "exit_code": run.exit_code,
+        "exit_label": _exit_label(run.status, run.exit_code),
+        "started_at": _format_local_time(run.started_at),
+        "finished_at": finished_at,
+        "elapsed": _format_seconds(elapsed_seconds),
+        "elapsed_seconds": elapsed_seconds,
+        "can_cancel": run.status == "running",
+    }
+
+
+def _exit_label(status: str, exit_code: int | None) -> str:
+    if exit_code is not None:
+        return str(exit_code)
+    if status == "canceled":
+        return "Canceled"
+    if status == "skipped":
+        return "Skipped"
+    return "Pending"
 
 
 def _console_log_path(started_at: datetime) -> Path:
@@ -541,7 +989,18 @@ def _format_local_time(value: datetime) -> str:
 
 
 def _format_duration(started_at: datetime, ended_at: datetime) -> str:
-    total_seconds = max(0.0, (ended_at - started_at).total_seconds())
+    return _format_seconds(_duration_seconds(started_at, ended_at))
+
+
+def _duration_seconds(started_at: datetime, ended_at: datetime) -> float:
+    if started_at.tzinfo is None and ended_at.tzinfo is not None:
+        ended_at = ended_at.replace(tzinfo=None)
+    elif started_at.tzinfo is not None and ended_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=None)
+    return max(0.0, (ended_at - started_at).total_seconds())
+
+
+def _format_seconds(total_seconds: float) -> str:
     if total_seconds < 60:
         return f"{total_seconds:.1f}s"
 
@@ -561,6 +1020,12 @@ def _log_chunk_payload(path: Path, before: int | None) -> dict[str, object]:
         "next_before": chunk.next_before,
         "has_more": chunk.has_more,
     }
+
+
+def _log_size(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return path.stat().st_size
 
 
 def _raw_log_response(path: Path) -> Response:

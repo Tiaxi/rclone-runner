@@ -8,6 +8,62 @@
   --accent: #2f6f4e;
   --accent-dark: #23543b;
   --danger: #a33a32;
+  --danger-dark: #7f2d27;
+  --secondary-hover: #f1f3ed;
+  --input-bg: #ffffff;
+  --badge-bg: #eef2ea;
+  --badge-dry-bg: #fff6dc;
+  --badge-dry-line: #dfc982;
+  --command-bg: #f1f3ed;
+  --copy-hover-bg: #ffffff;
+  --toast-bg: #eff8f1;
+  --toast-border: #b8d8bf;
+  --toast-text: #214a2d;
+  --toast-error-bg: #fff1ef;
+  --toast-error-border: #e2b5af;
+  --summary-primary-border: #c7d8ca;
+  --active-row-bg: #f3f8f1;
+  --log-bg: #151713;
+  --log-text: #f0f5eb;
+  --terminal-bg: #10120f;
+  --terminal-text: #eef6e8;
+  --notice-bg: #edf6ec;
+  --notice-border: #cbdcc9;
+  --notice-text: var(--accent-dark);
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #111410;
+  --panel: #1a1f18;
+  --text: #edf2e9;
+  --muted: #a7b0a1;
+  --line: #343d31;
+  --accent: #5da97d;
+  --accent-dark: #8fd5aa;
+  --danger: #e06e65;
+  --danger-dark: #c85c54;
+  --secondary-hover: #232a20;
+  --input-bg: #121610;
+  --badge-bg: #232a20;
+  --badge-dry-bg: #332c18;
+  --badge-dry-line: #6f5c25;
+  --command-bg: #131711;
+  --copy-hover-bg: #242b21;
+  --toast-bg: #183323;
+  --toast-border: #315f42;
+  --toast-text: #dff3e4;
+  --toast-error-bg: #3a1d1a;
+  --toast-error-border: #73433d;
+  --summary-primary-border: #3d6649;
+  --active-row-bg: #18251b;
+  --log-bg: #080a08;
+  --log-text: #edf7e8;
+  --terminal-bg: #080a08;
+  --terminal-text: #edf7e8;
+  --notice-bg: #17261b;
+  --notice-border: #31553a;
+  --notice-text: #bde4c7;
 }
 
 * {
@@ -36,9 +92,18 @@ a {
 }
 
 .brand {
+  align-items: center;
   color: var(--text);
+  display: inline-flex;
+  gap: 8px;
   font-weight: 700;
   text-decoration: none;
+}
+
+.brand-mark {
+  display: block;
+  height: 28px;
+  width: 28px;
 }
 
 .topbar nav {
@@ -50,6 +115,16 @@ a {
 .topbar nav a {
   color: var(--muted);
   text-decoration: none;
+}
+
+.topbar-actions {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.theme-toggle {
+  min-width: 104px;
 }
 
 .page {
@@ -67,8 +142,13 @@ a {
 }
 
 h1,
-h2 {
+h2,
+h3 {
   margin: 0 0 10px;
+}
+
+h3 {
+  font-size: 18px;
 }
 
 p {
@@ -94,6 +174,21 @@ button:hover,
   background: var(--accent-dark);
 }
 
+button.danger,
+.button.danger {
+  background: var(--danger);
+}
+
+button.danger:hover,
+.button.danger:hover {
+  background: var(--danger-dark);
+}
+
+button.small,
+.button.small {
+  padding: 6px 10px;
+}
+
 .secondary,
 .ghost {
   background: transparent;
@@ -104,7 +199,7 @@ button:hover,
 button.secondary:hover,
 .button.secondary:hover,
 .ghost:hover {
-  background: #f1f3ed;
+  background: var(--secondary-hover);
   color: var(--text);
 }
 
@@ -120,6 +215,42 @@ button.secondary:hover,
   overflow: auto;
 }
 
+.table-wrap + h2,
+.form-grid + h2,
+.terminal-output + h2 {
+  margin-top: 28px;
+}
+
+.table-wrap + h3 {
+  margin-top: 20px;
+}
+
+.pagination {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+.pagination + h2 {
+  margin-top: 28px;
+}
+
+.pagination-page {
+  color: var(--muted);
+}
+
+.disabled {
+  cursor: default;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.section-heading {
+  margin-top: 28px;
+}
+
 table {
   border-collapse: collapse;
   width: 100%;
@@ -130,7 +261,16 @@ td {
   border-bottom: 1px solid var(--line);
   padding: 12px 14px;
   text-align: left;
-  vertical-align: top;
+  vertical-align: middle;
+}
+
+.action-column {
+  width: 96px;
+}
+
+.action-cell {
+  text-align: right;
+  white-space: nowrap;
 }
 
 tr:last-child td {
@@ -162,6 +302,7 @@ label {
 
 input,
 textarea {
+  background: var(--input-bg);
   border: 1px solid var(--line);
   border-radius: 6px;
   color: var(--text);
@@ -203,7 +344,7 @@ textarea {
 }
 
 .badge {
-  background: #eef2ea;
+  background: var(--badge-bg);
   border: 1px solid var(--line);
   border-radius: 999px;
   color: var(--text);
@@ -215,8 +356,8 @@ textarea {
 }
 
 .badge.dry-run {
-  background: #fff6dc;
-  border-color: #dfc982;
+  background: var(--badge-dry-bg);
+  border-color: var(--badge-dry-line);
 }
 
 .command-preview h2 {
@@ -237,7 +378,7 @@ textarea {
 }
 
 .command-preview-box {
-  background: #f1f3ed;
+  background: var(--command-bg);
   border-radius: 6px;
   margin: 8px 0 0;
   position: relative;
@@ -283,7 +424,7 @@ textarea {
 }
 
 .copy-command-button:hover {
-  background: #fff;
+  background: var(--copy-hover-bg);
   color: var(--text);
 }
 
@@ -309,6 +450,73 @@ textarea {
   font-weight: 700;
 }
 
+.toast {
+  align-items: center;
+  animation: toast-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  background: var(--toast-bg);
+  border: 1px solid var(--toast-border);
+  border-radius: 8px;
+  box-shadow: 0 14px 36px rgb(0 0 0 / 16%);
+  color: var(--toast-text);
+  display: inline-flex;
+  gap: 10px;
+  font-weight: 700;
+  padding: 12px 16px;
+  position: fixed;
+  right: max(24px, calc((100vw - 1120px) / 2 + 24px));
+  top: 82px;
+  transform-origin: top right;
+  transition: opacity 160ms ease, transform 160ms ease;
+  z-index: 20;
+}
+
+.toast[hidden] {
+  display: none;
+}
+
+.toast.leaving {
+  opacity: 0;
+  transform: translateY(-8px) scale(0.98);
+}
+
+.toast-icon {
+  align-items: center;
+  background: var(--accent);
+  border-radius: 999px;
+  color: #fff;
+  display: inline-flex;
+  font-size: 0.88rem;
+  height: 22px;
+  justify-content: center;
+  line-height: 1;
+  width: 22px;
+}
+
+.toast-message {
+  line-height: 1.2;
+}
+
+.toast.error {
+  background: var(--toast-error-bg);
+  border-color: var(--toast-error-border);
+  color: var(--danger);
+}
+
+.toast.error .toast-icon {
+  background: var(--danger);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 .console-form {
   display: flex;
   gap: 10px;
@@ -328,15 +536,100 @@ textarea {
   padding: 0;
 }
 
+.run-summary {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  margin-top: 12px;
+  max-width: 860px;
+}
+
+.run-summary-item {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  min-height: 64px;
+  padding: 10px 12px;
+}
+
+.run-summary-item.primary {
+  border-color: var(--summary-primary-border);
+}
+
+.run-summary-label {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.run-status {
+  align-items: center;
+  display: inline-flex;
+  font-weight: 800;
+  gap: 8px;
+}
+
+.run-status::before {
+  background: currentColor;
+  border-radius: 999px;
+  content: "";
+  height: 10px;
+  width: 10px;
+}
+
+.run-status.running {
+  color: var(--accent-dark);
+}
+
+.run-status.running::before {
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.run-status.failed,
+.run-status.canceled {
+  color: var(--danger);
+}
+
+.run-status.success {
+  color: var(--accent-dark);
+}
+
+.run-status.skipped {
+  color: var(--muted);
+}
+
+.run-status.pending {
+  color: var(--muted);
+}
+
+.active-row {
+  background: var(--active-row-bg);
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.82);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 .log-viewer {
   display: grid;
   gap: 8px;
 }
 
 .log {
-  background: #151713;
+  background: var(--log-bg);
   border-radius: 8px;
-  color: #f0f5eb;
+  color: var(--log-text);
   font-family: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   line-height: 1.35;
   max-height: 620px;
@@ -368,9 +661,9 @@ textarea {
 }
 
 .terminal-output {
-  background: #10120f;
+  background: var(--terminal-bg);
   border-radius: 6px;
-  color: #eef6e8;
+  color: var(--terminal-text);
   font-family: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: var(--terminal-font-size, 14px);
   height: 360px;
@@ -389,8 +682,16 @@ textarea {
 }
 
 .terminal-caret {
-  background: #eef6e8;
-  color: #10120f;
+  background: var(--terminal-text);
+  color: var(--terminal-bg);
+}
+
+.notice {
+  background: var(--notice-bg);
+  border: 1px solid var(--notice-border);
+  border-radius: 8px;
+  color: var(--notice-text);
+  padding: 12px 14px;
 }
 
 .settings-list {
@@ -408,6 +709,12 @@ textarea {
   border-bottom: 1px solid var(--line);
   margin: 0;
   padding: 10px 0;
+}
+
+.danger-zone {
+  border-top: 1px solid var(--line);
+  margin-top: 28px;
+  padding-top: 24px;
 }
 
 @media (max-width: 720px) {

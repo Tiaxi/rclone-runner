@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}{{ job_run.job_name }} run - Rclone Runner{% endblock %}
+{% block content %}
+<div
+  class="page-header"
+  id="job-run-page"
+  data-status-url="{{ job_run_status_url }}"
+  data-active-step-run-id="{{ active_step_run.id if active_step_run else '' }}"
+>
+  <div>
+    <h1>{{ job_run.job_name }}</h1>
+    <div class="run-summary" aria-live="polite">
+      <div class="run-summary-item primary">
+        <span class="run-summary-label">Run status</span>
+        <span id="job-run-status" class="run-status {{ job_run.status }}">{{ job_run.status|capitalize }}</span>
+      </div>
+      <div class="run-summary-item">
+        <span class="run-summary-label">Mode</span>
+        <span>{{ run_mode_label(job_run.trigger) }}</span>
+      </div>
+      <div class="run-summary-item">
+        <span class="run-summary-label">Current step</span>
+        <span id="job-run-current-step">{{ active_step_run.step_name if active_step_run else "None" }}</span>
+      </div>
+      <div class="run-summary-item">
+        <span class="run-summary-label">Elapsed</span>
+        <span id="job-run-elapsed">{{ format_duration(job_run.started_at, job_run.ended_at) if job_run.ended_at is not none else format_duration(job_run.started_at, utc_now()) }}</span>
+      </div>
+      <div class="run-summary-item">
+        <span class="run-summary-label">Started</span>
+        <span>{{ format_local_time(job_run.started_at) }}</span>
+      </div>
+      <div class="run-summary-item">
+        <span class="run-summary-label">Finished</span>
+        <span id="job-run-finished-at">{{ format_local_time(job_run.ended_at) if job_run.ended_at is not none else "Running" }}</span>
+      </div>
+    </div>
+  </div>
+  <div class="button-row">
+    {% if job_run.status == "running" %}
+    <form id="cancel-job-run-form" method="post" action="{{ job_run_cancel_url }}">
+      <button class="danger" type="submit">Stop</button>
+    </form>
+    {% endif %}
+    <form method="post" action="/job-runs/{{ job_run.id }}/delete">
+      <button class="danger" type="submit">Delete</button>
+    </form>
+    <a class="button secondary" href="/runs">History</a>
+  </div>
+</div>
+
+<h2>Steps</h2>
+<section class="table-wrap">
+  <table>
+    <thead><tr><th>Step</th><th>Status</th><th>Exit</th><th>Log</th></tr></thead>
+    <tbody>
+      {% for row in step_rows %}
+      {% set step_run = row.run %}
+      <tr data-step-key="{{ row.key }}" class="{{ 'active-row' if active_step_run and step_run and step_run.id == active_step_run.id else '' }}">
+        <td>{{ row.name }}</td>
+        <td><span class="run-status {{ row.status }}">{{ row.status|capitalize }}</span></td>
+        <td>{{ run_exit_label(step_run) if step_run else "Pending" }}</td>
+        <td>
+          {% if step_run %}
+          <a href="/runs/{{ step_run.id }}">Open</a>
+          {% else %}
+          Pending
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+{% if active_step_run %}
+<h2>Active log</h2>
+{% set run = active_step_run %}
+{% include "_executed_command.html" %}
+{% include "_log_viewer.html" %}
+{% endif %}
+
+<script>
+  (() => {
+    const page = document.querySelector("#job-run-page");
+    if (!page || !page.dataset.statusUrl) {
+      return;
+    }
+    const statusText = document.querySelector("#job-run-status");
+    const currentStep = document.querySelector("#job-run-current-step");
+    const elapsed = document.querySelector("#job-run-elapsed");
+    const finishedAt = document.querySelector("#job-run-finished-at");
+    const cancelForm = document.querySelector("#cancel-job-run-form");
+    let live = statusText && statusText.classList.contains("running");
+
+    async function pollJobRun() {
+      if (!live) {
+        return;
+      }
+      const response = await fetch(page.dataset.statusUrl);
+      const state = await response.json();
+      if (String(state.active_step_run_id ?? "") !== page.dataset.activeStepRunId) {
+        window.location.reload();
+        return;
+      }
+      if (statusText && state.status) {
+        statusText.textContent = state.status.charAt(0).toUpperCase() + state.status.slice(1);
+        statusText.className = `run-status ${state.status}`;
+      }
+      if (currentStep) {
+        const activeStep = state.steps.find((step) => step.run_id === state.active_step_run_id);
+        currentStep.textContent = activeStep ? activeStep.name : "None";
+      }
+      if (elapsed && state.elapsed) {
+        elapsed.textContent = state.elapsed;
+      }
+      if (finishedAt) {
+        finishedAt.textContent = state.finished_at ?? "Running";
+      }
+      state.steps.forEach((step) => {
+        const row = document.querySelector(`[data-step-key="${step.key}"]`);
+        if (!row) {
+          return;
+        }
+        const status = row.querySelector(".run-status");
+        if (status) {
+          status.textContent = step.status.charAt(0).toUpperCase() + step.status.slice(1);
+          status.className = `run-status ${step.status}`;
+        }
+        row.classList.toggle("active-row", step.run_id === state.active_step_run_id);
+      });
+      if (!state.can_cancel && cancelForm) {
+        cancelForm.remove();
+      }
+      live = state.status === "running";
+      if (live) {
+        window.setTimeout(pollJobRun, 1000);
+      }
+    }
+
+    pollJobRun();
+  })();
+</script>
+{% endblock %}

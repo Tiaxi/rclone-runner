@@ -7,6 +7,10 @@
     id="log-output"
     class="log"
     data-chunk-url="{{ log_chunk_url }}"
+    data-append-url="{{ log_append_url }}"
+    data-status-url="{{ log_status_url }}"
+    data-append-offset="{{ log_append_offset }}"
+    data-live="{{ 'true' if run.status == 'running' and log_status_url else 'false' }}"
     data-next-before="{{ log_chunk.next_before if log_chunk.next_before is not none else '' }}"
     data-has-more="{{ 'true' if log_chunk.has_more else 'false' }}"
   >{{ log_chunk.text }}</pre>
@@ -16,7 +20,14 @@
   (() => {
     const output = document.querySelector("#log-output");
     const loadStatus = document.querySelector("#log-load-status");
+    const statusText = document.querySelector("#run-status");
+    const exitCode = document.querySelector("#run-exit-code");
+    const finishedAt = document.querySelector("#run-finished-at");
+    const elapsed = document.querySelector("#run-elapsed");
+    const cancelForm = document.querySelector("#cancel-run-form");
     let loading = false;
+    let live = output.dataset.live === "true";
+    let appendOffset = Number.parseInt(output.dataset.appendOffset || "0", 10);
 
     function hasMore() {
       return output.dataset.hasMore === "true" && output.dataset.nextBefore !== "";
@@ -44,6 +55,63 @@
       updateStatus();
     }
 
+    function isPinnedToBottom() {
+      return output.scrollHeight - output.scrollTop - output.clientHeight <= 24;
+    }
+
+    async function refreshStatus() {
+      if (!output.dataset.statusUrl) {
+        return;
+      }
+      const response = await fetch(output.dataset.statusUrl);
+      const state = await response.json();
+      if (statusText && state.status) {
+        statusText.textContent = state.status.charAt(0).toUpperCase() + state.status.slice(1);
+        statusText.className = `run-status ${state.status}`;
+      }
+      if (exitCode) {
+        exitCode.textContent = state.exit_label ?? "Pending";
+      }
+      if (finishedAt) {
+        finishedAt.textContent = state.finished_at ?? "Running";
+      }
+      if (elapsed && state.elapsed) {
+        elapsed.textContent = state.elapsed;
+      }
+      if (!state.can_cancel && cancelForm) {
+        cancelForm.remove();
+      }
+      live = state.status === "running";
+    }
+
+    async function appendNewOutput() {
+      if (!output.dataset.appendUrl) {
+        return;
+      }
+      const pinned = isPinnedToBottom();
+      const response = await fetch(`${output.dataset.appendUrl}?offset=${appendOffset}`);
+      const chunk = await response.json();
+      appendOffset = chunk.offset ?? appendOffset;
+      output.dataset.appendOffset = appendOffset;
+      if (chunk.text) {
+        output.textContent = `${output.textContent}${chunk.text}`;
+        if (pinned) {
+          output.scrollTop = output.scrollHeight;
+        }
+      }
+    }
+
+    async function pollLiveRun() {
+      if (!live) {
+        return;
+      }
+      await appendNewOutput();
+      await refreshStatus();
+      if (live) {
+        window.setTimeout(pollLiveRun, 1000);
+      }
+    }
+
     output.addEventListener("scroll", () => {
       if (output.scrollTop <= 8) {
         loadOlderLines();
@@ -54,5 +122,6 @@
     requestAnimationFrame(() => {
       output.scrollTop = output.scrollHeight;
     });
+    pollLiveRun();
   })();
 </script>

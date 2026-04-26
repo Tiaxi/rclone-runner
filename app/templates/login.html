@@ -4,6 +4,19 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Log in - Rclone Runner</title>
+    <script>
+      (() => {
+        const systemTheme = () => window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        let storedTheme = null;
+        try {
+          storedTheme = localStorage.getItem("theme");
+        } catch {
+          storedTheme = null;
+        }
+        const theme = storedTheme === "light" || storedTheme === "dark" ? storedTheme : systemTheme();
+        document.documentElement.dataset.theme = theme;
+      })();
+    </script>
     <link rel="stylesheet" href="/static/styles.css">
   </head>
   <body class="login-body">

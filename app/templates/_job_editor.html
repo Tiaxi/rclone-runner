@@ -1,16 +1,16 @@
-<form method="post" action="{{ '/jobs/' ~ job.id if job else '/jobs' }}" class="form-grid">
-  <label>Name <input name="name" value="{{ job.name if job else 'Google Drive backups' }}" required></label>
-  <label>Cron <input name="cron" value="{{ job.cron if job else '0 2 * * *' }}" placeholder="Leave empty for Never"></label>
+<form id="job-editor-form" method="post" action="{{ '/jobs/' ~ job.id if job else '/jobs' }}" class="form-grid" data-background-save="{{ 'true' if job else 'false' }}">
+  <label>Name <input name="name" value="{{ job.name if job else '' }}" placeholder="Nightly media backup" required></label>
+  <label>Cron <input name="cron" value="{{ job.cron if job else '' }}" placeholder="0 2 * * * or leave empty for Never"></label>
   <div class="field-note">Schedule: {{ schedule_summary }}</div>
   <label class="checkbox"><input type="checkbox" name="enabled" {% if not job or job.enabled %}checked{% endif %}> Enabled</label>
   <label class="full">Common rclone args
-    <textarea name="common_args" rows="3"> {{- job.common_args if job else '--fast-list --transfers=20 --checkers=40 --tpslimit=10 --drive-chunk-size=32M --max-backlog 200000 --verbose --bwlimit ${BW_LIMIT}' -}}</textarea>
+    <textarea name="common_args" rows="3" placeholder="--fast-list --transfers=20 --checkers=40 --verbose --bwlimit ${BW_LIMIT}"> {{- job.common_args if job else '' -}}</textarea>
   </label>
   <label class="full">Environment
-    <textarea name="env_lines" rows="4">{{ env_lines }}</textarea>
+    <textarea name="env_lines" rows="4" placeholder="BW_LIMIT=8M">{{ env_lines }}</textarea>
   </label>
   <label class="full">Steps
-    <textarea name="steps_text" rows="10">{{ steps_text }}</textarea>
+    <textarea name="steps_text" rows="10" placeholder="Sync Music|sync /media/Musiikki remote:/Musiikki">{{ steps_text }}</textarea>
   </label>
   <section class="full command-preview">
     <h2>Full commands</h2>
@@ -43,6 +43,10 @@
     <a class="button secondary" href="/jobs">Cancel</a>
   </div>
 </form>
+<div id="job-save-toast" class="toast" role="status" aria-live="polite" hidden>
+  <span class="toast-icon" aria-hidden="true"></span>
+  <span class="toast-message"></span>
+</div>
 
 {% if job %}
   {% for preview in command_previews %}
@@ -53,8 +57,104 @@
 
 <script>
   (() => {
-    document.querySelectorAll("[data-copy-command]").forEach((button) => {
-      button.addEventListener("click", async () => {
+    const jobForm = document.querySelector("#job-editor-form");
+    document.addEventListener("keydown", async (event) => {
+      if (!jobForm || event.key.toLowerCase() !== "s" || !(event.ctrlKey || event.metaKey)) {
+        return;
+      }
+      event.preventDefault();
+      if (jobForm.dataset.backgroundSave !== "true") {
+        jobForm.requestSubmit();
+        return;
+      }
+
+      const activeElement = document.activeElement;
+      const selectionStart = activeElement && "selectionStart" in activeElement ? activeElement.selectionStart : null;
+      const selectionEnd = activeElement && "selectionEnd" in activeElement ? activeElement.selectionEnd : null;
+
+      const response = await fetch(jobForm.action, {
+        method: jobForm.method,
+        body: new FormData(jobForm),
+        redirect: "follow",
+      });
+
+      if (!response.ok) {
+        showToast("Save failed", "error");
+        jobForm.requestSubmit();
+        return;
+      }
+      const html = await response.text();
+      refreshSavedPage(html);
+      showToast("Saved");
+      if (activeElement && typeof activeElement.focus === "function") {
+        activeElement.focus();
+        if (selectionStart !== null && selectionEnd !== null && "setSelectionRange" in activeElement) {
+          activeElement.setSelectionRange(selectionStart, selectionEnd);
+        }
+      }
+    });
+
+    function refreshSavedPage(html) {
+      const savedDocument = new DOMParser().parseFromString(html, "text/html");
+      replaceFromSavedPage(savedDocument, ".page-header");
+      replaceFromSavedPage(savedDocument, "#job-editor-form .field-note");
+      replaceFromSavedPage(savedDocument, "#job-editor-form .command-preview");
+
+      document.querySelectorAll('form[id^="run-step-"], form[id^="dry-run-step-"]').forEach((form) => {
+        form.remove();
+      });
+      savedDocument.querySelectorAll('form[id^="run-step-"], form[id^="dry-run-step-"]').forEach((form) => {
+        jobForm.insertAdjacentElement("afterend", form.cloneNode(true));
+      });
+      bindCopyCommandButtons();
+    }
+
+    function replaceFromSavedPage(savedDocument, selector) {
+      const currentElement = document.querySelector(selector);
+      const savedElement = savedDocument.querySelector(selector);
+      if (currentElement && savedElement) {
+        currentElement.replaceWith(savedElement.cloneNode(true));
+      }
+    }
+
+    function showToast(message, variant = "success") {
+      const toast = document.querySelector("#job-save-toast");
+      if (!toast) {
+        return;
+      }
+      const icon = toast.querySelector(".toast-icon");
+      const messageElement = toast.querySelector(".toast-message");
+      if (icon) {
+        icon.textContent = variant === "error" ? "!" : "✓";
+      }
+      if (messageElement) {
+        messageElement.textContent = message;
+      }
+      toast.className = `toast ${variant}`;
+      toast.hidden = false;
+      window.clearTimeout(toast.dismissTimer);
+      toast.dismissTimer = window.setTimeout(() => {
+        toast.classList.add("leaving");
+        toast.dismissTimer = window.setTimeout(() => {
+          toast.hidden = true;
+          toast.classList.remove("leaving");
+        }, 180);
+      }, 1900);
+    }
+
+    function bindCopyCommandButtons() {
+      document.querySelectorAll("[data-copy-command]").forEach((button) => {
+        if (button.dataset.copyBound === "true") {
+          return;
+        }
+        button.dataset.copyBound = "true";
+        button.addEventListener("click", async () => {
+          await copyCommand(button);
+        });
+      });
+    }
+
+    async function copyCommand(button) {
         const command = button.dataset.copyCommand;
         if (!command) {
           return;
@@ -76,7 +176,8 @@
         setTimeout(() => {
           button.textContent = original;
         }, 900);
-      });
-    });
+    }
+
+    bindCopyCommandButtons();
   })();
 </script>

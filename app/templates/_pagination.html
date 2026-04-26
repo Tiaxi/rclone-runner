@@ -1,0 +1,15 @@
+{% if pagination and (pagination.has_previous or pagination.has_next) %}
+<nav class="pagination" aria-label="{{ label }}">
+  {% if pagination.has_previous %}
+  <a class="button secondary" href="{{ pagination.previous_url }}" data-history-target="{{ pagination.target }}">Previous</a>
+  {% else %}
+  <span class="button secondary disabled">Previous</span>
+  {% endif %}
+  <span class="pagination-page">Page {{ pagination.page }}/{{ pagination.total_pages }}</span>
+  {% if pagination.has_next %}
+  <a class="button secondary" href="{{ pagination.next_url }}" data-history-target="{{ pagination.target }}">Next</a>
+  {% else %}
+  <span class="button secondary disabled">Next</span>
+  {% endif %}
+</nav>
+{% endif %}
