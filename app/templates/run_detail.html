@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Run log - Rclone Runner{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>{{ run.step_name }}</h1>
+    <p>
+      {{ run_mode_label(run.job_run.trigger) }} · Exit {{ run.exit_code }} ·
+      Started {{ format_local_time(run.started_at) }} ·
+      Finished {{ format_local_time(run.ended_at) }} ·
+      Elapsed {{ format_duration(run.started_at, run.ended_at) }}
+    </p>
+  </div>
+  <a class="button secondary" href="/runs">Back</a>
+</div>
+{% include "_executed_command.html" %}
+{% include "_log_viewer.html" %}
+{% endblock %}

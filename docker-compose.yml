@@ -1,0 +1,25 @@
+services:
+  rclone-runner:
+    build: .
+    container_name: rclone-runner
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      TZ: Europe/Helsinki
+      RCLONE_RUNNER_ADMIN_USER: admin
+      # Generate with:
+      # uv run python -c "from app.auth import hash_password; print(hash_password('change-me'))"
+      RCLONE_RUNNER_ADMIN_PASSWORD_HASH: ""
+      RCLONE_RUNNER_SECRET_KEY: change-this-long-random-string
+      RCLONE_RUNNER_DATA_DIR: /data
+      RCLONE_RUNNER_LOG_DIR: /data/logs
+      RCLONE_RUNNER_DATABASE_URL: sqlite:////data/rclone-runner.db
+      RCLONE_RUNNER_TIMEZONE: Europe/Helsinki
+      RCLONE_RUNNER_RETENTION_DAYS: "30"
+      RCLONE_CONFIG: /config/rclone/rclone.conf
+    volumes:
+      - ./data:/data
+      - ./rclone-config:/config/rclone
+      # Replace these with TrueNAS dataset mounts in the custom app YAML.
+      - /mnt/tank/media:/media:ro

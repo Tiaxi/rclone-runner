@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Rclone Runner{% endblock %}</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/jobs">Rclone Runner</a>
+      <nav>
+        <a href="/jobs">Jobs</a>
+        <a href="/runs">History</a>
+        <a href="/console">Console</a>
+        <a href="/settings">Settings</a>
+      </nav>
+      <form method="post" action="/logout">
+        <button class="ghost" type="submit">Log out</button>
+      </form>
+    </header>
+    <main class="page">
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

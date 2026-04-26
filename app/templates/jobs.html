@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Jobs - Rclone Runner{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Jobs</h1>
+    <p>Scheduled rclone command groups.</p>
+  </div>
+  <a class="button" href="/jobs/new">New job</a>
+</div>
+
+<section class="table-wrap">
+  <table>
+    <thead><tr><th>Name</th><th>Schedule</th><th>Status</th><th>Steps</th><th></th></tr></thead>
+    <tbody>
+      {% for item in jobs %}
+      {% set job = item.record %}
+      <tr>
+        <td><a href="/jobs/{{ job.id }}">{{ job.name }}</a></td>
+        <td>
+          <div>{{ item.schedule_summary }}</div>
+          {% if job.cron %}<code>{{ job.cron }}</code>{% endif %}
+        </td>
+        <td>{{ "Enabled" if job.enabled else "Disabled" }}</td>
+        <td>{{ job.steps|length }}</td>
+        <td>
+          <div class="button-row">
+            <form method="post" action="/jobs/{{ job.id }}/run">
+              <button type="submit">Run now</button>
+            </form>
+            <form method="post" action="/jobs/{{ job.id }}/dry-run">
+              <button class="secondary" type="submit">Dry run</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5">No jobs yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

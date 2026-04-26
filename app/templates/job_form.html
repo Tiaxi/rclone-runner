@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}{{ "Edit" if job else "New" }} job - Rclone Runner{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>{{ "Edit" if job else "New" }} job</h1>
+    <p>Use one step per line. Format: <code>Name|rclone-subcommand args</code>.</p>
+  </div>
+</div>
+
+{% include "_job_editor.html" %}
+{% endblock %}

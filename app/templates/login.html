@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Log in - Rclone Runner</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body class="login-body">
+    <main class="login-panel">
+      <h1>Rclone Runner</h1>
+      {% if error %}<p class="alert">{{ error }}</p>{% endif %}
+      <form method="post" action="/login" class="stack">
+        <label>Username <input name="username" autocomplete="username" required></label>
+        <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+        <button type="submit">Log in</button>
+      </form>
+    </main>
+  </body>
+</html>

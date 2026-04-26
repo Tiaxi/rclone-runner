@@ -1,0 +1,304 @@
+{% extends "base.html" %}
+{% block title %}Console - Rclone Runner{% endblock %}
+{% block content %}
+<h1>Rclone console</h1>
+<p>Type rclone commands directly in the terminal. Commands are validated server-side before they run.</p>
+
+<div class="terminal-toolbar" aria-label="Terminal controls">
+  <button id="terminal-font-smaller" class="secondary icon-button" type="button" title="Smaller terminal text">-</button>
+  <button id="terminal-font-larger" class="secondary icon-button" type="button" title="Larger terminal text">+</button>
+</div>
+<div id="terminal" class="terminal-output" tabindex="0" spellcheck="false" aria-label="Rclone terminal"></div>
+
+<h2>Recent commands</h2>
+<section class="table-wrap">
+  <table id="history-table">
+    <thead><tr><th>Command</th><th>Started</th><th>Exit</th><th>Log</th></tr></thead>
+    <tbody id="history-body">
+      {% for run in recent %}
+      <tr class="history-row" data-run-id="{{ run.id }}">
+        <td><code>{{ run.command }}</code></td>
+        <td>{{ run.started_at }}</td>
+        <td>{{ run.exit_code }}</td>
+        <td><a href="/console/runs/{{ run.id }}">Open</a></td>
+      </tr>
+      {% else %}
+      <tr id="empty-history-row"><td colspan="4">No console commands yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<script>
+  (() => {
+    const terminal = document.querySelector("#terminal");
+    const smallerFont = document.querySelector("#terminal-font-smaller");
+    const largerFont = document.querySelector("#terminal-font-larger");
+    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${protocol}://${window.location.host}/console/terminal`);
+    const historyBody = document.querySelector("#history-body");
+    let running = false;
+    let committedText = "";
+    let commandBuffer = "";
+    let cursorIndex = 0;
+    let terminalFontSize = Number(localStorage.getItem("terminalFontSize") || 14);
+    const commandHistory = {{ recent_commands | tojson }};
+    let historyIndex = commandHistory.length;
+
+    function applyTerminalFontSize() {
+      terminalFontSize = Math.min(22, Math.max(10, terminalFontSize));
+      terminal.style.setProperty("--terminal-font-size", `${terminalFontSize}px`);
+      localStorage.setItem("terminalFontSize", String(terminalFontSize));
+    }
+
+    function escapeHtml(text) {
+      return text
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+    }
+
+    function renderTerminal() {
+      const beforeCaret = commandBuffer.slice(0, cursorIndex);
+      const caretCharacter = commandBuffer[cursorIndex] || " ";
+      const afterCaret = commandBuffer.slice(cursorIndex + 1);
+      terminal.innerHTML = `${escapeHtml(committedText)}${escapeHtml(beforeCaret)}<span class="terminal-caret">${escapeHtml(caretCharacter)}</span>${escapeHtml(afterCaret)}`;
+      terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    function append(text) {
+      committedText += text;
+      renderTerminal();
+    }
+
+    function sendTerminalMessage(payload) {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(payload));
+      }
+    }
+
+    function backspacePrompt() {
+      if (cursorIndex === 0) {
+        return;
+      }
+      commandBuffer = `${commandBuffer.slice(0, cursorIndex - 1)}${commandBuffer.slice(cursorIndex)}`;
+      cursorIndex -= 1;
+      renderTerminal();
+    }
+
+    function deletePromptCharacter() {
+      if (cursorIndex >= commandBuffer.length) {
+        return;
+      }
+      commandBuffer = `${commandBuffer.slice(0, cursorIndex)}${commandBuffer.slice(cursorIndex + 1)}`;
+      renderTerminal();
+    }
+
+    function sendInput(data) {
+      sendTerminalMessage({ type: "input", data });
+    }
+
+    function redrawPromptBuffer(nextValue) {
+      commandBuffer = nextValue;
+      cursorIndex = commandBuffer.length;
+      renderTerminal();
+    }
+
+    function addHistoryCommand(command) {
+      if (commandHistory[commandHistory.length - 1] !== command) {
+        commandHistory.push(command);
+      }
+      historyIndex = commandHistory.length;
+    }
+
+    function appendHistoryRun(run) {
+      document.querySelector("#empty-history-row")?.remove();
+      const row = document.createElement("tr");
+      row.className = "history-row";
+      row.dataset.runId = run.id;
+
+      const commandCell = document.createElement("td");
+      const code = document.createElement("code");
+      code.textContent = run.command;
+      commandCell.append(code);
+
+      const startedCell = document.createElement("td");
+      startedCell.textContent = run.started_at;
+
+      const exitCell = document.createElement("td");
+      exitCell.textContent = run.exit_code;
+
+      const logCell = document.createElement("td");
+      const logLink = document.createElement("a");
+      logLink.href = `/console/runs/${run.id}`;
+      logLink.textContent = "Open";
+      logCell.append(logLink);
+
+      row.append(commandCell, startedCell, exitCell, logCell);
+      historyBody.prepend(row);
+    }
+
+    socket.onmessage = (event) => {
+      const message = JSON.parse(event.data);
+      if (message.type === "output") {
+        append(message.data);
+      }
+      if (message.type === "state") {
+        running = message.state === "running";
+      }
+      if (message.type === "history") {
+        appendHistoryRun(message.run);
+      }
+    };
+
+    socket.onopen = () => terminal.focus();
+    socket.onclose = () => append("\r\n[terminal disconnected]\r\n");
+    applyTerminalFontSize();
+    terminal.addEventListener("mousedown", () => terminal.focus());
+    smallerFont.addEventListener("click", () => {
+      terminalFontSize -= 1;
+      applyTerminalFontSize();
+      terminal.focus();
+    });
+    largerFont.addEventListener("click", () => {
+      terminalFontSize += 1;
+      applyTerminalFontSize();
+      terminal.focus();
+    });
+
+    terminal.addEventListener("keydown", (event) => {
+      if (event.metaKey || event.altKey) {
+        return;
+      }
+
+      if (event.ctrlKey) {
+        const key = event.key.toLowerCase();
+        if (key === "c") {
+          event.preventDefault();
+          if (running) {
+            sendInput("\x03");
+          } else {
+            committedText += `${commandBuffer}^C\r\nrclone> `;
+            commandBuffer = "";
+            cursorIndex = 0;
+            renderTerminal();
+          }
+        }
+        if (key === "d" && running) {
+          event.preventDefault();
+          sendInput("\x04");
+        }
+        return;
+      }
+
+      if (event.key === "Enter") {
+        event.preventDefault();
+        if (running) {
+          sendInput("\r");
+        } else {
+          const command = commandBuffer.trim();
+          committedText += `${commandBuffer}\r\n`;
+          commandBuffer = "";
+          cursorIndex = 0;
+          renderTerminal();
+          if (command.length > 0) {
+            addHistoryCommand(command);
+            sendTerminalMessage({ type: "command", command });
+          } else {
+            append("rclone> ");
+          }
+        }
+        return;
+      }
+
+      if (event.key === "Backspace") {
+        event.preventDefault();
+        if (running) {
+          sendInput("\x7f");
+        } else {
+          backspacePrompt();
+        }
+        return;
+      }
+
+      if (event.key === "Delete") {
+        event.preventDefault();
+        if (running) {
+          sendInput("\x1b[3~");
+        } else {
+          deletePromptCharacter();
+        }
+        return;
+      }
+
+      if (event.key === "Tab") {
+        event.preventDefault();
+        if (running) {
+          sendInput("\t");
+        }
+        return;
+      }
+
+      const arrows = {
+        ArrowUp: "\x1b[A",
+        ArrowDown: "\x1b[B",
+        ArrowRight: "\x1b[C",
+        ArrowLeft: "\x1b[D",
+      };
+      if (event.key in arrows) {
+        event.preventDefault();
+        if (running) {
+          sendInput(arrows[event.key]);
+        } else if (event.key === "ArrowUp" && commandHistory.length > 0) {
+          historyIndex = Math.max(0, historyIndex - 1);
+          redrawPromptBuffer(commandHistory[historyIndex]);
+        } else if (event.key === "ArrowDown" && commandHistory.length > 0) {
+          historyIndex = Math.min(commandHistory.length, historyIndex + 1);
+          redrawPromptBuffer(historyIndex === commandHistory.length ? "" : commandHistory[historyIndex]);
+        } else if (event.key === "ArrowLeft") {
+          cursorIndex = Math.max(0, cursorIndex - 1);
+          renderTerminal();
+        } else if (event.key === "ArrowRight") {
+          cursorIndex = Math.min(commandBuffer.length, cursorIndex + 1);
+          renderTerminal();
+        }
+        return;
+      }
+
+      if (event.key === "Home") {
+        event.preventDefault();
+        if (running) {
+          sendInput("\x1b[H");
+        } else {
+          cursorIndex = 0;
+          renderTerminal();
+        }
+        return;
+      }
+
+      if (event.key === "End") {
+        event.preventDefault();
+        if (running) {
+          sendInput("\x1b[F");
+        } else {
+          cursorIndex = commandBuffer.length;
+          renderTerminal();
+        }
+        return;
+      }
+
+      if (event.key.length === 1) {
+        event.preventDefault();
+        if (running) {
+          sendInput(event.key);
+        } else {
+          commandBuffer = `${commandBuffer.slice(0, cursorIndex)}${event.key}${commandBuffer.slice(cursorIndex)}`;
+          cursorIndex += 1;
+          renderTerminal();
+        }
+      }
+    });
+
+  })();
+</script>
+{% endblock %}

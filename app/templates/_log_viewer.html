@@ -1,0 +1,58 @@
+<div class="log-actions">
+  <span id="log-load-status" class="field-note" {% if not log_chunk.has_more %}hidden{% endif %}>Scroll up to load older lines.</span>
+  <a class="button secondary" href="{{ raw_log_url }}" target="_blank" rel="noopener">Open raw log</a>
+</div>
+<div class="log-viewer">
+  <pre
+    id="log-output"
+    class="log"
+    data-chunk-url="{{ log_chunk_url }}"
+    data-next-before="{{ log_chunk.next_before if log_chunk.next_before is not none else '' }}"
+    data-has-more="{{ 'true' if log_chunk.has_more else 'false' }}"
+  >{{ log_chunk.text }}</pre>
+</div>
+
+<script>
+  (() => {
+    const output = document.querySelector("#log-output");
+    const loadStatus = document.querySelector("#log-load-status");
+    let loading = false;
+
+    function hasMore() {
+      return output.dataset.hasMore === "true" && output.dataset.nextBefore !== "";
+    }
+
+    function updateStatus() {
+      loadStatus.hidden = !hasMore();
+      loadStatus.textContent = loading ? "Loading older lines..." : "Scroll up to load older lines.";
+    }
+
+    async function loadOlderLines() {
+      if (loading || !hasMore()) {
+        return;
+      }
+      loading = true;
+      updateStatus();
+      const previousHeight = output.scrollHeight;
+      const response = await fetch(`${output.dataset.chunkUrl}?before=${output.dataset.nextBefore}`);
+      const chunk = await response.json();
+      output.textContent = `${chunk.text}${output.textContent}`;
+      output.dataset.nextBefore = chunk.next_before ?? "";
+      output.dataset.hasMore = chunk.has_more ? "true" : "false";
+      output.scrollTop = output.scrollHeight - previousHeight;
+      loading = false;
+      updateStatus();
+    }
+
+    output.addEventListener("scroll", () => {
+      if (output.scrollTop <= 8) {
+        loadOlderLines();
+      }
+    });
+
+    updateStatus();
+    requestAnimationFrame(() => {
+      output.scrollTop = output.scrollHeight;
+    });
+  })();
+</script>

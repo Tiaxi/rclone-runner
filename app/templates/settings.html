@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Settings - Rclone Runner{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<dl class="settings-list">
+  <dt>Data directory</dt><dd><code>{{ settings.data_dir }}</code></dd>
+  <dt>Log directory</dt><dd><code>{{ settings.log_dir }}</code></dd>
+  <dt>Timezone</dt><dd><code>{{ settings.timezone }}</code></dd>
+  <dt>Retention</dt><dd>{{ settings.retention_days }} days</dd>
+  <dt>Known log files</dt><dd>{{ known_logs }}</dd>
+</dl>
+<form method="post" action="/settings/prune">
+  <button type="submit">Prune old logs</button>
+</form>
+{% endblock %}
