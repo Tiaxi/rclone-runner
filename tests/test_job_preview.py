@@ -264,17 +264,22 @@ def test_history_tables_render_pagination_controls():
             "page": 2,
             "has_previous": True,
             "has_next": True,
-            "previous_url": "/runs?job_page=1&step_page=3&console_page=4",
-            "next_url": "/runs?job_page=3&step_page=3&console_page=4",
+            "previous_url": "/runs?job_page=1&step_page=3&console_page=4#job-runs-section",
+            "next_url": "/runs?job_page=3&step_page=3&console_page=4#job-runs-section",
+            "target": "job-runs-section",
         },
         step_pagination={"page": 3, "has_previous": False, "has_next": False},
         console_pagination={"page": 4, "has_previous": False, "has_next": False},
     )
 
+    assert '<section class="history-section" id="job-runs-section">' in html
     assert '<nav class="pagination" aria-label="Job runs pagination">' in html
-    assert 'href="/runs?job_page=1&amp;step_page=3&amp;console_page=4"' in html
-    assert 'href="/runs?job_page=3&amp;step_page=3&amp;console_page=4"' in html
+    assert 'data-history-target="job-runs-section"' in html
+    assert 'href="/runs?job_page=1&amp;step_page=3&amp;console_page=4#job-runs-section"' in html
+    assert 'href="/runs?job_page=3&amp;step_page=3&amp;console_page=4#job-runs-section"' in html
     assert "Page 2" in html
+    assert "fetch(url)" in html
+    assert "history.pushState" in html
 
 
 def test_job_history_tables_format_times_in_configured_timezone():

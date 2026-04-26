@@ -665,21 +665,39 @@ def _paginated_history(query, page: int, page_param: str, other_pages: dict[str,
         "page": current_page,
         "has_previous": current_page > 1,
         "has_next": has_next,
-        "previous_url": _history_page_url(page_param, current_page - 1, other_pages)
+        "previous_url": _history_page_url(
+            page_param, current_page - 1, other_pages, _history_section_id(page_param)
+        )
         if current_page > 1
         else None,
-        "next_url": _history_page_url(page_param, current_page + 1, other_pages)
+        "next_url": _history_page_url(
+            page_param, current_page + 1, other_pages, _history_section_id(page_param)
+        )
         if has_next
         else None,
+        "target": _history_section_id(page_param),
     }
     return items, pagination
 
 
-def _history_page_url(page_param: str, page: int, other_pages: dict[str, int]) -> str:
+def _history_page_url(
+    page_param: str, page: int, other_pages: dict[str, int], section_id: str | None = None
+) -> str:
     params = {page_param: max(1, page)}
     for name, value in other_pages.items():
         params[name] = max(1, value)
-    return "/runs?" + urlencode(params)
+    url = "/runs?" + urlencode(params)
+    if section_id is not None:
+        url += f"#{section_id}"
+    return url
+
+
+def _history_section_id(page_param: str) -> str:
+    return {
+        "job_page": "job-runs-section",
+        "step_page": "step-runs-section",
+        "console_page": "console-runs-section",
+    }[page_param]
 
 
 def _start_console_run_record(

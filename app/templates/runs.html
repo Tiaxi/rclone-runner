@@ -2,6 +2,7 @@
 {% block title %}History - Rclone Runner{% endblock %}
 {% block content %}
 <h1>History</h1>
+<section class="history-section" id="job-runs-section">
 <h2>Job runs</h2>
 <section class="table-wrap">
   <table>
@@ -25,7 +26,9 @@
 {% with pagination=job_pagination, label="Job runs pagination" %}
 {% include "_pagination.html" %}
 {% endwith %}
+</section>
 
+<section class="history-section" id="step-runs-section">
 <h2>Job step runs</h2>
 <section class="table-wrap">
   <table>
@@ -49,7 +52,9 @@
 {% with pagination=step_pagination, label="Job step runs pagination" %}
 {% include "_pagination.html" %}
 {% endwith %}
+</section>
 
+<section class="history-section" id="console-runs-section">
 <h2>Console runs</h2>
 <section class="table-wrap">
   <table>
@@ -72,4 +77,38 @@
 {% with pagination=console_pagination, label="Console runs pagination" %}
 {% include "_pagination.html" %}
 {% endwith %}
+</section>
+
+<script>
+  (() => {
+    document.addEventListener("click", async (event) => {
+      const link = event.target.closest(".pagination a[data-history-target]");
+      if (!link) {
+        return;
+      }
+      event.preventDefault();
+      const targetId = link.dataset.historyTarget;
+      const currentSection = document.getElementById(targetId);
+      if (!currentSection) {
+        window.location.assign(link.href);
+        return;
+      }
+      const url = new URL(link.href);
+      const response = await fetch(url);
+      if (!response.ok) {
+        window.location.assign(link.href);
+        return;
+      }
+      const html = await response.text();
+      const nextDocument = new DOMParser().parseFromString(html, "text/html");
+      const nextSection = nextDocument.getElementById(targetId);
+      if (!nextSection) {
+        window.location.assign(link.href);
+        return;
+      }
+      currentSection.replaceWith(nextSection);
+      history.pushState({}, "", `${url.pathname}${url.search}`);
+    });
+  })();
+</script>
 {% endblock %}
