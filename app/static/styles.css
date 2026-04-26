@@ -319,6 +319,23 @@ textarea {
   font-weight: 700;
 }
 
+.toast {
+  background: var(--text);
+  border-radius: 8px;
+  bottom: 24px;
+  box-shadow: 0 10px 24px rgb(0 0 0 / 18%);
+  color: #fff;
+  font-weight: 700;
+  padding: 10px 14px;
+  position: fixed;
+  right: 24px;
+  z-index: 10;
+}
+
+.toast.error {
+  background: var(--danger);
+}
+
 .console-form {
   display: flex;
   gap: 10px;

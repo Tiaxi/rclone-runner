@@ -43,6 +43,7 @@
     <a class="button secondary" href="/jobs">Cancel</a>
   </div>
 </form>
+<div id="job-save-toast" class="toast" role="status" aria-live="polite" hidden></div>
 
 {% if job %}
   {% for preview in command_previews %}
@@ -75,11 +76,13 @@
       });
 
       if (!response.ok) {
+        showToast("Save failed", "error");
         jobForm.requestSubmit();
         return;
       }
       const html = await response.text();
       refreshSavedPage(html);
+      showToast("Saved");
       if (activeElement && typeof activeElement.focus === "function") {
         activeElement.focus();
         if (selectionStart !== null && selectionEnd !== null && "setSelectionRange" in activeElement) {
@@ -109,6 +112,20 @@
       if (currentElement && savedElement) {
         currentElement.replaceWith(savedElement.cloneNode(true));
       }
+    }
+
+    function showToast(message, variant = "success") {
+      const toast = document.querySelector("#job-save-toast");
+      if (!toast) {
+        return;
+      }
+      toast.textContent = message;
+      toast.className = `toast ${variant}`;
+      toast.hidden = false;
+      window.clearTimeout(toast.dismissTimer);
+      toast.dismissTimer = window.setTimeout(() => {
+        toast.hidden = true;
+      }, 1800);
     }
 
     function bindCopyCommandButtons() {

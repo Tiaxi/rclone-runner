@@ -83,6 +83,9 @@ def test_job_editor_ctrl_s_saves_without_navigating():
     assert "response.text()" in html
     assert "new DOMParser()" in html
     assert "refreshSavedPage(html)" in html
+    assert 'id="job-save-toast"' in html
+    assert 'showToast("Saved")' in html
+    assert 'showToast("Save failed", "error")' in html
     assert 'replaceFromSavedPage(savedDocument, ".page-header")' in html
     assert 'replaceFromSavedPage(savedDocument, "#job-editor-form .command-preview")' in html
     assert "activeElement.focus()" in html
