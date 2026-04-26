@@ -169,14 +169,36 @@ class LiveJobRunner:
             db.add(step_run)
             db.commit()
             db.refresh(step_run)
+            job_run_id = job_run.id
+            step_run_id = step_run.id
+            step_run_job_run_id = step_run.job_run_id
+            step_run_step_id = step_run.step_id
+            step_run_step_name = step_run.step_name
+            step_run_argv_json = step_run.argv_json
+            step_run_status = step_run.status
+            step_run_exit_code = step_run.exit_code
+            step_run_log_path = step_run.log_path
+            step_run_started_at = step_run.started_at
+            step_run_ended_at = step_run.ended_at
             db.expunge(step_run)
 
         task = asyncio.create_task(
-            self._run_job_background(job_run.id, job, dry_run, selected_steps, run_stamp)
+            self._run_job_background(job_run_id, job, dry_run, selected_steps, run_stamp)
         )
-        self._tasks[job_run.id] = task
-        task.add_done_callback(lambda completed: self._task_done(job.id, job_run.id, completed))
-        return step_run
+        self._tasks[job_run_id] = task
+        task.add_done_callback(lambda completed: self._task_done(job.id, job_run_id, completed))
+        return JobStepRunRecord(
+            id=step_run_id,
+            job_run_id=step_run_job_run_id,
+            step_id=step_run_step_id,
+            step_name=step_run_step_name,
+            argv_json=step_run_argv_json,
+            status=step_run_status,
+            exit_code=step_run_exit_code,
+            log_path=step_run_log_path,
+            started_at=step_run_started_at,
+            ended_at=step_run_ended_at,
+        )
 
     def cancel_job_run(self, job_run_id: int) -> bool:
         task = self._tasks.get(job_run_id)

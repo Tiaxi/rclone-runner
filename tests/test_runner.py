@@ -175,6 +175,34 @@ async def test_live_runner_creates_step_record_before_executor_finishes():
 
 
 @pytest.mark.asyncio
+async def test_live_runner_start_job_works_with_expiring_sessions():
+    started = asyncio.Event()
+
+    async def executor(argv, env, log_path):
+        started.set()
+        return 0
+
+    job = Job(
+        id=42,
+        name="backup",
+        common_args="",
+        env={},
+        steps=[JobStep(id=1, name="one", command="lsd secret:")],
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db", expire_on_commit=True)
+        runner = LiveJobRunner(Path(tmpdir), session_factory=session_factory, executor=executor)
+
+        first_step = runner.start_job(job, trigger="manual-step-dry-run", dry_run=True, step_id=1)
+
+        assert first_step is not None
+        assert first_step.job_run_id == 1
+        await started.wait()
+        await runner.wait_for_job_run(first_step.job_run_id)
+
+
+@pytest.mark.asyncio
 async def test_live_runner_cancel_marks_job_canceled_and_skips_remaining_steps():
     started = asyncio.Event()
     calls = []
@@ -216,7 +244,9 @@ async def test_live_runner_cancel_marks_job_canceled_and_skips_remaining_steps()
             assert len(calls) == 1
 
 
-def _session_factory(database_path: Path):
+def _session_factory(database_path: Path, expire_on_commit: bool = False):
     engine = create_engine(f"sqlite:///{database_path}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
-    return sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+    return sessionmaker(
+        bind=engine, autoflush=False, autocommit=False, expire_on_commit=expire_on_commit
+    )
