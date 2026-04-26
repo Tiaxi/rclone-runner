@@ -264,6 +264,7 @@ def test_history_tables_render_pagination_controls():
             "page": 2,
             "has_previous": True,
             "has_next": True,
+            "total_pages": 4,
             "previous_url": "/runs?job_page=1&step_page=3&console_page=4#job-runs-section",
             "next_url": "/runs?job_page=3&step_page=3&console_page=4#job-runs-section",
             "target": "job-runs-section",
@@ -277,7 +278,7 @@ def test_history_tables_render_pagination_controls():
     assert 'data-history-target="job-runs-section"' in html
     assert 'href="/runs?job_page=1&amp;step_page=3&amp;console_page=4#job-runs-section"' in html
     assert 'href="/runs?job_page=3&amp;step_page=3&amp;console_page=4#job-runs-section"' in html
-    assert "Page 2" in html
+    assert "Page 2/4" in html
     assert "fetch(url)" in html
     assert "history.pushState" in html
 

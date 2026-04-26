@@ -401,10 +401,13 @@ async def test_history_page_paginates_independent_tables():
             assert len(response.context["step_runs"]) == 5
             assert len(response.context["console_runs"]) == 5
             assert response.context["job_pagination"]["page"] == 2
+            assert response.context["job_pagination"]["total_pages"] == 2
             assert response.context["job_pagination"]["has_previous"] is True
             assert response.context["job_pagination"]["has_next"] is False
             assert response.context["step_pagination"]["page"] == 2
+            assert response.context["step_pagination"]["total_pages"] == 2
             assert response.context["console_pagination"]["page"] == 2
+            assert response.context["console_pagination"]["total_pages"] == 2
 
 
 async def test_settings_prune_reports_deleted_count():

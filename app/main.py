@@ -4,6 +4,7 @@ import asyncio
 import json
 from contextlib import suppress
 from datetime import UTC, datetime
+from math import ceil
 from pathlib import Path
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
@@ -748,12 +749,14 @@ def _console_history_rows(records: list[ConsoleRunRecord]) -> list[dict[str, obj
 
 def _paginated_history(query, page: int, page_param: str, other_pages: dict[str, int]):
     current_page = max(1, page)
+    total_items = query.count()
+    total_pages = max(1, ceil(total_items / HISTORY_PAGE_SIZE))
     offset = (current_page - 1) * HISTORY_PAGE_SIZE
-    rows = query.offset(offset).limit(HISTORY_PAGE_SIZE + 1).all()
-    has_next = len(rows) > HISTORY_PAGE_SIZE
-    items = rows[:HISTORY_PAGE_SIZE]
+    items = query.offset(offset).limit(HISTORY_PAGE_SIZE).all()
+    has_next = current_page < total_pages
     pagination = {
         "page": current_page,
+        "total_pages": total_pages,
         "has_previous": current_page > 1,
         "has_next": has_next,
         "previous_url": _history_page_url(
