@@ -130,7 +130,9 @@ button.secondary:hover,
   overflow: auto;
 }
 
-.table-wrap + h2 {
+.table-wrap + h2,
+.form-grid + h2,
+.terminal-output + h2 {
   margin-top: 28px;
 }
 

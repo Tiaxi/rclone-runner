@@ -7,10 +7,12 @@ from app.db import JobRecord, JobStepRecord
 from app.main import _command_previews, templates
 
 
-def test_headings_after_tables_have_section_spacing():
+def test_headings_after_large_blocks_have_section_spacing():
     css = Path("app/static/styles.css").read_text()
 
     assert ".table-wrap + h2" in css
+    assert ".form-grid + h2" in css
+    assert ".terminal-output + h2" in css
 
 
 def test_command_preview_uses_common_args_and_job_environment():
