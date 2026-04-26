@@ -319,6 +319,44 @@ def test_history_tables_render_individual_delete_actions():
     assert "Delete" in html
 
 
+def test_history_delete_actions_use_aligned_action_cells():
+    css = Path("app/static/styles.css").read_text()
+    job_run = SimpleNamespace(
+        id=3,
+        job_name="backup",
+        trigger="manual",
+        status="success",
+        started_at=datetime(2026, 4, 26, 17, 59, tzinfo=UTC),
+        ended_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
+    )
+    step_run = SimpleNamespace(
+        id=4,
+        step_name="Music",
+        status="success",
+        exit_code=0,
+        started_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
+        job_run=SimpleNamespace(trigger="manual"),
+    )
+    console_run = SimpleNamespace(
+        id=5,
+        command="version",
+        status="success",
+        exit_code=0,
+        started_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
+    )
+
+    html = templates.get_template("runs.html").render(
+        job_runs=[job_run],
+        step_runs=[step_run],
+        console_runs=[console_run],
+    )
+
+    assert "vertical-align: middle" in css
+    assert ".action-cell" in css
+    assert '<th class="action-column"></th>' in html
+    assert '<td class="action-cell">' in html
+
+
 def test_job_history_tables_format_times_in_configured_timezone():
     job_run = SimpleNamespace(
         id=3,

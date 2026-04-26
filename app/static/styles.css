@@ -195,7 +195,16 @@ td {
   border-bottom: 1px solid var(--line);
   padding: 12px 14px;
   text-align: left;
-  vertical-align: top;
+  vertical-align: middle;
+}
+
+.action-column {
+  width: 96px;
+}
+
+.action-cell {
+  text-align: right;
+  white-space: nowrap;
 }
 
 tr:last-child td {
