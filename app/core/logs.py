@@ -40,6 +40,18 @@ def read_log_chunk(path: Path, before: int | None = None, limit: int = 200) -> L
     return LogChunk(_decode(buffer), None, False)
 
 
+def read_log_append(path: Path, offset: int = 0) -> dict[str, object]:
+    if not path.exists():
+        return {"text": "", "offset": 0}
+
+    file_size = path.stat().st_size
+    start = max(0, min(offset, file_size))
+    with path.open("rb") as log_file:
+        log_file.seek(start)
+        data = log_file.read()
+    return {"text": _decode(data), "offset": file_size}
+
+
 def _chunk_start(buffer: bytearray, limit: int) -> int | None:
     if not buffer:
         return 0

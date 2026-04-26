@@ -94,6 +94,16 @@ button:hover,
   background: var(--accent-dark);
 }
 
+button.danger,
+.button.danger {
+  background: var(--danger);
+}
+
+button.danger:hover,
+.button.danger:hover {
+  background: #7f2d27;
+}
+
 .secondary,
 .ghost {
   background: transparent;
@@ -326,6 +336,11 @@ textarea {
 .log-actions .field-note {
   margin-right: auto;
   padding: 0;
+}
+
+.run-meta span {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .log-viewer {

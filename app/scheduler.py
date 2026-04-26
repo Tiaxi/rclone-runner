@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.core.schedule import normalize_cron
-from app.db import JobRecord, SessionLocal, record_to_job, save_job_run
+from app.db import JobRecord, SessionLocal, record_to_job
 from app.runner_service import runner
 
 scheduler = AsyncIOScheduler(timezone=ZoneInfo(settings.timezone))
@@ -52,5 +52,4 @@ async def _run_and_record(job_id: int) -> None:
         record = session.get(JobRecord, job_id)
         if record is None:
             return
-        result = await runner.run_job(record_to_job(record), trigger="schedule")
-        save_job_run(session, result)
+        runner.start_job(record_to_job(record), trigger="schedule")

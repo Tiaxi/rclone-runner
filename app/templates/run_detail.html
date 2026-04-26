@@ -4,14 +4,23 @@
 <div class="page-header">
   <div>
     <h1>{{ run.step_name }}</h1>
-    <p>
-      {{ run_mode_label(run.job_run.trigger) }} · Exit {{ run.exit_code }} ·
+    <p class="run-meta">
+      {{ run_mode_label(run.job_run.trigger) }} ·
+      Status <span id="run-status">{{ run.status|capitalize }}</span> ·
+      Exit <span id="run-exit-code">{{ run.exit_code if run.exit_code is not none else "Pending" }}</span> ·
       Started {{ format_local_time(run.started_at) }} ·
-      Finished {{ format_local_time(run.ended_at) }} ·
-      Elapsed {{ format_duration(run.started_at, run.ended_at) }}
+      Finished <span id="run-finished-at">{{ format_local_time(run.ended_at) if run.ended_at is not none else "Running" }}</span> ·
+      Elapsed <span id="run-elapsed">{{ format_duration(run.started_at, run.ended_at) if run.ended_at is not none else format_duration(run.started_at, utc_now()) }}</span>
     </p>
   </div>
-  <a class="button secondary" href="/runs">Back</a>
+  <div class="button-row">
+    {% if run.status == "running" %}
+    <form id="cancel-run-form" method="post" action="/runs/{{ run.id }}/cancel">
+      <button class="danger" type="submit">Stop</button>
+    </form>
+    {% endif %}
+    <a class="button secondary" href="/runs">Back</a>
+  </div>
 </div>
 {% include "_executed_command.html" %}
 {% include "_log_viewer.html" %}

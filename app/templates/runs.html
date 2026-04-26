@@ -5,18 +5,19 @@
 <h2>Job step runs</h2>
 <section class="table-wrap">
   <table>
-    <thead><tr><th>Step</th><th>Mode</th><th>Started</th><th>Exit</th><th>Log</th></tr></thead>
+    <thead><tr><th>Step</th><th>Mode</th><th>Started</th><th>Status</th><th>Exit</th><th>Log</th></tr></thead>
     <tbody>
       {% for run in step_runs %}
       <tr>
         <td>{{ run.step_name }}</td>
         <td><span class="badge {{ 'dry-run' if 'dry-run' in run.job_run.trigger else '' }}">{{ run_mode_label(run.job_run.trigger) }}</span></td>
         <td>{{ run.started_at }}</td>
-        <td>{{ run.exit_code }}</td>
+        <td>{{ run.status|capitalize }}</td>
+        <td>{{ run.exit_code if run.exit_code is not none else "Pending" }}</td>
         <td><a href="/runs/{{ run.id }}">Open</a></td>
       </tr>
       {% else %}
-      <tr><td colspan="5">No job runs recorded.</td></tr>
+      <tr><td colspan="6">No job runs recorded.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -25,17 +26,18 @@
 <h2>Console runs</h2>
 <section class="table-wrap">
   <table>
-    <thead><tr><th>Command</th><th>Started</th><th>Exit</th><th>Log</th></tr></thead>
+    <thead><tr><th>Command</th><th>Started</th><th>Status</th><th>Exit</th><th>Log</th></tr></thead>
     <tbody>
       {% for run in console_runs %}
       <tr>
         <td><code>{{ run.command }}</code></td>
         <td>{{ run.started_at }}</td>
-        <td>{{ run.exit_code }}</td>
+        <td>{{ run.status|capitalize }}</td>
+        <td>{{ run.exit_code if run.exit_code is not none else "Pending" }}</td>
         <td><a href="/console/runs/{{ run.id }}">Open</a></td>
       </tr>
       {% else %}
-      <tr><td colspan="4">No console runs recorded.</td></tr>
+      <tr><td colspan="5">No console runs recorded.</td></tr>
       {% endfor %}
     </tbody>
   </table>

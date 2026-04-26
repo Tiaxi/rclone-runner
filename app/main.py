@@ -17,7 +17,7 @@ from starlette.websockets import WebSocketDisconnect
 from app.auth import SESSION_KEY, AuthRequired, verify_password
 from app.config import settings
 from app.core.commands import CommandPolicyError, build_rclone_argv, parse_console_command
-from app.core.logs import read_log_chunk
+from app.core.logs import read_log_append, read_log_chunk
 from app.core.models import utc_now
 from app.core.pty_console import bridge_pty, display_argv
 from app.core.retention import prune_logs
@@ -33,7 +33,6 @@ from app.db import (
     init_db,
     parse_env_lines,
     record_to_job,
-    save_job_run,
 )
 from app.runner_service import runner
 from app.scheduler import scheduler, sync_schedules
@@ -54,6 +53,7 @@ def run_mode_label(trigger: str) -> str:
 templates.env.globals["run_mode_label"] = run_mode_label
 templates.env.globals["format_local_time"] = lambda value: _format_local_time(value)
 templates.env.globals["format_duration"] = lambda start, end: _format_duration(start, end)
+templates.env.globals["utc_now"] = utc_now
 
 LOG_CHUNK_LINES = 200
 
@@ -239,11 +239,9 @@ async def _run_job(
     job = db.get(JobRecord, job_id)
     if job is None:
         return RedirectResponse("/jobs", status_code=303)
-    result = await runner.run_job(
+    first_step_run = runner.start_job(
         record_to_job(job), trigger=trigger, dry_run=dry_run, step_id=step_id
     )
-    run_record = save_job_run(db, result)
-    first_step_run = db.query(JobStepRunRecord).filter_by(job_run_id=run_record.id).first()
     if first_step_run is None:
         return RedirectResponse("/runs", status_code=303)
     return RedirectResponse(f"/runs/{first_step_run.id}", status_code=303)
@@ -275,6 +273,7 @@ async def run_detail(request: Request, run_id: int, _: AuthRequired, db: DbSessi
     if run is None:
         return RedirectResponse("/runs", status_code=303)
     log_chunk = read_log_chunk(Path(run.log_path), limit=LOG_CHUNK_LINES)
+    log_size = _log_size(Path(run.log_path))
     return templates.TemplateResponse(
         request,
         "run_detail.html",
@@ -283,6 +282,9 @@ async def run_detail(request: Request, run_id: int, _: AuthRequired, db: DbSessi
             "argv": json.loads(run.argv_json),
             "log_chunk": log_chunk,
             "log_chunk_url": f"/runs/{run.id}/log/chunk",
+            "log_append_url": f"/runs/{run.id}/log/append",
+            "log_status_url": f"/runs/{run.id}/status",
+            "log_append_offset": log_size,
             "raw_log_url": f"/runs/{run.id}/log/raw",
         },
     )
@@ -296,6 +298,32 @@ async def run_log_chunk(
     if run is None:
         return {"text": "", "next_before": None, "has_more": False}
     return _log_chunk_payload(Path(run.log_path), before)
+
+
+@app.get("/runs/{run_id}/status")
+async def run_status(run_id: int, _: AuthRequired, db: DbSession) -> dict[str, object]:
+    run = db.get(JobStepRunRecord, run_id)
+    if run is None:
+        return {"status": "missing", "can_cancel": False}
+    return _run_status_payload(run)
+
+
+@app.get("/runs/{run_id}/log/append")
+async def run_log_append(
+    run_id: int, _: AuthRequired, db: DbSession, offset: int = 0
+) -> dict[str, object]:
+    run = db.get(JobStepRunRecord, run_id)
+    if run is None:
+        return {"text": "", "offset": 0}
+    return read_log_append(Path(run.log_path), offset)
+
+
+@app.post("/runs/{run_id}/cancel")
+async def cancel_run(run_id: int, _: AuthRequired, db: DbSession) -> Response:
+    run = db.get(JobStepRunRecord, run_id)
+    if run is not None:
+        runner.cancel_job_run(run.job_run_id)
+    return RedirectResponse(f"/runs/{run_id}", status_code=303)
 
 
 @app.get("/runs/{run_id}/log/raw")
@@ -327,6 +355,7 @@ async def console_run_detail(
     if run is None:
         return RedirectResponse("/console", status_code=303)
     log_chunk = read_log_chunk(Path(run.log_path), limit=LOG_CHUNK_LINES)
+    log_size = _log_size(Path(run.log_path))
     return templates.TemplateResponse(
         request,
         "console_run_detail.html",
@@ -335,6 +364,9 @@ async def console_run_detail(
             "argv": json.loads(run.argv_json),
             "log_chunk": log_chunk,
             "log_chunk_url": f"/console/runs/{run.id}/log/chunk",
+            "log_append_url": "",
+            "log_status_url": "",
+            "log_append_offset": log_size,
             "raw_log_url": f"/console/runs/{run.id}/log/raw",
         },
     )
@@ -411,6 +443,7 @@ async def console_terminal(websocket: WebSocket) -> None:
             await send_output(exit_line)
             with SessionLocal() as db:
                 record = ConsoleRunRecord(
+                    status="success",
                     command=command,
                     argv_json=json.dumps(argv),
                     exit_code=exit_code,
@@ -529,6 +562,22 @@ def _console_history_row(record: ConsoleRunRecord) -> dict[str, object]:
     }
 
 
+def _run_status_payload(run: JobStepRunRecord) -> dict[str, object]:
+    finished_at = _format_local_time(run.ended_at) if run.ended_at is not None else None
+    end = run.ended_at or utc_now()
+    elapsed_seconds = _duration_seconds(run.started_at, end)
+    return {
+        "status": run.status,
+        "job_status": run.job_run.status,
+        "exit_code": run.exit_code,
+        "started_at": _format_local_time(run.started_at),
+        "finished_at": finished_at,
+        "elapsed": _format_seconds(elapsed_seconds),
+        "elapsed_seconds": elapsed_seconds,
+        "can_cancel": run.status == "running",
+    }
+
+
 def _console_log_path(started_at: datetime) -> Path:
     return settings.log_dir / "console" / f"{started_at.strftime('%Y%m%dT%H%M%S%fZ')}.log"
 
@@ -541,7 +590,18 @@ def _format_local_time(value: datetime) -> str:
 
 
 def _format_duration(started_at: datetime, ended_at: datetime) -> str:
-    total_seconds = max(0.0, (ended_at - started_at).total_seconds())
+    return _format_seconds(_duration_seconds(started_at, ended_at))
+
+
+def _duration_seconds(started_at: datetime, ended_at: datetime) -> float:
+    if started_at.tzinfo is None and ended_at.tzinfo is not None:
+        ended_at = ended_at.replace(tzinfo=None)
+    elif started_at.tzinfo is not None and ended_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=None)
+    return max(0.0, (ended_at - started_at).total_seconds())
+
+
+def _format_seconds(total_seconds: float) -> str:
     if total_seconds < 60:
         return f"{total_seconds:.1f}s"
 
@@ -561,6 +621,12 @@ def _log_chunk_payload(path: Path, before: int | None) -> dict[str, object]:
         "next_before": chunk.next_before,
         "has_more": chunk.has_more,
     }
+
+
+def _log_size(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return path.stat().st_size
 
 
 def _raw_log_response(path: Path) -> Response:

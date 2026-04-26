@@ -3,9 +3,12 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from app.core.models import Job, JobStep
-from app.core.runner import JobRunner
+from app.core.runner import JobRunner, LiveJobRunner
+from app.db import Base, JobRunRecord, JobStepRunRecord
 from app.main import run_mode_label
 
 
@@ -127,3 +130,93 @@ def test_run_mode_labels_distinguish_dry_runs():
     assert run_mode_label("schedule") == "Scheduled"
     assert run_mode_label("manual-dry-run") == "Dry run"
     assert run_mode_label("manual-step-dry-run") == "Dry run"
+
+
+@pytest.mark.asyncio
+async def test_live_runner_creates_step_record_before_executor_finishes():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def executor(argv, env, log_path):
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("started\n", encoding="utf-8")
+        started.set()
+        await release.wait()
+        return 0
+
+    job = Job(
+        id=42,
+        name="backup",
+        common_args="",
+        env={},
+        steps=[JobStep(id=1, name="one", command="lsd secret:")],
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        runner = LiveJobRunner(Path(tmpdir), session_factory=session_factory, executor=executor)
+        first_step = runner.start_job(job, trigger="manual")
+
+        assert first_step is not None
+        assert first_step.status == "running"
+        assert first_step.exit_code is None
+        assert first_step.ended_at is None
+
+        await started.wait()
+        release.set()
+        await runner.wait_for_job_run(first_step.job_run_id)
+
+        with session_factory() as db:
+            finished = db.get(JobStepRunRecord, first_step.id)
+            assert finished is not None
+            assert finished.status == "success"
+            assert finished.exit_code == 0
+            assert finished.ended_at is not None
+
+
+@pytest.mark.asyncio
+async def test_live_runner_cancel_marks_job_canceled_and_skips_remaining_steps():
+    started = asyncio.Event()
+    calls = []
+
+    async def executor(argv, env, log_path):
+        calls.append(argv)
+        started.set()
+        await asyncio.sleep(30)
+        return 0
+
+    job = Job(
+        id=42,
+        name="backup",
+        common_args="",
+        env={},
+        steps=[
+            JobStep(id=1, name="one", command="lsd secret:"),
+            JobStep(id=2, name="two", command="lsd secret:/two"),
+        ],
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        runner = LiveJobRunner(Path(tmpdir), session_factory=session_factory, executor=executor)
+        first_step = runner.start_job(job, trigger="manual")
+        assert first_step is not None
+
+        await started.wait()
+        assert runner.cancel_job_run(first_step.job_run_id)
+        await runner.wait_for_job_run(first_step.job_run_id)
+
+        with session_factory() as db:
+            job_run = db.get(JobRunRecord, first_step.job_run_id)
+            step_runs = db.query(JobStepRunRecord).filter_by(job_run_id=job_run.id).all()
+            assert job_run.status == "canceled"
+            assert job_run.ended_at is not None
+            assert [step.status for step in step_runs] == ["canceled"]
+            assert step_runs[0].exit_code is None
+            assert len(calls) == 1
+
+
+def _session_factory(database_path: Path):
+    engine = create_engine(f"sqlite:///{database_path}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    return sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
