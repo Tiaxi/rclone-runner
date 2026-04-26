@@ -4,11 +4,15 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Rclone Runner{% endblock %}</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/static/styles.css">
   </head>
   <body>
     <header class="topbar">
-      <a class="brand" href="/jobs">Rclone Runner</a>
+      <a class="brand" href="/jobs">
+        <img class="brand-mark" src="/static/favicon.svg" alt="" aria-hidden="true">
+        <span>Rclone Runner</span>
+      </a>
       <nav>
         <a href="/jobs">Jobs</a>
         <a href="/runs">History</a>

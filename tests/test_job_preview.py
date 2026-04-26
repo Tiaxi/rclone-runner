@@ -17,6 +17,13 @@ def test_headings_after_large_blocks_have_section_spacing():
     assert ".section-heading" in css
 
 
+def test_base_template_links_svg_favicon():
+    html = templates.get_template("base.html").render()
+
+    assert '<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">' in html
+    assert '<img class="brand-mark" src="/static/favicon.svg" alt="" aria-hidden="true">' in html
+
+
 def test_jobs_page_renders_ongoing_activity_sections():
     started_at = datetime(2026, 4, 26, 18, 0, tzinfo=UTC)
     job_run = SimpleNamespace(
