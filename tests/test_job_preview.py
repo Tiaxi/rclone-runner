@@ -80,6 +80,11 @@ def test_job_editor_ctrl_s_saves_without_navigating():
     assert "event.ctrlKey || event.metaKey" in html
     assert "fetch(jobForm.action" in html
     assert "new FormData(jobForm)" in html
+    assert "response.text()" in html
+    assert "new DOMParser()" in html
+    assert "refreshSavedPage(html)" in html
+    assert 'replaceFromSavedPage(savedDocument, ".page-header")' in html
+    assert 'replaceFromSavedPage(savedDocument, "#job-editor-form .command-preview")' in html
     assert "activeElement.focus()" in html
     assert "window.location.assign(response.url)" not in html
     assert 'data-background-save="true"' in html

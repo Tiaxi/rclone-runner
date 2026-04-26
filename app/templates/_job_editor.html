@@ -78,6 +78,8 @@
         jobForm.requestSubmit();
         return;
       }
+      const html = await response.text();
+      refreshSavedPage(html);
       if (activeElement && typeof activeElement.focus === "function") {
         activeElement.focus();
         if (selectionStart !== null && selectionEnd !== null && "setSelectionRange" in activeElement) {
@@ -86,8 +88,42 @@
       }
     });
 
-    document.querySelectorAll("[data-copy-command]").forEach((button) => {
-      button.addEventListener("click", async () => {
+    function refreshSavedPage(html) {
+      const savedDocument = new DOMParser().parseFromString(html, "text/html");
+      replaceFromSavedPage(savedDocument, ".page-header");
+      replaceFromSavedPage(savedDocument, "#job-editor-form .field-note");
+      replaceFromSavedPage(savedDocument, "#job-editor-form .command-preview");
+
+      document.querySelectorAll('form[id^="run-step-"], form[id^="dry-run-step-"]').forEach((form) => {
+        form.remove();
+      });
+      savedDocument.querySelectorAll('form[id^="run-step-"], form[id^="dry-run-step-"]').forEach((form) => {
+        jobForm.insertAdjacentElement("afterend", form.cloneNode(true));
+      });
+      bindCopyCommandButtons();
+    }
+
+    function replaceFromSavedPage(savedDocument, selector) {
+      const currentElement = document.querySelector(selector);
+      const savedElement = savedDocument.querySelector(selector);
+      if (currentElement && savedElement) {
+        currentElement.replaceWith(savedElement.cloneNode(true));
+      }
+    }
+
+    function bindCopyCommandButtons() {
+      document.querySelectorAll("[data-copy-command]").forEach((button) => {
+        if (button.dataset.copyBound === "true") {
+          return;
+        }
+        button.dataset.copyBound = "true";
+        button.addEventListener("click", async () => {
+          await copyCommand(button);
+        });
+      });
+    }
+
+    async function copyCommand(button) {
         const command = button.dataset.copyCommand;
         if (!command) {
           return;
@@ -109,7 +145,8 @@
         setTimeout(() => {
           button.textContent = original;
         }, 900);
-      });
-    });
+    }
+
+    bindCopyCommandButtons();
   })();
 </script>
