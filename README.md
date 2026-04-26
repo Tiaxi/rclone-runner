@@ -41,6 +41,10 @@ Copy the example environment file and edit it for your machine:
 cp .env.example .env
 ```
 
+Docker Compose reads this `.env` file for the `${...}` substitutions in `docker-compose.yml`.
+The Compose service also declares `.env` as an optional `env_file` so the same values are available
+inside the container.
+
 Generate an admin password hash before exposing the app:
 
 ```bash
