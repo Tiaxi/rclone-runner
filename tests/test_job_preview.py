@@ -1,5 +1,6 @@
 import json
 from html.parser import HTMLParser
+from types import SimpleNamespace
 
 from app.db import JobRecord, JobStepRecord
 from app.main import _command_previews, templates
@@ -63,6 +64,61 @@ def test_step_run_buttons_do_not_create_nested_forms():
     assert 'form="dry-run-step-2"' in html
     assert 'id="run-step-2" method="post" action="/jobs/1/steps/2/run"' in html
     assert 'id="dry-run-step-2" method="post" action="/jobs/1/steps/2/dry-run"' in html
+
+
+def test_history_tables_use_styled_status_labels():
+    step_run = SimpleNamespace(
+        id=1,
+        step_name="Music",
+        status="canceled",
+        exit_code=None,
+        started_at="2026-04-26 21:00",
+        job_run=SimpleNamespace(trigger="manual"),
+    )
+    console_run = SimpleNamespace(
+        id=2,
+        command="lsd remote:",
+        status="success",
+        exit_code=0,
+        started_at="2026-04-26 21:01",
+    )
+
+    history_html = templates.get_template("runs.html").render(
+        step_runs=[step_run],
+        console_runs=[console_run],
+    )
+    job_html = templates.get_template("job_detail.html").render(
+        job=SimpleNamespace(id=1, name="backup", cron="", enabled=True),
+        schedule_summary="Never",
+        env_lines="",
+        steps_text="",
+        command_previews=[],
+        runs=[step_run],
+    )
+
+    assert '<span class="run-status canceled">Canceled</span>' in history_html
+    assert '<span class="run-status success">Success</span>' in history_html
+    assert '<span class="run-status canceled">Canceled</span>' in job_html
+
+
+def test_job_summaries_show_human_schedule_without_raw_cron():
+    job = SimpleNamespace(id=1, name="backup", cron="0 2 * * *", enabled=True, steps=[])
+
+    jobs_html = templates.get_template("jobs.html").render(
+        jobs=[{"record": job, "schedule_summary": "Daily at 02:00"}],
+    )
+    job_html = templates.get_template("job_detail.html").render(
+        job=job,
+        schedule_summary="Daily at 02:00",
+        env_lines="",
+        steps_text="",
+        command_previews=[],
+        runs=[],
+    )
+
+    assert "Daily at 02:00" in jobs_html
+    assert "0 2 * * *" not in jobs_html
+    assert "<p>Daily at 02:00 · Enabled</p>" in job_html
 
 
 class NestedFormParser(HTMLParser):

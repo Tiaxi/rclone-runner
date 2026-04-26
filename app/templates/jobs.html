@@ -17,10 +17,7 @@
       {% set job = item.record %}
       <tr>
         <td><a href="/jobs/{{ job.id }}">{{ job.name }}</a></td>
-        <td>
-          <div>{{ item.schedule_summary }}</div>
-          {% if job.cron %}<code>{{ job.cron }}</code>{% endif %}
-        </td>
+        <td>{{ item.schedule_summary }}</td>
         <td>{{ "Enabled" if job.enabled else "Disabled" }}</td>
         <td>{{ job.steps|length }}</td>
         <td>

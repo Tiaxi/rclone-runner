@@ -4,7 +4,7 @@
 <div class="page-header">
   <div>
     <h1>{{ job.name }}</h1>
-    <p>{{ schedule_summary }}{% if job.cron %} · <code>{{ job.cron }}</code>{% endif %} · {{ "Enabled" if job.enabled else "Disabled" }}</p>
+    <p>{{ schedule_summary }} · {{ "Enabled" if job.enabled else "Disabled" }}</p>
   </div>
   <div class="button-row">
     <form method="post" action="/jobs/{{ job.id }}/run"><button type="submit">Run now</button></form>
@@ -24,7 +24,7 @@
         <td>{{ run.step_name }}</td>
         <td><span class="badge {{ 'dry-run' if 'dry-run' in run.job_run.trigger else '' }}">{{ run_mode_label(run.job_run.trigger) }}</span></td>
         <td>{{ run.started_at }}</td>
-        <td>{{ run.status|capitalize }}</td>
+        <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
         <td>{{ run_exit_label(run) }}</td>
         <td><a href="/runs/{{ run.id }}">Log</a></td>
       </tr>
