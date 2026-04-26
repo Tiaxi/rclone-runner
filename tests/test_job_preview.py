@@ -14,6 +14,7 @@ def test_headings_after_large_blocks_have_section_spacing():
     assert ".table-wrap + h2" in css
     assert ".form-grid + h2" in css
     assert ".terminal-output + h2" in css
+    assert ".section-heading" in css
 
 
 def test_jobs_page_renders_ongoing_activity_sections():
@@ -57,6 +58,20 @@ def test_jobs_page_renders_ongoing_activity_sections():
     assert "<h3>Console commands</h3>" in html
     assert '<a href="/console/runs/5">Log</a>' in html
     assert "2026-04-26 21:00:00 EEST" in html
+
+
+def test_job_detail_history_heading_has_explicit_section_spacing():
+    html = templates.get_template("job_detail.html").render(
+        job=SimpleNamespace(id=1, name="backup", cron="", enabled=True),
+        schedule_summary="Never",
+        env_lines="",
+        steps_text="",
+        command_previews=[],
+        job_runs=[],
+        runs=[],
+    )
+
+    assert '<h2 class="section-heading">Recent job runs</h2>' in html
 
 
 def test_command_preview_uses_common_args_and_job_environment():
@@ -220,7 +235,7 @@ def test_history_pages_link_to_whole_job_runs():
 
     assert "<h2>Job runs</h2>" in history_html
     assert '<a href="/job-runs/3">Open</a>' in history_html
-    assert "<h2>Recent job runs</h2>" in job_html
+    assert '<h2 class="section-heading">Recent job runs</h2>' in job_html
     assert '<a href="/job-runs/3">Open</a>' in job_html
 
 

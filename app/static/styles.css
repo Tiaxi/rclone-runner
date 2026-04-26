@@ -145,6 +145,10 @@ button.secondary:hover,
   margin-top: 20px;
 }
 
+.section-heading {
+  margin-top: 28px;
+}
+
 table {
   border-collapse: collapse;
   width: 100%;
