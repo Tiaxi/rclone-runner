@@ -84,6 +84,8 @@ def test_job_editor_ctrl_s_saves_without_navigating():
     assert "new DOMParser()" in html
     assert "refreshSavedPage(html)" in html
     assert 'id="job-save-toast"' in html
+    assert 'class="toast-icon"' in html
+    assert 'toast.querySelector(".toast-icon")' in html
     assert 'showToast("Saved")' in html
     assert 'showToast("Save failed", "error")' in html
     assert 'replaceFromSavedPage(savedDocument, ".page-header")' in html

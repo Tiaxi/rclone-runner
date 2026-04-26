@@ -43,7 +43,10 @@
     <a class="button secondary" href="/jobs">Cancel</a>
   </div>
 </form>
-<div id="job-save-toast" class="toast" role="status" aria-live="polite" hidden></div>
+<div id="job-save-toast" class="toast" role="status" aria-live="polite" hidden>
+  <span class="toast-icon" aria-hidden="true"></span>
+  <span class="toast-message"></span>
+</div>
 
 {% if job %}
   {% for preview in command_previews %}
@@ -119,13 +122,24 @@
       if (!toast) {
         return;
       }
-      toast.textContent = message;
+      const icon = toast.querySelector(".toast-icon");
+      const messageElement = toast.querySelector(".toast-message");
+      if (icon) {
+        icon.textContent = variant === "error" ? "!" : "✓";
+      }
+      if (messageElement) {
+        messageElement.textContent = message;
+      }
       toast.className = `toast ${variant}`;
       toast.hidden = false;
       window.clearTimeout(toast.dismissTimer);
       toast.dismissTimer = window.setTimeout(() => {
-        toast.hidden = true;
-      }, 1800);
+        toast.classList.add("leaving");
+        toast.dismissTimer = window.setTimeout(() => {
+          toast.hidden = true;
+          toast.classList.remove("leaving");
+        }, 180);
+      }, 1900);
     }
 
     function bindCopyCommandButtons() {
