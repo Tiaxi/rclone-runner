@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -33,7 +32,7 @@ def sync_schedules(session: Session) -> None:
         if not normalize_cron(record.cron):
             continue
         scheduler.add_job(
-            scheduled_run,
+            _run_and_record,
             cron_trigger(record.cron),
             args=[record.id],
             id=f"job-{record.id}",
@@ -41,10 +40,6 @@ def sync_schedules(session: Session) -> None:
             coalesce=True,
             max_instances=1,
         )
-
-
-def scheduled_run(job_id: int) -> None:
-    asyncio.create_task(_run_and_record(job_id))
 
 
 async def _run_and_record(job_id: int) -> None:
