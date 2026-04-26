@@ -67,6 +67,23 @@ def test_jobs_page_renders_ongoing_activity_sections():
     assert "2026-04-26 21:00:00 EEST" in html
 
 
+def test_jobs_page_renders_empty_ongoing_activity_tables():
+    html = templates.get_template("jobs.html").render(
+        jobs=[],
+        ongoing_job_runs=[],
+        ongoing_step_runs=[],
+        ongoing_console_runs=[],
+    )
+
+    assert "<h2>Ongoing activity</h2>" in html
+    assert "<h3>Job runs</h3>" in html
+    assert "No job runs are currently active." in html
+    assert "<h3>Step runs</h3>" in html
+    assert "No step runs are currently active." in html
+    assert "<h3>Console commands</h3>" in html
+    assert "No console commands are currently active." in html
+
+
 def test_job_detail_history_heading_has_explicit_section_spacing():
     html = templates.get_template("job_detail.html").render(
         job=SimpleNamespace(id=1, name="backup", cron="", enabled=True),

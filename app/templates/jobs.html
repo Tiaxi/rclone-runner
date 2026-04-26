@@ -9,10 +9,8 @@
   <a class="button" href="/jobs/new">New job</a>
 </div>
 
-{% if ongoing_job_runs or ongoing_step_runs or ongoing_console_runs %}
 <h2>Ongoing activity</h2>
 
-{% if ongoing_job_runs %}
 <h3>Job runs</h3>
 <section class="table-wrap">
   <table>
@@ -29,13 +27,13 @@
         <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
         <td><a href="/job-runs/{{ run.id }}">Open</a></td>
       </tr>
+      {% else %}
+      <tr><td colspan="7">No job runs are currently active.</td></tr>
       {% endfor %}
     </tbody>
   </table>
 </section>
-{% endif %}
 
-{% if ongoing_step_runs %}
 <h3>Step runs</h3>
 <section class="table-wrap">
   <table>
@@ -51,13 +49,13 @@
         <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
         <td><a href="/runs/{{ run.id }}">Log</a></td>
       </tr>
+      {% else %}
+      <tr><td colspan="7">No step runs are currently active.</td></tr>
       {% endfor %}
     </tbody>
   </table>
 </section>
-{% endif %}
 
-{% if ongoing_console_runs %}
 <h3>Console commands</h3>
 <section class="table-wrap">
   <table>
@@ -71,12 +69,12 @@
         <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
         <td><a href="/console/runs/{{ run.id }}">Log</a></td>
       </tr>
+      {% else %}
+      <tr><td colspan="5">No console commands are currently active.</td></tr>
       {% endfor %}
     </tbody>
   </table>
 </section>
-{% endif %}
-{% endif %}
 
 <h2>Configured jobs</h2>
 <section class="table-wrap">
