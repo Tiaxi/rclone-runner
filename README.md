@@ -41,9 +41,16 @@ Copy the example environment file and edit it for your machine:
 cp .env.example .env
 ```
 
-Docker Compose reads this `.env` file for the `${...}` substitutions in `docker-compose.yml`.
-The Compose service also declares `.env` as an optional `env_file` so the same values are available
+The `.env` file is required for normal Docker Compose use. Compose reads it for the `${...}`
+substitutions in `docker-compose.yml`.
+The Compose service also uses `env_file: ${ENV_FILE:-.env}` so the same values are available
 inside the container.
+
+To use a non-default env file, pass it to both Compose interpolation and the container env file:
+
+```bash
+ENV_FILE=.env.production docker compose --env-file .env.production up -d
+```
 
 Generate an admin password hash before exposing the app:
 

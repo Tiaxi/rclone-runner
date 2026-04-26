@@ -3,9 +3,7 @@ services:
     build: .
     container_name: rclone-runner
     restart: unless-stopped
-    env_file:
-      - path: .env
-        required: false
+    env_file: ${ENV_FILE:-.env}
     ports:
       - "${RCLONE_RUNNER_HOST_PORT:-8000}:8000"
     environment:
