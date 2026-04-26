@@ -2,21 +2,22 @@
 
 Dockerized rclone scheduler and web UI for TrueNAS SCALE.
 
-This app is intentionally CLI-native. It does not try to wrap every rclone feature. Configure
-remotes with `rclone config` through the restricted web console, then create scheduled jobs from
-raw rclone subcommands plus shared arguments and environment variables.
+Rclone Runner is intentionally CLI-native. It does not try to wrap every rclone feature in a GUI.
+Use the restricted web console for direct `rclone` access, configure remotes with `rclone config`,
+then define scheduled jobs from raw rclone subcommands, shared arguments, and environment variables.
 
 ## Features
 
 - Single admin login.
-- Jobs with cron schedules and sequential rclone command steps.
+- Restricted web terminal for `rclone` commands only.
+- Jobs with cron schedules or `Never` schedules.
+- Sequential job steps written as raw rclone subcommands.
 - Job-level common rclone arguments and environment variables.
-- Manual run button for every job.
-- Overlap protection: a job is skipped if its previous run is still active.
-- Stop-on-failure behavior for multi-step jobs.
-- Run history with command argv, timestamps, exit codes, duration, and logs.
-- Restricted rclone console with persisted command history.
+- Manual full-job, dry-run, step-run, and step dry-run actions.
+- Run history for jobs and console commands.
+- Lazy-loaded log viewer with raw log access.
 - SQLite persistence under `/data`.
+- Docker Compose deployment suitable for TrueNAS SCALE custom apps.
 
 ## Development
 
@@ -27,10 +28,66 @@ uv sync --dev
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
-uv run uvicorn app.main:app --reload
+uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 Default development login is `admin` / `admin` when no password hash is configured.
+
+## Configuration
+
+Copy the example environment file and edit it for your machine:
+
+```bash
+cp .env.example .env
+```
+
+Generate an admin password hash before exposing the app:
+
+```bash
+uv run python -c "from app.auth import hash_password; print(hash_password('your-password'))"
+```
+
+Set the result as `RCLONE_RUNNER_ADMIN_PASSWORD_HASH` in `.env`, and replace
+`RCLONE_RUNNER_SECRET_KEY` with a long random value.
+
+Important variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `RCLONE_RUNNER_HOST_PORT` | Host port mapped to the web UI. |
+| `RCLONE_RUNNER_ADMIN_USER` | Login username. |
+| `RCLONE_RUNNER_ADMIN_PASSWORD_HASH` | Password hash generated with `app.auth.hash_password`. |
+| `RCLONE_RUNNER_SECRET_KEY` | Session signing secret. |
+| `RCLONE_RUNNER_TIMEZONE` | Timezone used for displayed timestamps. |
+| `RCLONE_RUNNER_RETENTION_DAYS` | Log retention setting used by the prune action. |
+| `RCLONE_CONFIG` | Path to `rclone.conf` inside the container. |
+| `RCLONE_RUNNER_DATA_PATH` | Host path mounted to `/data`. |
+| `RCLONE_RUNNER_RCLONE_CONFIG_PATH` | Host path mounted to `/config/rclone`. |
+| `RCLONE_RUNNER_MEDIA_PATH` | Host path mounted read-only to `/media`. |
+
+`.env` is ignored by Git. Keep real secrets, dataset paths, and deployment-specific values there.
+
+## Docker Compose
+
+For local development or a TrueNAS SCALE custom app using "Install via YAML":
+
+```bash
+docker compose up --build
+```
+
+The important container mounts are:
+
+- `/data`: SQLite database and run logs.
+- `/config/rclone`: persistent `rclone.conf`.
+- `/media`: read-only source datasets for backups.
+
+For TrueNAS SCALE, set these in `.env` or adapt the Compose YAML before deployment:
+
+```dotenv
+RCLONE_RUNNER_DATA_PATH=/mnt/tank/apps/rclone-runner/data
+RCLONE_RUNNER_RCLONE_CONFIG_PATH=/mnt/tank/apps/rclone-runner/rclone-config
+RCLONE_RUNNER_MEDIA_PATH=/mnt/tank/media
+```
 
 ## Job Step Format
 
@@ -53,26 +110,13 @@ Environment variables are configured as `KEY=value` lines:
 BW_LIMIT=8M
 ```
 
-## Docker Compose
+## Security Notes
 
-For local development or a TrueNAS SCALE custom app using "Install via YAML":
+- The web console accepts only commands that resolve to `rclone ...`.
+- Do not expose the app publicly without HTTPS and a strong password.
+- Do not commit `.env`, `data/`, logs, `rclone.conf`, or generated database files.
+- Be careful with `rclone config show`; it can display tokens and secrets in logs.
 
-```bash
-docker compose up --build
-```
+## License
 
-Update the volume mappings in `docker-compose.yml` for your TrueNAS datasets. The important mounts
-are:
-
-- `/data`: SQLite database and run logs.
-- `/config/rclone`: persistent `rclone.conf`.
-- `/media`: read-only source datasets for backups.
-
-Generate an admin password hash before exposing the app:
-
-```bash
-uv run python -c "from app.auth import hash_password; print(hash_password('your-password'))"
-```
-
-Set the result as `RCLONE_RUNNER_ADMIN_PASSWORD_HASH` and set a long random
-`RCLONE_RUNNER_SECRET_KEY`.
+MIT. See [LICENSE](LICENSE).
