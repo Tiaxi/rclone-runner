@@ -605,6 +605,14 @@ textarea {
   color: #10120f;
 }
 
+.notice {
+  background: #edf6ec;
+  border: 1px solid #cbdcc9;
+  border-radius: 8px;
+  color: var(--accent-dark);
+  padding: 12px 14px;
+}
+
 .settings-list {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -620,6 +628,12 @@ textarea {
   border-bottom: 1px solid var(--line);
   margin: 0;
   padding: 10px 0;
+}
+
+.danger-zone {
+  border-top: 1px solid var(--line);
+  margin-top: 28px;
+  padding-top: 24px;
 }
 
 @media (max-width: 720px) {

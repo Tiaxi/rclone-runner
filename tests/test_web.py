@@ -407,6 +407,59 @@ async def test_history_page_paginates_independent_tables():
             assert response.context["console_pagination"]["page"] == 2
 
 
+async def test_settings_prune_reports_deleted_count():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        log_path = Path(tmpdir) / "old.log"
+        log_path.write_text("old", encoding="utf-8")
+        with session_factory() as db:
+            step_run = _create_running_step_run(db, log_path=log_path)
+            step_run.started_at = step_run.started_at.replace(year=2020)
+            db.commit()
+
+            response = await main.prune(None, db)
+
+            assert response.status_code == 303
+            assert response.headers["location"] == "/settings?pruned=1"
+
+
+async def test_clear_history_removes_run_records_and_logs_but_keeps_jobs():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        log_path = Path(tmpdir) / "run.log"
+        console_log_path = Path(tmpdir) / "console.log"
+        log_path.write_text("run", encoding="utf-8")
+        console_log_path.write_text("console", encoding="utf-8")
+        with session_factory() as db:
+            job = _create_job(db)
+            step_run = _create_running_step_run(db, log_path=log_path)
+            step_run.job_run.job_id = job.id
+            db.add(
+                ConsoleRunRecord(
+                    status="success",
+                    command="version",
+                    argv_json='["rclone", "version"]',
+                    exit_code=0,
+                    log_path=str(console_log_path),
+                    started_at=main.utc_now(),
+                    ended_at=main.utc_now(),
+                )
+            )
+            db.commit()
+
+            response = await main.clear_history(None, db)
+
+            assert response.status_code == 303
+            assert response.headers["location"] == "/settings?cleared=2"
+            assert db.query(JobRecord).count() == 1
+            assert db.query(JobStepRecord).count() == 1
+            assert db.query(JobRunRecord).count() == 0
+            assert db.query(JobStepRunRecord).count() == 0
+            assert db.query(ConsoleRunRecord).count() == 0
+            assert not log_path.exists()
+            assert not console_log_path.exists()
+
+
 @pytest.mark.asyncio
 async def test_cancel_run_requests_parent_job_cancellation(monkeypatch):
     called = []

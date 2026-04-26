@@ -580,7 +580,13 @@ async def console_terminal(websocket: WebSocket) -> None:
 
 
 @app.get("/settings", response_class=HTMLResponse)
-async def settings_page(request: Request, _: AuthRequired, db: DbSession) -> Response:
+async def settings_page(
+    request: Request,
+    _: AuthRequired,
+    db: DbSession,
+    pruned: int | None = None,
+    cleared: int | None = None,
+) -> Response:
     count = _prunable_logs(db)
     return templates.TemplateResponse(
         request,
@@ -588,14 +594,22 @@ async def settings_page(request: Request, _: AuthRequired, db: DbSession) -> Res
         {
             "settings": settings,
             "known_logs": len(count),
+            "pruned": pruned,
+            "cleared": cleared,
         },
     )
 
 
 @app.post("/settings/prune")
 async def prune(_: AuthRequired, db: DbSession) -> Response:
-    prune_logs(_prunable_logs(db), keep_days=settings.retention_days)
-    return RedirectResponse("/settings", status_code=303)
+    deleted = prune_logs(_prunable_logs(db), keep_days=settings.retention_days)
+    return RedirectResponse(f"/settings?pruned={deleted}", status_code=303)
+
+
+@app.post("/settings/clear-history")
+async def clear_history(_: AuthRequired, db: DbSession) -> Response:
+    cleared = _clear_history(db)
+    return RedirectResponse(f"/settings?cleared={cleared}", status_code=303)
 
 
 def _replace_steps(job: JobRecord, steps_text: str) -> None:
@@ -649,6 +663,19 @@ def _prunable_logs(db) -> list[tuple[Path, datetime]]:
         (Path(item.log_path), item.started_at) for item in db.query(ConsoleRunRecord).all()
     ]
     return step_logs + console_logs
+
+
+def _clear_history(db) -> int:
+    logs = _prunable_logs(db)
+    deleted_records = db.query(JobRunRecord).count() + db.query(ConsoleRunRecord).count()
+    for path, _started_at in logs:
+        if path.exists():
+            path.unlink()
+    db.query(ConsoleRunRecord).delete(synchronize_session=False)
+    db.query(JobStepRunRecord).delete(synchronize_session=False)
+    db.query(JobRunRecord).delete(synchronize_session=False)
+    db.commit()
+    return deleted_records
 
 
 def _console_history_rows(records: list[ConsoleRunRecord]) -> list[dict[str, object]]:

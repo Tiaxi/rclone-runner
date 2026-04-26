@@ -2,6 +2,12 @@
 {% block title %}Settings - Rclone Runner{% endblock %}
 {% block content %}
 <h1>Settings</h1>
+{% if pruned is not none %}
+<p class="notice">Deleted {{ pruned }} old log {{ "file" if pruned == 1 else "files" }}.</p>
+{% endif %}
+{% if cleared is not none %}
+<p class="notice">Cleared {{ cleared }} history {{ "record" if cleared == 1 else "records" }} and their known log files.</p>
+{% endif %}
 <dl class="settings-list">
   <dt>Data directory</dt><dd><code>{{ settings.data_dir }}</code></dd>
   <dt>Log directory</dt><dd><code>{{ settings.log_dir }}</code></dd>
@@ -12,4 +18,12 @@
 <form method="post" action="/settings/prune">
   <button type="submit">Prune old logs</button>
 </form>
+
+<section class="danger-zone">
+  <h2>History</h2>
+  <p>Clear run and console history to start from a clean slate. Job configuration remains intact.</p>
+  <form method="post" action="/settings/clear-history">
+    <button class="danger" type="submit">Clear all history</button>
+  </form>
+</section>
 {% endblock %}

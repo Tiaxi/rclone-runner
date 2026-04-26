@@ -350,6 +350,26 @@ def test_job_summaries_show_human_schedule_without_raw_cron():
     assert "<p>Daily at 02:00 · Enabled</p>" in job_html
 
 
+def test_settings_page_shows_prune_feedback_and_clear_history_action():
+    html = templates.get_template("settings.html").render(
+        settings=SimpleNamespace(
+            data_dir="/data",
+            log_dir="/logs",
+            timezone="Europe/Helsinki",
+            retention_days=30,
+        ),
+        known_logs=3,
+        pruned=2,
+        cleared=4,
+    )
+
+    assert "Deleted 2 old log files." in html
+    assert "Cleared 4 history records and their known log files." in html
+    assert 'action="/settings/clear-history"' in html
+    assert "Clear all history" in html
+    assert "Job configuration remains intact." in html
+
+
 class NestedFormParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
