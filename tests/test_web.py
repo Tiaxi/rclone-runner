@@ -9,7 +9,14 @@ from starlette.requests import Request
 
 import app.main as main
 from app.core.runner import LiveJobRunner
-from app.db import Base, JobRecord, JobRunRecord, JobStepRecord, JobStepRunRecord
+from app.db import (
+    Base,
+    ConsoleRunRecord,
+    JobRecord,
+    JobRunRecord,
+    JobStepRecord,
+    JobStepRunRecord,
+)
 from app.main import login_form
 
 
@@ -35,6 +42,52 @@ async def test_new_job_page_uses_empty_values_with_hints():
     assert 'placeholder="BW_LIMIT=8M"></textarea>' in html
     assert 'placeholder="Sync Music|sync /media/Musiikki remote:/Musiikki"></textarea>' in html
     assert 'placeholder="Nightly media backup"' in html
+
+
+async def test_jobs_page_receives_ongoing_activity():
+    request = Request({"type": "http", "method": "GET", "path": "/jobs", "headers": []})
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = _create_job(db)
+            job_run = JobRunRecord(
+                job_id=job.id,
+                job_name=job.name,
+                trigger="manual",
+                status="running",
+                started_at=main.utc_now(),
+                ended_at=None,
+            )
+            db.add(job_run)
+            db.flush()
+            step_run = JobStepRunRecord(
+                job_run_id=job_run.id,
+                step_id=job.steps[0].id,
+                step_name=job.steps[0].name,
+                argv_json='["rclone", "lsd", "secret:"]',
+                status="running",
+                exit_code=None,
+                log_path=str(Path(tmpdir) / "run.log"),
+                started_at=job_run.started_at,
+                ended_at=None,
+            )
+            console_run = ConsoleRunRecord(
+                status="running",
+                command="lsd remote:",
+                argv_json='["rclone", "lsd", "remote:"]',
+                exit_code=None,
+                log_path=str(Path(tmpdir) / "console.log"),
+                started_at=job_run.started_at,
+                ended_at=None,
+            )
+            db.add_all([step_run, console_run])
+            db.commit()
+
+            response = await main.jobs(request, None, db)
+
+            assert response.context["ongoing_job_runs"][0]["run"].job_name == "backup"
+            assert response.context["ongoing_step_runs"][0].step_name == "one"
+            assert response.context["ongoing_console_runs"][0].command == "lsd remote:"
 
 
 @pytest.mark.asyncio

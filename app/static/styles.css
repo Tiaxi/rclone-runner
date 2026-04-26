@@ -67,8 +67,13 @@ a {
 }
 
 h1,
-h2 {
+h2,
+h3 {
   margin: 0 0 10px;
+}
+
+h3 {
+  font-size: 18px;
 }
 
 p {
@@ -134,6 +139,10 @@ button.secondary:hover,
 .form-grid + h2,
 .terminal-output + h2 {
   margin-top: 28px;
+}
+
+.table-wrap + h3 {
+  margin-top: 20px;
 }
 
 table {

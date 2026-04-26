@@ -117,7 +117,31 @@ async def index(_: AuthRequired) -> Response:
 @app.get("/jobs", response_class=HTMLResponse)
 async def jobs(request: Request, _: AuthRequired, db: DbSession) -> Response:
     records = db.query(JobRecord).order_by(JobRecord.name).all()
-    return templates.TemplateResponse(request, "jobs.html", {"jobs": _job_rows(records)})
+    ongoing_job_runs = (
+        db.query(JobRunRecord).filter_by(status="running").order_by(JobRunRecord.started_at).all()
+    )
+    ongoing_step_runs = (
+        db.query(JobStepRunRecord)
+        .filter_by(status="running")
+        .order_by(JobStepRunRecord.started_at)
+        .all()
+    )
+    ongoing_console_runs = (
+        db.query(ConsoleRunRecord)
+        .filter_by(status="running")
+        .order_by(ConsoleRunRecord.started_at)
+        .all()
+    )
+    return templates.TemplateResponse(
+        request,
+        "jobs.html",
+        {
+            "jobs": _job_rows(records),
+            "ongoing_job_runs": _ongoing_job_run_rows(ongoing_job_runs),
+            "ongoing_step_runs": ongoing_step_runs,
+            "ongoing_console_runs": ongoing_console_runs,
+        },
+    )
 
 
 @app.get("/jobs/new", response_class=HTMLResponse)
@@ -479,7 +503,10 @@ async def console_terminal(websocket: WebSocket) -> None:
         started_at = utc_now()
         log_path = _console_log_path(started_at)
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.touch(exist_ok=True)
         input_queue = asyncio.Queue()
+        with SessionLocal() as db:
+            run_id = _start_console_run_record(db, command, argv, log_path, started_at)
 
         def write_log(text: str) -> None:
             with log_path.open("a", encoding="utf-8") as log_file:
@@ -499,19 +526,11 @@ async def console_terminal(websocket: WebSocket) -> None:
             write_log(exit_line)
             await send_output(exit_line)
             with SessionLocal() as db:
-                record = ConsoleRunRecord(
-                    status="success",
-                    command=command,
-                    argv_json=json.dumps(argv),
-                    exit_code=exit_code,
-                    log_path=str(log_path),
-                    started_at=started_at,
-                    ended_at=ended_at,
-                )
-                db.add(record)
-                db.commit()
-                db.refresh(record)
-                await websocket.send_json({"type": "history", "run": _console_history_row(record)})
+                record = _finish_console_run_record(db, run_id, exit_code, ended_at)
+                if record is not None:
+                    await websocket.send_json(
+                        {"type": "history", "run": _console_history_row(record)}
+                    )
             command_task = None
             input_queue = None
             await send_output("rclone> ")
@@ -610,6 +629,38 @@ def _console_history_rows(records: list[ConsoleRunRecord]) -> list[dict[str, obj
     return [_console_history_row(record) for record in records]
 
 
+def _start_console_run_record(
+    db, command: str, argv: list[str], log_path: Path, started_at: datetime
+) -> int:
+    record = ConsoleRunRecord(
+        status="running",
+        command=command,
+        argv_json=json.dumps(argv),
+        exit_code=None,
+        log_path=str(log_path),
+        started_at=started_at,
+        ended_at=None,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return record.id
+
+
+def _finish_console_run_record(
+    db, run_id: int, exit_code: int, ended_at: datetime
+) -> ConsoleRunRecord | None:
+    record = db.get(ConsoleRunRecord, run_id)
+    if record is None:
+        return None
+    record.status = "success" if exit_code == 0 else "failed"
+    record.exit_code = exit_code
+    record.ended_at = ended_at
+    db.commit()
+    db.refresh(record)
+    return record
+
+
 def _console_history_row(record: ConsoleRunRecord) -> dict[str, object]:
     return {
         "id": record.id,
@@ -617,6 +668,17 @@ def _console_history_row(record: ConsoleRunRecord) -> dict[str, object]:
         "started_at": _format_local_time(record.started_at),
         "exit_code": record.exit_code,
     }
+
+
+def _ongoing_job_run_rows(records: list[JobRunRecord]) -> list[dict[str, object]]:
+    return [
+        {
+            "run": record,
+            "current_step": active_step.step_name if active_step is not None else "Starting",
+        }
+        for record in records
+        for active_step in [_active_step_run(record)]
+    ]
 
 
 def _job_run_status_payload(job_run: JobRunRecord, db) -> dict[str, object]:

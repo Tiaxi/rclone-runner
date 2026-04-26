@@ -9,6 +9,76 @@
   <a class="button" href="/jobs/new">New job</a>
 </div>
 
+{% if ongoing_job_runs or ongoing_step_runs or ongoing_console_runs %}
+<h2>Ongoing activity</h2>
+
+{% if ongoing_job_runs %}
+<h3>Job runs</h3>
+<section class="table-wrap">
+  <table>
+    <thead><tr><th>Job</th><th>Mode</th><th>Started</th><th>Elapsed</th><th>Current step</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+      {% for item in ongoing_job_runs %}
+      {% set run = item.run %}
+      <tr>
+        <td>{{ run.job_name }}</td>
+        <td><span class="badge {{ 'dry-run' if 'dry-run' in run.trigger else '' }}">{{ run_mode_label(run.trigger) }}</span></td>
+        <td>{{ format_local_time(run.started_at) }}</td>
+        <td>{{ format_duration(run.started_at, utc_now()) }}</td>
+        <td>{{ item.current_step }}</td>
+        <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
+        <td><a href="/job-runs/{{ run.id }}">Open</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{% if ongoing_step_runs %}
+<h3>Step runs</h3>
+<section class="table-wrap">
+  <table>
+    <thead><tr><th>Step</th><th>Job</th><th>Mode</th><th>Started</th><th>Elapsed</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+      {% for run in ongoing_step_runs %}
+      <tr>
+        <td>{{ run.step_name }}</td>
+        <td>{{ run.job_run.job_name }}</td>
+        <td><span class="badge {{ 'dry-run' if 'dry-run' in run.job_run.trigger else '' }}">{{ run_mode_label(run.job_run.trigger) }}</span></td>
+        <td>{{ format_local_time(run.started_at) }}</td>
+        <td>{{ format_duration(run.started_at, utc_now()) }}</td>
+        <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
+        <td><a href="/runs/{{ run.id }}">Log</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{% if ongoing_console_runs %}
+<h3>Console commands</h3>
+<section class="table-wrap">
+  <table>
+    <thead><tr><th>Command</th><th>Started</th><th>Elapsed</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+      {% for run in ongoing_console_runs %}
+      <tr>
+        <td><code>{{ run.command }}</code></td>
+        <td>{{ format_local_time(run.started_at) }}</td>
+        <td>{{ format_duration(run.started_at, utc_now()) }}</td>
+        <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
+        <td><a href="/console/runs/{{ run.id }}">Log</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+{% endif %}
+
+<h2>Configured jobs</h2>
 <section class="table-wrap">
   <table>
     <thead><tr><th>Name</th><th>Schedule</th><th>Status</th><th>Steps</th><th></th></tr></thead>

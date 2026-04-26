@@ -16,6 +16,49 @@ def test_headings_after_large_blocks_have_section_spacing():
     assert ".terminal-output + h2" in css
 
 
+def test_jobs_page_renders_ongoing_activity_sections():
+    started_at = datetime(2026, 4, 26, 18, 0, tzinfo=UTC)
+    job_run = SimpleNamespace(
+        id=3,
+        job_name="backup",
+        trigger="manual",
+        status="running",
+        started_at=started_at,
+        ended_at=None,
+    )
+    step_run = SimpleNamespace(
+        id=4,
+        step_name="Music",
+        status="running",
+        started_at=started_at,
+        ended_at=None,
+        job_run=SimpleNamespace(job_name="backup", trigger="manual"),
+    )
+    console_run = SimpleNamespace(
+        id=5,
+        command="lsd remote:",
+        status="running",
+        started_at=started_at,
+        ended_at=None,
+    )
+
+    html = templates.get_template("jobs.html").render(
+        jobs=[],
+        ongoing_job_runs=[{"run": job_run, "current_step": "Music"}],
+        ongoing_step_runs=[step_run],
+        ongoing_console_runs=[console_run],
+    )
+
+    assert "<h2>Ongoing activity</h2>" in html
+    assert "<h3>Job runs</h3>" in html
+    assert '<a href="/job-runs/3">Open</a>' in html
+    assert "<h3>Step runs</h3>" in html
+    assert '<a href="/runs/4">Log</a>' in html
+    assert "<h3>Console commands</h3>" in html
+    assert '<a href="/console/runs/5">Log</a>' in html
+    assert "2026-04-26 21:00:00 EEST" in html
+
+
 def test_command_preview_uses_common_args_and_job_environment():
     job = JobRecord(
         name="backup",
