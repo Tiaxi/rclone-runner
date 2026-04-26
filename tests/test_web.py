@@ -38,7 +38,7 @@ async def test_new_job_page_uses_empty_values_with_hints():
 
 
 @pytest.mark.asyncio
-async def test_manual_run_redirects_to_live_step_before_executor_finishes(monkeypatch):
+async def test_manual_full_job_redirects_to_live_job_run_before_executor_finishes(monkeypatch):
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -57,10 +57,38 @@ async def test_manual_run_redirects_to_live_step_before_executor_finishes(monkey
             response = await main._run_job(job.id, "manual", False, db)
 
             assert response.status_code == 303
-            assert response.headers["location"] == "/runs/1"
+            assert response.headers["location"] == "/job-runs/1"
             step_run = db.get(JobStepRunRecord, 1)
             assert step_run.status == "running"
             assert step_run.exit_code is None
+
+        await started.wait()
+        release.set()
+        await runner.wait_for_job_run(1)
+
+
+@pytest.mark.asyncio
+async def test_manual_single_step_run_redirects_to_live_step_log(monkeypatch):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def executor(argv, env, log_path):
+        started.set()
+        await release.wait()
+        return 0
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        runner = LiveJobRunner(Path(tmpdir), session_factory=session_factory, executor=executor)
+        monkeypatch.setattr(main, "runner", runner)
+        with session_factory() as db:
+            job = _create_job(db)
+            step_id = job.steps[0].id
+
+            response = await main._run_job(job.id, "manual-step", False, db, step_id=step_id)
+
+            assert response.status_code == 303
+            assert response.headers["location"] == "/runs/1"
 
         await started.wait()
         release.set()
@@ -124,6 +152,90 @@ async def test_run_log_append_returns_new_bytes():
             assert append == {"text": "second\n", "offset": log_path.stat().st_size}
 
 
+async def test_job_run_status_includes_running_and_pending_steps():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = _create_job(db, step_names=["first", "second"])
+            job_run = JobRunRecord(
+                job_id=job.id,
+                job_name=job.name,
+                trigger="manual",
+                status="running",
+                started_at=main.utc_now(),
+                ended_at=None,
+            )
+            db.add(job_run)
+            db.flush()
+            first_step = job.steps[0]
+            step_run = JobStepRunRecord(
+                job_run_id=job_run.id,
+                step_id=first_step.id,
+                step_name=first_step.name,
+                argv_json='["rclone", "lsd", "secret:"]',
+                status="running",
+                exit_code=None,
+                log_path=str(Path(tmpdir) / "run.log"),
+                started_at=job_run.started_at,
+                ended_at=None,
+            )
+            db.add(step_run)
+            db.commit()
+
+            payload = await main.job_run_status(job_run.id, None, db)
+
+            assert payload["status"] == "running"
+            assert payload["active_step_run_id"] == step_run.id
+            assert payload["can_cancel"] is True
+            assert [
+                (step["name"], step["status"], step["run_id"]) for step in payload["steps"]
+            ] == [
+                ("first", "running", step_run.id),
+                ("second", "pending", None),
+            ]
+
+
+async def test_job_run_detail_renders_whole_run_tracker():
+    request = Request({"type": "http", "method": "GET", "path": "/job-runs/1", "headers": []})
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = _create_job(db, step_names=["first", "second"])
+            job_run = JobRunRecord(
+                job_id=job.id,
+                job_name=job.name,
+                trigger="manual",
+                status="running",
+                started_at=main.utc_now(),
+                ended_at=None,
+            )
+            db.add(job_run)
+            db.flush()
+            db.add(
+                JobStepRunRecord(
+                    job_run_id=job_run.id,
+                    step_id=job.steps[0].id,
+                    step_name="first",
+                    argv_json='["rclone", "lsd", "secret:"]',
+                    status="running",
+                    exit_code=None,
+                    log_path=str(Path(tmpdir) / "run.log"),
+                    started_at=job_run.started_at,
+                    ended_at=None,
+                )
+            )
+            db.commit()
+
+            response = await main.job_run_detail(request, job_run.id, None, db)
+            html = response.body.decode()
+
+            assert response.template.name == "job_run_detail.html"
+            assert "Current step" in html
+            assert "first" in html
+            assert "second" in html
+            assert "Active log" in html
+
+
 @pytest.mark.asyncio
 async def test_cancel_run_requests_parent_job_cancellation(monkeypatch):
     called = []
@@ -152,9 +264,10 @@ def _session_factory(database_path: Path):
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
 
-def _create_job(db):
+def _create_job(db, step_names: list[str] | None = None):
     job = JobRecord(name="backup", cron="", enabled=True, common_args="", env_json="{}")
-    job.steps.append(JobStepRecord(position=1, name="one", command="lsd secret:"))
+    for position, name in enumerate(step_names or ["one"], start=1):
+        job.steps.append(JobStepRecord(position=position, name=name, command="lsd secret:"))
     db.add(job)
     db.commit()
     db.refresh(job)

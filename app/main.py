@@ -26,6 +26,7 @@ from app.db import (
     ConsoleRunRecord,
     DbSession,
     JobRecord,
+    JobRunRecord,
     JobStepRecord,
     JobStepRunRecord,
     SessionLocal,
@@ -245,6 +246,8 @@ async def _run_job(
     )
     if first_step_run is None:
         return RedirectResponse("/runs", status_code=303)
+    if step_id is None:
+        return RedirectResponse(f"/job-runs/{first_step_run.job_run_id}", status_code=303)
     return RedirectResponse(f"/runs/{first_step_run.id}", status_code=303)
 
 
@@ -268,6 +271,50 @@ async def runs(request: Request, _: AuthRequired, db: DbSession) -> Response:
     )
 
 
+@app.get("/job-runs/{job_run_id}", response_class=HTMLResponse)
+async def job_run_detail(
+    request: Request, job_run_id: int, _: AuthRequired, db: DbSession
+) -> Response:
+    job_run = db.get(JobRunRecord, job_run_id)
+    if job_run is None:
+        return RedirectResponse("/runs", status_code=303)
+    active_step_run = _active_step_run(job_run)
+    context = {
+        "job_run": job_run,
+        "step_rows": _job_run_step_rows(job_run, db),
+        "active_step_run": active_step_run,
+        "job_run_status_url": f"/job-runs/{job_run.id}/status",
+        "job_run_cancel_url": f"/job-runs/{job_run.id}/cancel",
+    }
+    if active_step_run is not None:
+        log_path = Path(active_step_run.log_path)
+        context |= {
+            "run": active_step_run,
+            "argv": json.loads(active_step_run.argv_json),
+            "log_chunk": read_log_chunk(log_path, limit=LOG_CHUNK_LINES),
+            "log_chunk_url": f"/runs/{active_step_run.id}/log/chunk",
+            "log_append_url": f"/runs/{active_step_run.id}/log/append",
+            "log_status_url": f"/runs/{active_step_run.id}/status",
+            "log_append_offset": _log_size(log_path),
+            "raw_log_url": f"/runs/{active_step_run.id}/log/raw",
+        }
+    return templates.TemplateResponse(request, "job_run_detail.html", context)
+
+
+@app.get("/job-runs/{job_run_id}/status")
+async def job_run_status(job_run_id: int, _: AuthRequired, db: DbSession) -> dict[str, object]:
+    job_run = db.get(JobRunRecord, job_run_id)
+    if job_run is None:
+        return {"status": "missing", "can_cancel": False, "steps": []}
+    return _job_run_status_payload(job_run, db)
+
+
+@app.post("/job-runs/{job_run_id}/cancel")
+async def cancel_job_run(job_run_id: int, _: AuthRequired, db: DbSession) -> Response:
+    runner.cancel_job_run(job_run_id)
+    return RedirectResponse(f"/job-runs/{job_run_id}", status_code=303)
+
+
 @app.get("/runs/{run_id}", response_class=HTMLResponse)
 async def run_detail(request: Request, run_id: int, _: AuthRequired, db: DbSession) -> Response:
     run = db.get(JobStepRunRecord, run_id)
@@ -281,6 +328,7 @@ async def run_detail(request: Request, run_id: int, _: AuthRequired, db: DbSessi
         {
             "run": run,
             "argv": json.loads(run.argv_json),
+            "job_run_step_count": len(run.job_run.step_runs),
             "log_chunk": log_chunk,
             "log_chunk_url": f"/runs/{run.id}/log/chunk",
             "log_append_url": f"/runs/{run.id}/log/append",
@@ -561,6 +609,80 @@ def _console_history_row(record: ConsoleRunRecord) -> dict[str, object]:
         "started_at": _format_local_time(record.started_at),
         "exit_code": record.exit_code,
     }
+
+
+def _job_run_status_payload(job_run: JobRunRecord, db) -> dict[str, object]:
+    finished_at = _format_local_time(job_run.ended_at) if job_run.ended_at is not None else None
+    end = job_run.ended_at or utc_now()
+    elapsed_seconds = _duration_seconds(job_run.started_at, end)
+    active_step_run = _active_step_run(job_run)
+    return {
+        "status": job_run.status,
+        "started_at": _format_local_time(job_run.started_at),
+        "finished_at": finished_at,
+        "elapsed": _format_seconds(elapsed_seconds),
+        "elapsed_seconds": elapsed_seconds,
+        "can_cancel": job_run.status == "running",
+        "active_step_run_id": active_step_run.id if active_step_run is not None else None,
+        "steps": [_job_run_step_payload(row) for row in _job_run_step_rows(job_run, db)],
+    }
+
+
+def _job_run_step_payload(row: dict[str, object]) -> dict[str, object]:
+    step_run = row["run"]
+    status = str(row["status"])
+    return {
+        "key": row["key"],
+        "name": row["name"],
+        "status": status,
+        "run_id": step_run.id if step_run is not None else None,
+        "exit_label": _exit_label(status, step_run.exit_code if step_run is not None else None),
+    }
+
+
+def _job_run_step_rows(job_run: JobRunRecord, db) -> list[dict[str, object]]:
+    step_runs = sorted(job_run.step_runs, key=lambda item: item.started_at)
+    step_run_by_step_id = {
+        step_run.step_id: step_run for step_run in step_runs if step_run.step_id is not None
+    }
+    if job_run.job_id is not None and "step" not in job_run.trigger:
+        job = db.get(JobRecord, job_run.job_id)
+        if job is not None:
+            rows = []
+            for step in job.steps:
+                step_run = step_run_by_step_id.get(step.id)
+                status = step_run.status if step_run is not None else "pending"
+                rows.append(
+                    {
+                        "key": f"step-{step.id}",
+                        "name": step.name,
+                        "status": status,
+                        "run": step_run,
+                    }
+                )
+            return rows
+
+    return [
+        {
+            "key": f"step-{step_run.step_id}"
+            if step_run.step_id is not None
+            else f"run-{step_run.id}",
+            "name": step_run.step_name,
+            "status": step_run.status,
+            "run": step_run,
+        }
+        for step_run in step_runs
+    ]
+
+
+def _active_step_run(job_run: JobRunRecord) -> JobStepRunRecord | None:
+    step_runs = sorted(job_run.step_runs, key=lambda item: item.started_at)
+    running = [step_run for step_run in step_runs if step_run.status == "running"]
+    if running:
+        return running[-1]
+    if step_runs:
+        return step_runs[-1]
+    return None
 
 
 def _run_status_payload(run: JobStepRunRecord) -> dict[str, object]:

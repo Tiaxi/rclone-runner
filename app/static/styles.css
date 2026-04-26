@@ -470,6 +470,14 @@ textarea {
   color: var(--muted);
 }
 
+.run-status.pending {
+  color: var(--muted);
+}
+
+.active-row {
+  background: #f3f8f1;
+}
+
 @keyframes pulse {
   0%,
   100% {
