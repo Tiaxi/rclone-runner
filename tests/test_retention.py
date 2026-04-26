@@ -29,3 +29,27 @@ def test_prunes_old_logs_but_keeps_recent_logs():
         assert deleted == 1
         assert not old_log.exists()
         assert recent_log.exists()
+
+
+def test_prune_logs_treats_naive_database_timestamps_as_utc():
+    now = datetime(2026, 4, 26, tzinfo=UTC)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        old_log = root / "old.log"
+        recent_log = root / "recent.log"
+        old_log.write_text("old", encoding="utf-8")
+        recent_log.write_text("recent", encoding="utf-8")
+
+        deleted = prune_logs(
+            [
+                (old_log, datetime(2026, 3, 1)),
+                (recent_log, datetime(2026, 4, 25)),
+            ],
+            keep_days=30,
+            now=now,
+        )
+
+        assert deleted == 1
+        assert not old_log.exists()
+        assert recent_log.exists()
