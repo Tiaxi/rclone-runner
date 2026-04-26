@@ -66,9 +66,9 @@ def test_step_run_buttons_do_not_create_nested_forms():
     assert 'id="dry-run-step-2" method="post" action="/jobs/1/steps/2/dry-run"' in html
 
 
-def test_job_editor_ctrl_s_submits_save_form():
+def test_job_editor_ctrl_s_saves_without_navigating():
     html = templates.get_template("_job_editor.html").render(
-        job=None,
+        job=SimpleNamespace(id=1, name="backup", cron="", enabled=True, common_args=""),
         schedule_summary="Never",
         env_lines="",
         steps_text="",
@@ -78,7 +78,11 @@ def test_job_editor_ctrl_s_submits_save_form():
     assert '<form id="job-editor-form"' in html
     assert 'event.key.toLowerCase() !== "s"' in html
     assert "event.ctrlKey || event.metaKey" in html
-    assert "jobForm.requestSubmit()" in html
+    assert "fetch(jobForm.action" in html
+    assert "new FormData(jobForm)" in html
+    assert "activeElement.focus()" in html
+    assert "window.location.assign(response.url)" not in html
+    assert 'data-background-save="true"' in html
 
 
 def test_history_tables_use_styled_status_labels():

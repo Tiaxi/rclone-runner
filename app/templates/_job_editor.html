@@ -1,4 +1,4 @@
-<form id="job-editor-form" method="post" action="{{ '/jobs/' ~ job.id if job else '/jobs' }}" class="form-grid">
+<form id="job-editor-form" method="post" action="{{ '/jobs/' ~ job.id if job else '/jobs' }}" class="form-grid" data-background-save="{{ 'true' if job else 'false' }}">
   <label>Name <input name="name" value="{{ job.name if job else '' }}" placeholder="Nightly media backup" required></label>
   <label>Cron <input name="cron" value="{{ job.cron if job else '' }}" placeholder="0 2 * * * or leave empty for Never"></label>
   <div class="field-note">Schedule: {{ schedule_summary }}</div>
@@ -54,12 +54,36 @@
 <script>
   (() => {
     const jobForm = document.querySelector("#job-editor-form");
-    document.addEventListener("keydown", (event) => {
+    document.addEventListener("keydown", async (event) => {
       if (!jobForm || event.key.toLowerCase() !== "s" || !(event.ctrlKey || event.metaKey)) {
         return;
       }
       event.preventDefault();
-      jobForm.requestSubmit();
+      if (jobForm.dataset.backgroundSave !== "true") {
+        jobForm.requestSubmit();
+        return;
+      }
+
+      const activeElement = document.activeElement;
+      const selectionStart = activeElement && "selectionStart" in activeElement ? activeElement.selectionStart : null;
+      const selectionEnd = activeElement && "selectionEnd" in activeElement ? activeElement.selectionEnd : null;
+
+      const response = await fetch(jobForm.action, {
+        method: jobForm.method,
+        body: new FormData(jobForm),
+        redirect: "follow",
+      });
+
+      if (!response.ok) {
+        jobForm.requestSubmit();
+        return;
+      }
+      if (activeElement && typeof activeElement.focus === "function") {
+        activeElement.focus();
+        if (selectionStart !== null && selectionEnd !== null && "setSelectionRange" in activeElement) {
+          activeElement.setSelectionRange(selectionStart, selectionEnd);
+        }
+      }
     });
 
     document.querySelectorAll("[data-copy-command]").forEach((button) => {
