@@ -130,6 +130,10 @@ button.secondary:hover,
   overflow: auto;
 }
 
+.table-wrap + h2 {
+  margin-top: 28px;
+}
+
 table {
   border-collapse: collapse;
   width: 100%;
