@@ -246,6 +246,37 @@ def test_history_pages_link_to_whole_job_runs():
     assert '<a href="/job-runs/3">Open</a>' in job_html
 
 
+def test_history_tables_render_pagination_controls():
+    job_run = SimpleNamespace(
+        id=3,
+        job_name="backup",
+        trigger="manual",
+        status="success",
+        started_at=datetime(2026, 4, 26, 17, 59, tzinfo=UTC),
+        ended_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
+    )
+
+    html = templates.get_template("runs.html").render(
+        job_runs=[job_run],
+        step_runs=[],
+        console_runs=[],
+        job_pagination={
+            "page": 2,
+            "has_previous": True,
+            "has_next": True,
+            "previous_url": "/runs?job_page=1&step_page=3&console_page=4",
+            "next_url": "/runs?job_page=3&step_page=3&console_page=4",
+        },
+        step_pagination={"page": 3, "has_previous": False, "has_next": False},
+        console_pagination={"page": 4, "has_previous": False, "has_next": False},
+    )
+
+    assert '<nav class="pagination" aria-label="Job runs pagination">' in html
+    assert 'href="/runs?job_page=1&amp;step_page=3&amp;console_page=4"' in html
+    assert 'href="/runs?job_page=3&amp;step_page=3&amp;console_page=4"' in html
+    assert "Page 2" in html
+
+
 def test_job_history_tables_format_times_in_configured_timezone():
     job_run = SimpleNamespace(
         id=3,

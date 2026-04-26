@@ -352,6 +352,61 @@ async def test_history_page_receives_job_runs():
             assert response.context["job_runs"][0].job_name == "backup"
 
 
+async def test_history_page_paginates_independent_tables():
+    request = Request({"type": "http", "method": "GET", "path": "/runs", "headers": []})
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = _create_job(db)
+            for index in range(30):
+                job_run = JobRunRecord(
+                    job_id=job.id,
+                    job_name=f"job-{index}",
+                    trigger="manual",
+                    status="success",
+                    started_at=main.utc_now(),
+                    ended_at=main.utc_now(),
+                )
+                db.add(job_run)
+                db.flush()
+                db.add(
+                    JobStepRunRecord(
+                        job_run_id=job_run.id,
+                        step_id=job.steps[0].id,
+                        step_name=f"step-{index}",
+                        argv_json='["rclone", "lsd", "secret:"]',
+                        status="success",
+                        exit_code=0,
+                        log_path=str(Path(tmpdir) / f"run-{index}.log"),
+                        started_at=job_run.started_at,
+                        ended_at=job_run.ended_at,
+                    )
+                )
+                db.add(
+                    ConsoleRunRecord(
+                        status="success",
+                        command=f"version-{index}",
+                        argv_json='["rclone", "version"]',
+                        exit_code=0,
+                        log_path=str(Path(tmpdir) / f"console-{index}.log"),
+                        started_at=job_run.started_at,
+                        ended_at=job_run.ended_at,
+                    )
+                )
+            db.commit()
+
+            response = await main.runs(request, None, db, job_page=2, step_page=2, console_page=2)
+
+            assert len(response.context["job_runs"]) == 5
+            assert len(response.context["step_runs"]) == 5
+            assert len(response.context["console_runs"]) == 5
+            assert response.context["job_pagination"]["page"] == 2
+            assert response.context["job_pagination"]["has_previous"] is True
+            assert response.context["job_pagination"]["has_next"] is False
+            assert response.context["step_pagination"]["page"] == 2
+            assert response.context["console_pagination"]["page"] == 2
+
+
 @pytest.mark.asyncio
 async def test_cancel_run_requests_parent_job_cancellation(monkeypatch):
     called = []

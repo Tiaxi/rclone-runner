@@ -5,6 +5,7 @@ import json
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Form, Request, WebSocket
@@ -58,6 +59,7 @@ templates.env.globals["utc_now"] = utc_now
 templates.env.globals["run_exit_label"] = lambda run: _exit_label(run.status, run.exit_code)
 
 LOG_CHUNK_LINES = 200
+HISTORY_PAGE_SIZE = 25
 
 
 def create_app() -> FastAPI:
@@ -284,13 +286,34 @@ async def _run_job(
 
 
 @app.get("/runs", response_class=HTMLResponse)
-async def runs(request: Request, _: AuthRequired, db: DbSession) -> Response:
-    job_runs = db.query(JobRunRecord).order_by(JobRunRecord.started_at.desc()).limit(100).all()
-    recent = (
-        db.query(JobStepRunRecord).order_by(JobStepRunRecord.started_at.desc()).limit(100).all()
+async def runs(
+    request: Request,
+    _: AuthRequired,
+    db: DbSession,
+    job_page: int = 1,
+    step_page: int = 1,
+    console_page: int = 1,
+) -> Response:
+    job_query = db.query(JobRunRecord).order_by(JobRunRecord.started_at.desc())
+    step_query = db.query(JobStepRunRecord).order_by(JobStepRunRecord.started_at.desc())
+    console_query = db.query(ConsoleRunRecord).order_by(ConsoleRunRecord.started_at.desc())
+    job_runs, job_pagination = _paginated_history(
+        job_query,
+        page=job_page,
+        page_param="job_page",
+        other_pages={"step_page": step_page, "console_page": console_page},
     )
-    console_runs = (
-        db.query(ConsoleRunRecord).order_by(ConsoleRunRecord.started_at.desc()).limit(50).all()
+    recent, step_pagination = _paginated_history(
+        step_query,
+        page=step_page,
+        page_param="step_page",
+        other_pages={"job_page": job_page, "console_page": console_page},
+    )
+    console_runs, console_pagination = _paginated_history(
+        console_query,
+        page=console_page,
+        page_param="console_page",
+        other_pages={"job_page": job_page, "step_page": step_page},
     )
     return templates.TemplateResponse(
         request,
@@ -299,6 +322,9 @@ async def runs(request: Request, _: AuthRequired, db: DbSession) -> Response:
             "job_runs": job_runs,
             "step_runs": recent,
             "console_runs": console_runs,
+            "job_pagination": job_pagination,
+            "step_pagination": step_pagination,
+            "console_pagination": console_pagination,
         },
     )
 
@@ -627,6 +653,33 @@ def _prunable_logs(db) -> list[tuple[Path, datetime]]:
 
 def _console_history_rows(records: list[ConsoleRunRecord]) -> list[dict[str, object]]:
     return [_console_history_row(record) for record in records]
+
+
+def _paginated_history(query, page: int, page_param: str, other_pages: dict[str, int]):
+    current_page = max(1, page)
+    offset = (current_page - 1) * HISTORY_PAGE_SIZE
+    rows = query.offset(offset).limit(HISTORY_PAGE_SIZE + 1).all()
+    has_next = len(rows) > HISTORY_PAGE_SIZE
+    items = rows[:HISTORY_PAGE_SIZE]
+    pagination = {
+        "page": current_page,
+        "has_previous": current_page > 1,
+        "has_next": has_next,
+        "previous_url": _history_page_url(page_param, current_page - 1, other_pages)
+        if current_page > 1
+        else None,
+        "next_url": _history_page_url(page_param, current_page + 1, other_pages)
+        if has_next
+        else None,
+    }
+    return items, pagination
+
+
+def _history_page_url(page_param: str, page: int, other_pages: dict[str, int]) -> str:
+    params = {page_param: max(1, page)}
+    for name, value in other_pages.items():
+        params[name] = max(1, value)
+    return "/runs?" + urlencode(params)
 
 
 def _start_console_run_record(

@@ -154,6 +154,28 @@ button.secondary:hover,
   margin-top: 20px;
 }
 
+.pagination {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+.pagination + h2 {
+  margin-top: 28px;
+}
+
+.pagination-page {
+  color: var(--muted);
+}
+
+.disabled {
+  cursor: default;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
 .section-heading {
   margin-top: 28px;
 }

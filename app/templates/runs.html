@@ -22,6 +22,9 @@
     </tbody>
   </table>
 </section>
+{% with pagination=job_pagination, label="Job runs pagination" %}
+{% include "_pagination.html" %}
+{% endwith %}
 
 <h2>Job step runs</h2>
 <section class="table-wrap">
@@ -43,6 +46,9 @@
     </tbody>
   </table>
 </section>
+{% with pagination=step_pagination, label="Job step runs pagination" %}
+{% include "_pagination.html" %}
+{% endwith %}
 
 <h2>Console runs</h2>
 <section class="table-wrap">
@@ -63,4 +69,7 @@
     </tbody>
   </table>
 </section>
+{% with pagination=console_pagination, label="Console runs pagination" %}
+{% include "_pagination.html" %}
+{% endwith %}
 {% endblock %}
