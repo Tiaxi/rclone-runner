@@ -1,5 +1,6 @@
 import asyncio
 import tempfile
+import warnings
 from pathlib import Path
 
 import httpx
@@ -23,6 +24,19 @@ from app.main import login_form
 
 def _request(path: str, method: str = "GET") -> Request:
     return Request({"type": "http", "method": method, "path": path, "headers": [], "session": {}})
+
+
+def test_create_app_does_not_emit_lifecycle_deprecation_warnings():
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always", DeprecationWarning)
+
+        main.create_app()
+
+    assert not [
+        warning
+        for warning in captured
+        if issubclass(warning.category, DeprecationWarning) and "on_event" in str(warning.message)
+    ]
 
 
 async def test_health_endpoint_is_public_and_reports_ok():

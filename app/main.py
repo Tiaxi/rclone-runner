@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import suppress
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from math import ceil
 from pathlib import Path
@@ -73,21 +74,22 @@ LOG_CHUNK_LINES = 200
 HISTORY_PAGE_SIZE = 25
 
 
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    init_db()
+    with next_db() as session:
+        sync_schedules(session)
+    scheduler.start()
+    try:
+        yield
+    finally:
+        scheduler.shutdown(wait=False)
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="Rclone Runner")
+    app = FastAPI(title="Rclone Runner", lifespan=lifespan)
     app.add_middleware(SessionMiddleware, secret_key=settings.secret_key)
     app.mount("/static", StaticFiles(directory="app/static"), name="static")
-
-    @app.on_event("startup")
-    async def startup() -> None:
-        init_db()
-        with next_db() as session:
-            sync_schedules(session)
-        scheduler.start()
-
-    @app.on_event("shutdown")
-    async def shutdown() -> None:
-        scheduler.shutdown(wait=False)
 
     return app
 
