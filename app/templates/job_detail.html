@@ -7,8 +7,14 @@
     <p>{{ schedule_summary }} · {{ "Enabled" if job.enabled else "Disabled" }}</p>
   </div>
   <div class="button-row">
-    <form method="post" action="/jobs/{{ job.id }}/run"><button type="submit">Run now</button></form>
-    <form method="post" action="/jobs/{{ job.id }}/dry-run"><button class="secondary" type="submit">Dry run</button></form>
+    <form method="post" action="/jobs/{{ job.id }}/run">
+      {{ csrf_field()|safe }}
+      <button type="submit">Run now</button>
+    </form>
+    <form method="post" action="/jobs/{{ job.id }}/dry-run">
+      {{ csrf_field()|safe }}
+      <button class="secondary" type="submit">Dry run</button>
+    </form>
   </div>
 </div>
 

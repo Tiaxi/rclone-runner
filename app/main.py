@@ -6,17 +6,18 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from math import ceil
 from pathlib import Path
+from typing import Annotated
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, Form, Request, WebSocket
+from fastapi import Depends, FastAPI, Form, Request, WebSocket
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.websockets import WebSocketDisconnect
 
-from app.auth import SESSION_KEY, AuthRequired, verify_password
+from app.auth import SESSION_KEY, AuthRequired, csrf_field, require_csrf, verify_password
 from app.config import runtime_warnings, settings
 from app.core.commands import CommandPolicyError, build_rclone_argv, parse_console_command
 from app.core.logs import read_log_append, read_log_chunk
@@ -42,7 +43,10 @@ from app.scheduler import scheduler, sync_schedules
 
 
 def inject_runtime_warnings(request: Request) -> dict[str, object]:
-    return {"runtime_warnings": runtime_warnings(settings)}
+    return {
+        "runtime_warnings": runtime_warnings(settings),
+        "csrf_field": lambda: csrf_field(request),
+    }
 
 
 templates = Jinja2Templates(directory="app/templates", context_processors=[inject_runtime_warnings])
@@ -103,7 +107,12 @@ async def login_form(request: Request) -> Response:
 
 
 @app.post("/login")
-async def login(request: Request, username: str = Form(), password: str = Form()) -> Response:
+async def login(
+    request: Request,
+    _csrf: Annotated[None, Depends(require_csrf)],
+    username: str = Form(),
+    password: str = Form(),
+) -> Response:
     if username == settings.admin_user and verify_password(password):
         request.session[SESSION_KEY] = True
         return RedirectResponse("/jobs", status_code=303)
@@ -113,7 +122,10 @@ async def login(request: Request, username: str = Form(), password: str = Form()
 
 
 @app.post("/logout")
-async def logout(request: Request) -> Response:
+async def logout(
+    request: Request,
+    _csrf: Annotated[None, Depends(require_csrf)],
+) -> Response:
     request.session.clear()
     return RedirectResponse("/login", status_code=303)
 
@@ -176,6 +188,7 @@ async def new_job(request: Request, _: AuthRequired) -> Response:
 @app.post("/jobs")
 async def create_job(
     _: AuthRequired,
+    _csrf: Annotated[None, Depends(require_csrf)],
     db: DbSession,
     name: str = Form(),
     cron: str = Form(""),
@@ -238,6 +251,7 @@ async def job_detail(request: Request, job_id: int, _: AuthRequired, db: DbSessi
 async def update_job(
     job_id: int,
     _: AuthRequired,
+    _csrf: Annotated[None, Depends(require_csrf)],
     db: DbSession,
     name: str = Form(),
     cron: str = Form(""),
@@ -262,22 +276,44 @@ async def update_job(
 
 
 @app.post("/jobs/{job_id}/run")
-async def run_job(job_id: int, _: AuthRequired, db: DbSession) -> Response:
+async def run_job(
+    job_id: int,
+    _: AuthRequired,
+    _csrf: Annotated[None, Depends(require_csrf)],
+    db: DbSession,
+) -> Response:
     return await _run_job(job_id, "manual", False, db)
 
 
 @app.post("/jobs/{job_id}/dry-run")
-async def dry_run_job(job_id: int, _: AuthRequired, db: DbSession) -> Response:
+async def dry_run_job(
+    job_id: int,
+    _: AuthRequired,
+    _csrf: Annotated[None, Depends(require_csrf)],
+    db: DbSession,
+) -> Response:
     return await _run_job(job_id, "manual-dry-run", True, db)
 
 
 @app.post("/jobs/{job_id}/steps/{step_id}/run")
-async def run_job_step(job_id: int, step_id: int, _: AuthRequired, db: DbSession) -> Response:
+async def run_job_step(
+    job_id: int,
+    step_id: int,
+    _: AuthRequired,
+    _csrf: Annotated[None, Depends(require_csrf)],
+    db: DbSession,
+) -> Response:
     return await _run_job(job_id, "manual-step", False, db, step_id=step_id)
 
 
 @app.post("/jobs/{job_id}/steps/{step_id}/dry-run")
-async def dry_run_job_step(job_id: int, step_id: int, _: AuthRequired, db: DbSession) -> Response:
+async def dry_run_job_step(
+    job_id: int,
+    step_id: int,
+    _: AuthRequired,
+    _csrf: Annotated[None, Depends(require_csrf)],
+    db: DbSession,
+) -> Response:
     return await _run_job(job_id, "manual-step-dry-run", True, db, step_id=step_id)
 
 
@@ -380,14 +416,24 @@ async def job_run_status(job_run_id: int, _: AuthRequired, db: DbSession) -> dic
 
 
 @app.post("/job-runs/{job_run_id}/cancel")
-async def cancel_job_run(job_run_id: int, _: AuthRequired, db: DbSession) -> Response:
+async def cancel_job_run(
+    job_run_id: int,
+    _: AuthRequired,
+    _csrf: Annotated[None, Depends(require_csrf)],
+    db: DbSession,
+) -> Response:
     if not runner.cancel_job_run(job_run_id):
         _mark_job_run_canceled(db, job_run_id)
     return RedirectResponse(f"/job-runs/{job_run_id}", status_code=303)
 
 
 @app.post("/job-runs/{job_run_id}/delete")
-async def delete_job_run(job_run_id: int, _: AuthRequired, db: DbSession) -> Response:
+async def delete_job_run(
+    job_run_id: int,
+    _: AuthRequired,
+    _csrf: Annotated[None, Depends(require_csrf)],
+    db: DbSession,
+) -> Response:
     job_run = db.get(JobRunRecord, job_run_id)
     if job_run is not None:
         _delete_job_run(db, job_run)
@@ -447,7 +493,12 @@ async def run_log_append(
 
 
 @app.post("/runs/{run_id}/cancel")
-async def cancel_run(run_id: int, _: AuthRequired, db: DbSession) -> Response:
+async def cancel_run(
+    run_id: int,
+    _: AuthRequired,
+    _csrf: Annotated[None, Depends(require_csrf)],
+    db: DbSession,
+) -> Response:
     run = db.get(JobStepRunRecord, run_id)
     if run is not None and not runner.cancel_job_run(run.job_run_id):
         _mark_job_run_canceled(db, run.job_run_id)
@@ -455,7 +506,12 @@ async def cancel_run(run_id: int, _: AuthRequired, db: DbSession) -> Response:
 
 
 @app.post("/runs/{run_id}/delete")
-async def delete_run(run_id: int, _: AuthRequired, db: DbSession) -> Response:
+async def delete_run(
+    run_id: int,
+    _: AuthRequired,
+    _csrf: Annotated[None, Depends(require_csrf)],
+    db: DbSession,
+) -> Response:
     run = db.get(JobStepRunRecord, run_id)
     if run is not None:
         _delete_step_run(db, run)
@@ -527,7 +583,12 @@ async def raw_console_log(run_id: int, _: AuthRequired, db: DbSession) -> Respon
 
 
 @app.post("/console/runs/{run_id}/delete")
-async def delete_console_run(run_id: int, _: AuthRequired, db: DbSession) -> Response:
+async def delete_console_run(
+    run_id: int,
+    _: AuthRequired,
+    _csrf: Annotated[None, Depends(require_csrf)],
+    db: DbSession,
+) -> Response:
     run = db.get(ConsoleRunRecord, run_id)
     if run is not None:
         _delete_console_run(db, run)
@@ -648,13 +709,21 @@ async def settings_page(
 
 
 @app.post("/settings/prune")
-async def prune(_: AuthRequired, db: DbSession) -> Response:
+async def prune(
+    _: AuthRequired,
+    _csrf: Annotated[None, Depends(require_csrf)],
+    db: DbSession,
+) -> Response:
     deleted = prune_logs(_prunable_logs(db), keep_days=settings.retention_days)
     return RedirectResponse(f"/settings?pruned={deleted}", status_code=303)
 
 
 @app.post("/settings/clear-history")
-async def clear_history(_: AuthRequired, db: DbSession) -> Response:
+async def clear_history(
+    _: AuthRequired,
+    _csrf: Annotated[None, Depends(require_csrf)],
+    db: DbSession,
+) -> Response:
     cleared = _clear_history(db)
     return RedirectResponse(f"/settings?cleared={cleared}", status_code=303)
 

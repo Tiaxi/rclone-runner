@@ -15,14 +15,16 @@
   <dt>Retention</dt><dd>{{ settings.retention_days }} days</dd>
   <dt>Known log files</dt><dd>{{ known_logs }}</dd>
 </dl>
-<form method="post" action="/settings/prune">
+<form method="post" action="/settings/prune" onsubmit="return confirm('Prune old log files?')">
+  {{ csrf_field()|safe }}
   <button type="submit">Prune old logs</button>
 </form>
 
 <section class="danger-zone">
   <h2>History</h2>
   <p>Clear run and console history to start from a clean slate. Job configuration remains intact.</p>
-  <form method="post" action="/settings/clear-history">
+  <form method="post" action="/settings/clear-history" onsubmit="return confirm('Clear all run and console history?')">
+    {{ csrf_field()|safe }}
     <button class="danger" type="submit">Clear all history</button>
   </form>
 </section>

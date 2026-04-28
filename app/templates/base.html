@@ -35,6 +35,7 @@
       <div class="topbar-actions">
         <button class="ghost theme-toggle" id="theme-toggle" type="button" aria-label="Switch color theme">Theme</button>
         <form method="post" action="/logout">
+          {{ csrf_field()|safe }}
           <button class="ghost" type="submit">Log out</button>
         </form>
       </div>

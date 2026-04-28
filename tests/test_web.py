@@ -21,6 +21,10 @@ from app.db import (
 from app.main import login_form
 
 
+def _request(path: str, method: str = "GET") -> Request:
+    return Request({"type": "http", "method": method, "path": path, "headers": [], "session": {}})
+
+
 async def test_health_endpoint_is_public_and_reports_ok():
     transport = httpx.ASGITransport(app=main.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -31,7 +35,7 @@ async def test_health_endpoint_is_public_and_reports_ok():
 
 
 async def test_login_page_renders_with_current_starlette_template_api():
-    request = Request({"type": "http", "method": "GET", "path": "/login", "headers": []})
+    request = _request("/login")
 
     response = await login_form(request)
 
@@ -39,8 +43,31 @@ async def test_login_page_renders_with_current_starlette_template_api():
     assert response.template.name == "login.html"
 
 
+async def test_login_page_includes_csrf_field():
+    transport = httpx.ASGITransport(app=main.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/login")
+
+    assert response.status_code == 200
+    assert 'name="csrf_token"' in response.text
+
+
+async def test_login_rejects_missing_and_invalid_csrf():
+    transport = httpx.ASGITransport(app=main.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        missing = await client.post("/login", data={"username": "admin", "password": "admin"})
+        await client.get("/login")
+        invalid = await client.post(
+            "/login",
+            data={"username": "admin", "password": "admin", "csrf_token": "wrong"},
+        )
+
+    assert missing.status_code == 403
+    assert invalid.status_code == 403
+
+
 async def test_new_job_page_uses_empty_values_with_hints():
-    request = Request({"type": "http", "method": "GET", "path": "/jobs/new", "headers": []})
+    request = _request("/jobs/new")
 
     response = await main.new_job(request, None)
     html = response.body.decode()
@@ -55,7 +82,7 @@ async def test_new_job_page_uses_empty_values_with_hints():
 
 
 async def test_jobs_page_receives_ongoing_activity():
-    request = Request({"type": "http", "method": "GET", "path": "/jobs", "headers": []})
+    request = _request("/jobs")
     with tempfile.TemporaryDirectory() as tmpdir:
         session_factory = _session_factory(Path(tmpdir) / "runs.db")
         with session_factory() as db:
@@ -299,7 +326,7 @@ async def test_job_run_status_marks_unstarted_steps_canceled_after_cancellation(
 
 
 async def test_job_run_detail_renders_whole_run_tracker():
-    request = Request({"type": "http", "method": "GET", "path": "/job-runs/1", "headers": []})
+    request = _request("/job-runs/1")
     with tempfile.TemporaryDirectory() as tmpdir:
         session_factory = _session_factory(Path(tmpdir) / "runs.db")
         with session_factory() as db:
@@ -340,7 +367,7 @@ async def test_job_run_detail_renders_whole_run_tracker():
 
 
 async def test_history_page_receives_job_runs():
-    request = Request({"type": "http", "method": "GET", "path": "/runs", "headers": []})
+    request = _request("/runs")
     with tempfile.TemporaryDirectory() as tmpdir:
         session_factory = _session_factory(Path(tmpdir) / "runs.db")
         with session_factory() as db:
@@ -363,7 +390,7 @@ async def test_history_page_receives_job_runs():
 
 
 async def test_history_page_paginates_independent_tables():
-    request = Request({"type": "http", "method": "GET", "path": "/runs", "headers": []})
+    request = _request("/runs")
     with tempfile.TemporaryDirectory() as tmpdir:
         session_factory = _session_factory(Path(tmpdir) / "runs.db")
         with session_factory() as db:
@@ -430,7 +457,7 @@ async def test_settings_prune_reports_deleted_count():
             step_run.started_at = step_run.started_at.replace(year=2020)
             db.commit()
 
-            response = await main.prune(None, db)
+            response = await main.prune(None, None, db)
 
             assert response.status_code == 303
             assert response.headers["location"] == "/settings?pruned=1"
@@ -460,7 +487,7 @@ async def test_clear_history_removes_run_records_and_logs_but_keeps_jobs():
             )
             db.commit()
 
-            response = await main.clear_history(None, db)
+            response = await main.clear_history(None, None, db)
 
             assert response.status_code == 303
             assert response.headers["location"] == "/settings?cleared=2"
@@ -485,7 +512,7 @@ async def test_cancel_stale_running_job_marks_it_canceled(monkeypatch):
             step_run = _create_running_step_run(db)
             job_run_id = step_run.job_run_id
 
-            response = await main.cancel_job_run(job_run_id, None, db)
+            response = await main.cancel_job_run(job_run_id, None, None, db)
 
             assert response.status_code == 303
             job_run = db.get(JobRunRecord, job_run_id)
@@ -504,7 +531,7 @@ async def test_delete_individual_job_run_removes_steps_and_logs():
             step_run = _create_running_step_run(db, log_path=log_path)
             job_run_id = step_run.job_run_id
 
-            response = await main.delete_job_run(job_run_id, None, db)
+            response = await main.delete_job_run(job_run_id, None, None, db)
 
             assert response.status_code == 303
             assert response.headers["location"] == "/runs"
@@ -522,7 +549,7 @@ async def test_delete_individual_step_run_removes_log_only_for_that_step():
             step_run = _create_running_step_run(db, log_path=log_path)
             job_run_id = step_run.job_run_id
 
-            response = await main.delete_run(step_run.id, None, db)
+            response = await main.delete_run(step_run.id, None, None, db)
 
             assert response.status_code == 303
             assert response.headers["location"] == "/runs"
@@ -549,7 +576,7 @@ async def test_delete_individual_console_run_removes_log():
             db.add(run)
             db.commit()
 
-            response = await main.delete_console_run(run.id, None, db)
+            response = await main.delete_console_run(run.id, None, None, db)
 
             assert response.status_code == 303
             assert response.headers["location"] == "/runs"
@@ -572,7 +599,7 @@ async def test_cancel_run_requests_parent_job_cancellation(monkeypatch):
         with session_factory() as db:
             step_run = _create_running_step_run(db)
 
-            response = await main.cancel_run(step_run.id, None, db)
+            response = await main.cancel_run(step_run.id, None, None, db)
 
             assert response.status_code == 303
             assert response.headers["location"] == f"/runs/{step_run.id}"

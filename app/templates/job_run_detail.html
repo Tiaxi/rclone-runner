@@ -39,10 +39,12 @@
   <div class="button-row">
     {% if job_run.status == "running" %}
     <form id="cancel-job-run-form" method="post" action="{{ job_run_cancel_url }}">
+      {{ csrf_field()|safe }}
       <button class="danger" type="submit">Stop</button>
     </form>
     {% endif %}
-    <form method="post" action="/job-runs/{{ job_run.id }}/delete">
+    <form method="post" action="/job-runs/{{ job_run.id }}/delete" onsubmit="return confirm('Delete this run and its log file?')">
+      {{ csrf_field()|safe }}
       <button class="danger" type="submit">Delete</button>
     </form>
     <a class="button secondary" href="/runs">History</a>

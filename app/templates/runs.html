@@ -17,7 +17,8 @@
         <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
         <td><a href="/job-runs/{{ run.id }}">Open</a></td>
         <td class="action-cell">
-          <form method="post" action="/job-runs/{{ run.id }}/delete">
+          <form method="post" action="/job-runs/{{ run.id }}/delete" onsubmit="return confirm('Delete this run and its log file?')">
+            {{ csrf_field()|safe }}
             <button class="danger small" type="submit">Delete</button>
           </form>
         </td>
@@ -48,7 +49,8 @@
         <td>{{ run_exit_label(run) }}</td>
         <td><a href="/runs/{{ run.id }}">Open</a></td>
         <td class="action-cell">
-          <form method="post" action="/runs/{{ run.id }}/delete">
+          <form method="post" action="/runs/{{ run.id }}/delete" onsubmit="return confirm('Delete this run and its log file?')">
+            {{ csrf_field()|safe }}
             <button class="danger small" type="submit">Delete</button>
           </form>
         </td>
@@ -78,7 +80,8 @@
         <td>{{ run.exit_code if run.exit_code is not none else "Pending" }}</td>
         <td><a href="/console/runs/{{ run.id }}">Open</a></td>
         <td class="action-cell">
-          <form method="post" action="/console/runs/{{ run.id }}/delete">
+          <form method="post" action="/console/runs/{{ run.id }}/delete" onsubmit="return confirm('Delete this run and its log file?')">
+            {{ csrf_field()|safe }}
             <button class="danger small" type="submit">Delete</button>
           </form>
         </td>

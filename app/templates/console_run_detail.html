@@ -13,7 +13,8 @@
     </p>
   </div>
   <div class="button-row">
-    <form method="post" action="/console/runs/{{ run.id }}/delete">
+    <form method="post" action="/console/runs/{{ run.id }}/delete" onsubmit="return confirm('Delete this run and its log file?')">
+      {{ csrf_field()|safe }}
       <button class="danger" type="submit">Delete</button>
     </form>
     <a class="button secondary" href="/console">Back</a>

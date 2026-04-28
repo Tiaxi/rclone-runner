@@ -1,5 +1,33 @@
-from app.auth import hash_password, verify_password_hash
+import pytest
+from fastapi import HTTPException
+
+from app.auth import CSRF_SESSION_KEY, csrf_field, hash_password, require_csrf, verify_password_hash
 from app.config import Settings, runtime_warnings
+
+
+class SessionRequest:
+    def __init__(self) -> None:
+        self.session = {}
+
+
+async def test_csrf_field_creates_stable_session_token():
+    request = SessionRequest()
+
+    first = csrf_field(request)
+    second = csrf_field(request)
+
+    assert first == second
+    assert f'name="csrf_token" value="{request.session[CSRF_SESSION_KEY]}"' in first
+
+
+async def test_require_csrf_rejects_invalid_token():
+    request = SessionRequest()
+    request.session[CSRF_SESSION_KEY] = "expected"
+
+    with pytest.raises(HTTPException) as exc_info:
+        await require_csrf(request, csrf_token="wrong")
+
+    assert exc_info.value.status_code == 403
 
 
 def test_password_hash_verifies_matching_password():

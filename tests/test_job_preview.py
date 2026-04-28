@@ -8,6 +8,13 @@ from app.db import JobRecord, JobStepRecord
 from app.main import _command_previews, templates
 
 
+def _test_csrf_field() -> str:
+    return '<input type="hidden" name="csrf_token" value="token">'
+
+
+templates.env.globals["csrf_field"] = _test_csrf_field
+
+
 def test_headings_after_large_blocks_have_section_spacing():
     css = Path("app/static/styles.css").read_text()
 
@@ -519,6 +526,64 @@ def test_settings_page_shows_prune_feedback_and_clear_history_action():
     assert 'action="/settings/clear-history"' in html
     assert "Clear all history" in html
     assert "Job configuration remains intact." in html
+
+
+def test_post_forms_include_csrf_fields_and_destructive_confirmations():
+    csrf_input = '<input type="hidden" name="csrf_token" value="token">'
+    job = SimpleNamespace(id=1, name="backup", cron="", enabled=True, steps=[])
+    job_run = SimpleNamespace(
+        id=3,
+        job_name="backup",
+        trigger="manual",
+        status="success",
+        started_at=datetime(2026, 4, 26, 17, 59, tzinfo=UTC),
+        ended_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
+    )
+    step_run = SimpleNamespace(
+        id=4,
+        step_name="Music",
+        status="success",
+        exit_code=0,
+        started_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
+        job_run=SimpleNamespace(trigger="manual"),
+    )
+    console_run = SimpleNamespace(
+        id=5,
+        command="version",
+        status="success",
+        exit_code=0,
+        started_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
+    )
+
+    jobs_html = templates.get_template("jobs.html").render(
+        jobs=[{"record": job, "schedule_summary": "Never"}],
+        ongoing_job_runs=[],
+        ongoing_step_runs=[],
+        ongoing_console_runs=[],
+        csrf_field=lambda: csrf_input,
+    )
+    settings_html = templates.get_template("settings.html").render(
+        settings=SimpleNamespace(
+            data_dir="/data", log_dir="/data/logs", timezone="UTC", retention_days=30
+        ),
+        known_logs=0,
+        pruned=None,
+        cleared=None,
+        csrf_field=lambda: csrf_input,
+    )
+    runs_html = templates.get_template("runs.html").render(
+        job_runs=[job_run],
+        step_runs=[step_run],
+        console_runs=[console_run],
+        csrf_field=lambda: csrf_input,
+    )
+
+    assert jobs_html.count('name="csrf_token"') == 3
+    assert settings_html.count('name="csrf_token"') == 3
+    assert runs_html.count('name="csrf_token"') == 4
+    assert "return confirm('Prune old log files?')" in settings_html
+    assert "return confirm('Clear all run and console history?')" in settings_html
+    assert "return confirm('Delete this run and its log file?')" in runs_html
 
 
 class NestedFormParser(HTMLParser):

@@ -1,4 +1,5 @@
 <form id="job-editor-form" method="post" action="{{ '/jobs/' ~ job.id if job else '/jobs' }}" class="form-grid" data-background-save="{{ 'true' if job else 'false' }}">
+  {{ csrf_field()|safe }}
   <label>Name <input name="name" value="{{ job.name if job else '' }}" placeholder="Nightly media backup" required></label>
   <label>Cron <input name="cron" value="{{ job.cron if job else '' }}" placeholder="0 2 * * * or leave empty for Never"></label>
   <div class="field-note">Schedule: {{ schedule_summary }}</div>
@@ -50,8 +51,12 @@
 
 {% if job %}
   {% for preview in command_previews %}
-    <form id="run-step-{{ preview.id }}" method="post" action="/jobs/{{ job.id }}/steps/{{ preview.id }}/run"></form>
-    <form id="dry-run-step-{{ preview.id }}" method="post" action="/jobs/{{ job.id }}/steps/{{ preview.id }}/dry-run"></form>
+    <form id="run-step-{{ preview.id }}" method="post" action="/jobs/{{ job.id }}/steps/{{ preview.id }}/run">
+      {{ csrf_field()|safe }}
+    </form>
+    <form id="dry-run-step-{{ preview.id }}" method="post" action="/jobs/{{ job.id }}/steps/{{ preview.id }}/dry-run">
+      {{ csrf_field()|safe }}
+    </form>
   {% endfor %}
 {% endif %}
 

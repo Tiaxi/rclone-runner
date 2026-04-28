@@ -6,11 +6,12 @@ import hmac
 import secrets
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, Form, HTTPException, Request, status
 
 from app.config import settings
 
 SESSION_KEY = "authenticated"
+CSRF_SESSION_KEY = "csrf_token"
 HASH_PREFIX = "pbkdf2_sha256"
 ITERATIONS = 600_000
 
@@ -46,6 +47,28 @@ def verify_password_hash(password: str, password_hash: str) -> bool:
         return False
     actual = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
     return hmac.compare_digest(actual, expected)
+
+
+def csrf_token(request: Request) -> str:
+    token = request.session.get(CSRF_SESSION_KEY)
+    if not isinstance(token, str):
+        token = secrets.token_urlsafe(32)
+        request.session[CSRF_SESSION_KEY] = token
+    return token
+
+
+def csrf_field(request: Request) -> str:
+    token = csrf_token(request)
+    return f'<input type="hidden" name="csrf_token" value="{token}">'
+
+
+async def require_csrf(request: Request, csrf_token: str = Form("")) -> None:
+    expected = request.session.get(CSRF_SESSION_KEY)
+    if not isinstance(expected, str) or not hmac.compare_digest(expected, csrf_token):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid CSRF token",
+        )
 
 
 def require_auth(request: Request) -> None:
