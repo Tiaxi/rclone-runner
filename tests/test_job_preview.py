@@ -205,6 +205,15 @@ def test_job_editor_ctrl_s_saves_without_navigating():
     assert 'data-background-save="true"' in html
 
 
+def test_console_ctrl_v_pastes_clipboard_into_terminal():
+    html = templates.get_template("console.html").render(recent=[], recent_commands=[])
+
+    assert 'navigator.clipboard.readText()' in html
+    assert 'if (key === "v")' in html
+    assert "insertPromptText(text);" in html
+    assert "sendInput(text);" in html
+
+
 def test_history_tables_use_styled_status_labels():
     job_run = SimpleNamespace(
         id=3,

@@ -104,6 +104,12 @@
       renderTerminal();
     }
 
+    function insertPromptText(text) {
+      commandBuffer = `${commandBuffer.slice(0, cursorIndex)}${text}${commandBuffer.slice(cursorIndex)}`;
+      cursorIndex += text.length;
+      renderTerminal();
+    }
+
     function addHistoryCommand(command) {
       if (commandHistory[commandHistory.length - 1] !== command) {
         commandHistory.push(command);
@@ -166,7 +172,7 @@
       terminal.focus();
     });
 
-    terminal.addEventListener("keydown", (event) => {
+    terminal.addEventListener("keydown", async (event) => {
       if (event.metaKey || event.altKey) {
         return;
       }
@@ -187,6 +193,15 @@
         if (key === "d" && running) {
           event.preventDefault();
           sendInput("\x04");
+        }
+        if (key === "v") {
+          event.preventDefault();
+          const text = await navigator.clipboard.readText();
+          if (running) {
+            sendInput(text);
+          } else {
+            insertPromptText(text);
+          }
         }
         return;
       }
@@ -292,9 +307,7 @@
         if (running) {
           sendInput(event.key);
         } else {
-          commandBuffer = `${commandBuffer.slice(0, cursorIndex)}${event.key}${commandBuffer.slice(cursorIndex)}`;
-          cursorIndex += 1;
-          renderTerminal();
+          insertPromptText(event.key);
         }
       }
     });
