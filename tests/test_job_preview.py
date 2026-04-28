@@ -43,6 +43,24 @@ def test_base_template_supports_theme_detection_and_toggle():
     assert "color-scheme: dark" in css
 
 
+def test_compose_declares_healthcheck():
+    compose = Path("docker-compose.yml").read_text()
+
+    assert "healthcheck:" in compose
+    assert "http://127.0.0.1:8000/health" in compose
+
+
+def test_readme_includes_deployment_checklist_and_backup_guidance():
+    readme = Path("README.md").read_text()
+
+    assert "## Deployment Checklist" in readme
+    assert "RCLONE_RUNNER_ADMIN_PASSWORD_HASH" in readme
+    assert "RCLONE_RUNNER_SECRET_KEY" in readme
+    assert "/health" in readme
+    assert "Back up" in readme
+    assert "rclone.conf" in readme
+
+
 def test_jobs_page_renders_ongoing_activity_sections():
     started_at = datetime(2026, 4, 26, 18, 0, tzinfo=UTC)
     job_run = SimpleNamespace(

@@ -112,6 +112,11 @@ async def logout(request: Request) -> Response:
     return RedirectResponse("/login", status_code=303)
 
 
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(_: AuthRequired) -> Response:
     return RedirectResponse("/jobs", status_code=303)

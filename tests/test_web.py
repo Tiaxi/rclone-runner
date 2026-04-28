@@ -20,6 +20,12 @@ from app.db import (
 from app.main import login_form
 
 
+async def test_health_endpoint_is_public_and_reports_ok():
+    response = await main.health()
+
+    assert response == {"status": "ok"}
+
+
 async def test_login_page_renders_with_current_starlette_template_api():
     request = Request({"type": "http", "method": "GET", "path": "/login", "headers": []})
 

@@ -100,6 +100,17 @@ RCLONE_RUNNER_RCLONE_CONFIG_PATH=/mnt/tank/apps/rclone-runner/rclone-config
 RCLONE_RUNNER_MEDIA_PATH=/mnt/tank/media
 ```
 
+## Deployment Checklist
+
+- Generate and set `RCLONE_RUNNER_ADMIN_PASSWORD_HASH` before exposing the app.
+- Replace `RCLONE_RUNNER_SECRET_KEY` with a long random value unique to the deployment.
+- Confirm `/data`, `/config/rclone`, and any source dataset mounts point at persistent host paths.
+- Set `RCLONE_RUNNER_TIMEZONE`, `TZ`, and `RCLONE_RUNNER_RETENTION_DAYS` for the deployment.
+- Verify the service health endpoint with `curl http://127.0.0.1:8000/health`.
+- Put the app behind HTTPS or a trusted reverse proxy before remote access.
+- Back up `/data` and `rclone.conf`; they contain the database, run logs, schedules, and rclone remote configuration.
+- Run Rclone Runner only in a single-admin trusted environment.
+
 ## Job Step Format
 
 Each step is one line:
