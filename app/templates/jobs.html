@@ -83,7 +83,7 @@
 <h2>Configured jobs</h2>
 <section class="table-wrap">
   <table>
-    <thead><tr><th>Name</th><th>Schedule</th><th>Status</th><th>Steps</th><th></th></tr></thead>
+    <thead><tr><th>Name</th><th>Schedule</th><th>Status</th><th>Last run</th><th>Next run</th><th>Steps</th><th></th></tr></thead>
     <tbody>
       {% for item in jobs %}
       {% set job = item.record %}
@@ -91,6 +91,25 @@
         <td><a href="/jobs/{{ job.id }}">{{ job.name }}</a></td>
         <td>{{ item.schedule_summary }}</td>
         <td>{{ "Enabled" if job.enabled else "Disabled" }}</td>
+        <td>
+          {% if item.last_run %}
+          <span class="run-status {{ item.last_run.status }}">{{ item.last_run.status|capitalize }}</span>
+          {{ format_local_time(item.last_run.started_at) }}
+          {% else %}
+          No runs
+          {% endif %}
+        </td>
+        <td>
+          {% if not job.enabled %}
+          Disabled
+          {% elif not job.cron or job.cron|lower == "never" %}
+          Never
+          {% elif item.next_run %}
+          {{ format_local_time(item.next_run) }}
+          {% else %}
+          Not scheduled
+          {% endif %}
+        </td>
         <td>{{ job.steps|length }}</td>
         <td>
           <div class="button-row">
@@ -110,7 +129,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="5">No jobs yet.</td></tr>
+      <tr><td colspan="7">No jobs yet.</td></tr>
       {% endfor %}
     </tbody>
   </table>

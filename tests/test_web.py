@@ -127,6 +127,39 @@ async def test_jobs_page_receives_ongoing_activity():
             assert response.context["ongoing_console_runs"][0].command == "lsd remote:"
 
 
+async def test_jobs_page_includes_last_and_next_run_context():
+    request = _request("/jobs")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = _create_job(db)
+            job.cron = "0 2 * * *"
+            older_run = JobRunRecord(
+                job_id=job.id,
+                job_name=job.name,
+                trigger="manual",
+                status="failed",
+                started_at=main.utc_now().replace(year=2025),
+                ended_at=main.utc_now().replace(year=2025),
+            )
+            newest_run = JobRunRecord(
+                job_id=job.id,
+                job_name=job.name,
+                trigger="schedule",
+                status="success",
+                started_at=main.utc_now(),
+                ended_at=main.utc_now(),
+            )
+            db.add_all([older_run, newest_run])
+            db.commit()
+
+            response = await main.jobs(request, None, db)
+            row = response.context["jobs"][0]
+
+            assert row["last_run"] == newest_run
+            assert row["next_run"] is not None
+
+
 @pytest.mark.asyncio
 async def test_manual_full_job_redirects_to_live_job_run_before_executor_finishes(monkeypatch):
     started = asyncio.Event()

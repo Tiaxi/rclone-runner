@@ -39,7 +39,7 @@ from app.db import (
     record_to_job,
 )
 from app.runner_service import runner
-from app.scheduler import scheduler, sync_schedules
+from app.scheduler import next_run_time, scheduler, sync_schedules
 
 
 def inject_runtime_warnings(request: Request) -> dict[str, object]:
@@ -162,7 +162,7 @@ async def jobs(request: Request, _: AuthRequired, db: DbSession, deleted: bool =
         request,
         "jobs.html",
         {
-            "jobs": _job_rows(records),
+            "jobs": _job_rows(records, db),
             "ongoing_job_runs": _ongoing_job_run_rows(ongoing_job_runs),
             "ongoing_step_runs": ongoing_step_runs,
             "ongoing_console_runs": ongoing_console_runs,
@@ -768,14 +768,25 @@ def _steps_to_text(steps: list[JobStepRecord]) -> str:
     return "\n".join(f"{step.name}|{step.command}" for step in steps)
 
 
-def _job_rows(records: list[JobRecord]) -> list[dict[str, object]]:
+def _job_rows(records: list[JobRecord], db) -> list[dict[str, object]]:
     return [
         {
             "record": record,
             "schedule_summary": cron_summary(record.cron),
+            "last_run": _last_job_run(record, db),
+            "next_run": next_run_time(record.cron) if record.enabled else None,
         }
         for record in records
     ]
+
+
+def _last_job_run(record: JobRecord, db) -> JobRunRecord | None:
+    return (
+        db.query(JobRunRecord)
+        .filter_by(job_id=record.id)
+        .order_by(JobRunRecord.started_at.desc())
+        .first()
+    )
 
 
 def _command_previews(job: JobRecord) -> list[dict[str, str]]:

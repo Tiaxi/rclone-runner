@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -24,6 +25,18 @@ def cron_trigger(expression: str) -> CronTrigger:
         day_of_week=day_of_week,
         timezone=ZoneInfo(settings.timezone),
     )
+
+
+def next_run_time(expression: str) -> datetime | None:
+    normalized = normalize_cron(expression)
+    if not normalized or normalized.lower() == "never":
+        return None
+    now = datetime.now(ZoneInfo(settings.timezone))
+    try:
+        trigger = cron_trigger(normalized)
+    except ValueError:
+        return None
+    return trigger.get_next_fire_time(None, now)
 
 
 def sync_schedules(session: Session) -> None:

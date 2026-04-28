@@ -508,6 +508,55 @@ def test_job_summaries_show_human_schedule_without_raw_cron():
     assert "<p>Daily at 02:00 · Enabled</p>" in job_html
 
 
+def test_jobs_page_renders_last_and_next_run_columns():
+    job = SimpleNamespace(id=1, name="backup", cron="0 2 * * *", enabled=True, steps=[])
+    disabled_job = SimpleNamespace(id=2, name="archive", cron="0 3 * * *", enabled=False, steps=[])
+    unscheduled_job = SimpleNamespace(id=3, name="manual", cron="", enabled=True, steps=[])
+    last_run = SimpleNamespace(
+        id=3,
+        job_name="backup",
+        trigger="manual",
+        status="success",
+        started_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
+        ended_at=datetime(2026, 4, 26, 18, 1, tzinfo=UTC),
+    )
+
+    html = templates.get_template("jobs.html").render(
+        jobs=[
+            {
+                "record": job,
+                "schedule_summary": "Daily at 02:00",
+                "last_run": last_run,
+                "next_run": datetime(2026, 4, 27, 23, 0, tzinfo=UTC),
+            },
+            {
+                "record": disabled_job,
+                "schedule_summary": "Daily at 03:00",
+                "last_run": None,
+                "next_run": None,
+            },
+            {
+                "record": unscheduled_job,
+                "schedule_summary": "Never",
+                "last_run": None,
+                "next_run": None,
+            },
+        ],
+        ongoing_job_runs=[],
+        ongoing_step_runs=[],
+        ongoing_console_runs=[],
+    )
+
+    assert "<th>Last run</th>" in html
+    assert "<th>Next run</th>" in html
+    assert '<span class="run-status success">Success</span>' in html
+    assert "2026-04-26 21:00:00 EEST" in html
+    assert "2026-04-28 02:00:00 EEST" in html
+    assert "No runs" in html
+    assert "Disabled" in html
+    assert "Never" in html
+
+
 def test_settings_page_shows_prune_feedback_and_clear_history_action():
     html = templates.get_template("settings.html").render(
         settings=SimpleNamespace(

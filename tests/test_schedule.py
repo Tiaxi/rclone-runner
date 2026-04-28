@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -11,6 +12,18 @@ from app.db import Base, JobRecord
 def test_empty_cron_is_never():
     assert normalize_cron("  ") == ""
     assert cron_summary("  ") == "Never"
+
+
+def test_next_run_time_returns_none_for_never_schedule():
+    assert scheduler_module.next_run_time("") is None
+    assert scheduler_module.next_run_time("never") is None
+
+
+def test_next_run_time_returns_future_time_for_daily_schedule():
+    next_run = scheduler_module.next_run_time("0 2 * * *")
+
+    assert next_run is not None
+    assert next_run > datetime.now(next_run.tzinfo)
 
 
 def test_common_cron_summaries_are_humanized():
