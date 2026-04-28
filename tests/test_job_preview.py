@@ -508,7 +508,8 @@ def test_job_summaries_show_human_schedule_without_raw_cron():
     assert "<p>Daily at 02:00 · Enabled</p>" in job_html
 
 
-def test_jobs_page_renders_last_and_next_run_columns():
+def test_jobs_page_renders_compact_run_context_column():
+    css = Path("app/static/styles.css").read_text()
     job = SimpleNamespace(id=1, name="backup", cron="0 2 * * *", enabled=True, steps=[])
     disabled_job = SimpleNamespace(id=2, name="archive", cron="0 3 * * *", enabled=False, steps=[])
     unscheduled_job = SimpleNamespace(id=3, name="manual", cron="", enabled=True, steps=[])
@@ -547,14 +548,19 @@ def test_jobs_page_renders_last_and_next_run_columns():
         ongoing_console_runs=[],
     )
 
-    assert "<th>Last run</th>" in html
-    assert "<th>Next run</th>" in html
+    assert "<th>Runs</th>" in html
+    assert "<th>Last run</th>" not in html
+    assert "<th>Next run</th>" not in html
     assert '<span class="run-status success">Success</span>' in html
+    assert "<span>Last</span>" in html
+    assert "<span>Next</span>" in html
     assert "2026-04-26 21:00:00 EEST" in html
     assert "2026-04-28 02:00:00 EEST" in html
     assert "No runs" in html
     assert "Disabled" in html
     assert "Never" in html
+    assert "job-run-context" in css
+    assert "job-actions" in css
 
 
 def test_settings_page_shows_prune_feedback_and_clear_history_action():
@@ -605,7 +611,7 @@ def test_post_forms_include_csrf_fields_and_destructive_confirmations():
     )
 
     jobs_html = templates.get_template("jobs.html").render(
-        jobs=[{"record": job, "schedule_summary": "Never"}],
+        jobs=[{"record": job, "schedule_summary": "Never", "last_run": None, "next_run": None}],
         ongoing_job_runs=[],
         ongoing_step_runs=[],
         ongoing_console_runs=[],
@@ -641,7 +647,7 @@ def test_job_delete_actions_render_in_list_and_detail():
     job = SimpleNamespace(id=7, name="Nightly backup", cron="", enabled=True, steps=[])
 
     jobs_html = templates.get_template("jobs.html").render(
-        jobs=[{"record": job, "schedule_summary": "Never"}],
+        jobs=[{"record": job, "schedule_summary": "Never", "last_run": None, "next_run": None}],
         ongoing_job_runs=[],
         ongoing_step_runs=[],
         ongoing_console_runs=[],

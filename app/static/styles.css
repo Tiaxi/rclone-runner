@@ -277,6 +277,36 @@ td {
   white-space: nowrap;
 }
 
+.table-subtext {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin-top: 4px;
+}
+
+.configured-jobs-table .action-column {
+  width: 260px;
+}
+
+.job-run-context {
+  min-width: 260px;
+}
+
+.job-run-context div {
+  display: flex;
+  gap: 8px;
+  line-height: 1.45;
+}
+
+.job-run-context div > span:first-child {
+  color: var(--muted);
+  min-width: 34px;
+}
+
+.job-actions .button-row {
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+}
+
 tr:last-child td {
   border-bottom: 0;
 }
