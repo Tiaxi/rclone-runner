@@ -12,6 +12,7 @@ def test_headings_after_large_blocks_have_section_spacing():
     css = Path("app/static/styles.css").read_text()
 
     assert ".table-wrap + h2" in css
+    assert ".history-section + .history-section" in css
     assert ".form-grid + h2" in css
     assert ".terminal-output + h2" in css
     assert ".section-heading" in css

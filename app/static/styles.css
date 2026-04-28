@@ -221,6 +221,10 @@ button.secondary:hover,
   margin-top: 28px;
 }
 
+.history-section + .history-section {
+  margin-top: 28px;
+}
+
 .table-wrap + h3 {
   margin-top: 20px;
 }
