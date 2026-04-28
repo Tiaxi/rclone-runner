@@ -24,3 +24,9 @@ def test_runtime_warnings_are_empty_for_hardened_config():
     warnings = runtime_warnings(Settings(admin_password_hash="hash", secret_key="not-default"))
 
     assert warnings == []
+
+
+def test_runtime_warnings_flag_blank_session_secret():
+    warnings = runtime_warnings(Settings(admin_password_hash="hash", secret_key="   "))
+
+    assert any("default session secret" in warning for warning in warnings)
