@@ -27,13 +27,18 @@ def cron_trigger(expression: str) -> CronTrigger:
     )
 
 
-def next_run_time(expression: str) -> datetime | None:
+def is_unscheduled_cron(expression: str) -> bool:
     normalized = normalize_cron(expression)
-    if not normalized or normalized.lower() == "never":
+    return not normalized or normalized.lower() == "never"
+
+
+def next_run_time(expression: str, now: datetime | None = None) -> datetime | None:
+    if is_unscheduled_cron(expression):
         return None
-    now = datetime.now(ZoneInfo(settings.timezone))
+    if now is None:
+        now = datetime.now(ZoneInfo(settings.timezone))
     try:
-        trigger = cron_trigger(normalized)
+        trigger = cron_trigger(expression)
     except ValueError:
         return None
     return trigger.get_next_fire_time(None, now)
@@ -42,7 +47,7 @@ def next_run_time(expression: str) -> datetime | None:
 def sync_schedules(session: Session) -> None:
     scheduler.remove_all_jobs()
     for record in session.query(JobRecord).filter(JobRecord.enabled.is_(True)).all():
-        if not normalize_cron(record.cron):
+        if is_unscheduled_cron(record.cron):
             continue
         scheduler.add_job(
             _run_and_record,

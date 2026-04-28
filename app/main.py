@@ -769,24 +769,32 @@ def _steps_to_text(steps: list[JobStepRecord]) -> str:
 
 
 def _job_rows(records: list[JobRecord], db) -> list[dict[str, object]]:
+    latest_runs = _latest_job_runs_by_job_id(records, db)
     return [
         {
             "record": record,
             "schedule_summary": cron_summary(record.cron),
-            "last_run": _last_job_run(record, db),
+            "last_run": latest_runs.get(record.id),
             "next_run": next_run_time(record.cron) if record.enabled else None,
         }
         for record in records
     ]
 
 
-def _last_job_run(record: JobRecord, db) -> JobRunRecord | None:
-    return (
+def _latest_job_runs_by_job_id(records: list[JobRecord], db) -> dict[int, JobRunRecord]:
+    job_ids = [record.id for record in records]
+    if not job_ids:
+        return {}
+    runs = (
         db.query(JobRunRecord)
-        .filter_by(job_id=record.id)
-        .order_by(JobRunRecord.started_at.desc())
-        .first()
+        .filter(JobRunRecord.job_id.in_(job_ids))
+        .order_by(JobRunRecord.job_id, JobRunRecord.started_at.desc())
+        .all()
     )
+    latest_runs = {}
+    for run in runs:
+        latest_runs.setdefault(run.job_id, run)
+    return latest_runs
 
 
 def _command_previews(job: JobRecord) -> list[dict[str, str]]:

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from starlette.requests import Request
 
@@ -158,6 +158,50 @@ async def test_jobs_page_includes_last_and_next_run_context():
 
             assert row["last_run"] == newest_run
             assert row["next_run"] is not None
+
+
+async def test_jobs_page_fetches_latest_runs_in_batch():
+    request = _request("/jobs")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            first_job = _create_job(db)
+            second_job = _create_job(db)
+            second_job.name = "archive"
+            db.add_all(
+                [
+                    JobRunRecord(
+                        job_id=first_job.id,
+                        job_name=first_job.name,
+                        trigger="manual",
+                        status="success",
+                        started_at=main.utc_now(),
+                        ended_at=main.utc_now(),
+                    ),
+                    JobRunRecord(
+                        job_id=second_job.id,
+                        job_name=second_job.name,
+                        trigger="manual",
+                        status="failed",
+                        started_at=main.utc_now(),
+                        ended_at=main.utc_now(),
+                    ),
+                ]
+            )
+            db.commit()
+            job_run_selects = []
+
+            def track_job_run_selects(conn, cursor, statement, parameters, context, executemany):
+                if statement.lstrip().upper().startswith("SELECT") and "job_runs" in statement:
+                    job_run_selects.append(statement)
+
+            event.listen(db.bind, "before_cursor_execute", track_job_run_selects)
+            try:
+                await main.jobs(request, None, db)
+            finally:
+                event.remove(db.bind, "before_cursor_execute", track_job_run_selects)
+
+            assert len(job_run_selects) == 2
 
 
 @pytest.mark.asyncio

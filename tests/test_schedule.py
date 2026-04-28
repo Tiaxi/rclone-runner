@@ -1,10 +1,12 @@
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import app.scheduler as scheduler_module
+from app.config import settings
 from app.core.schedule import cron_summary, normalize_cron
 from app.db import Base, JobRecord
 
@@ -20,10 +22,11 @@ def test_next_run_time_returns_none_for_never_schedule():
 
 
 def test_next_run_time_returns_future_time_for_daily_schedule():
-    next_run = scheduler_module.next_run_time("0 2 * * *")
+    timezone = ZoneInfo(settings.timezone)
+    now = datetime(2026, 4, 28, 1, 0, tzinfo=timezone)
+    next_run = scheduler_module.next_run_time("0 2 * * *", now=now)
 
-    assert next_run is not None
-    assert next_run > datetime.now(next_run.tzinfo)
+    assert next_run == datetime(2026, 4, 28, 2, 0, tzinfo=timezone)
 
 
 def test_common_cron_summaries_are_humanized():
@@ -55,6 +58,29 @@ def test_sync_schedules_registers_async_job_runner(tmp_path: Path, monkeypatch):
         scheduler_module.sync_schedules(session)
 
     assert fake_scheduler.jobs[0]["func"] is scheduler_module._run_and_record
+
+
+def test_sync_schedules_skips_never_schedule(tmp_path: Path, monkeypatch):
+    class FakeScheduler:
+        def __init__(self) -> None:
+            self.jobs = []
+
+        def remove_all_jobs(self) -> None:
+            self.jobs.clear()
+
+        def add_job(self, func, trigger, **kwargs) -> None:
+            self.jobs.append({"func": func, "trigger": trigger, "kwargs": kwargs})
+
+    fake_scheduler = FakeScheduler()
+    monkeypatch.setattr(scheduler_module, "scheduler", fake_scheduler)
+    session_factory = _session_factory(tmp_path / "runs.db")
+    with session_factory() as session:
+        session.add(JobRecord(name="manual", cron="never", enabled=True))
+        session.commit()
+
+        scheduler_module.sync_schedules(session)
+
+    assert fake_scheduler.jobs == []
 
 
 def _session_factory(database_path: Path):
