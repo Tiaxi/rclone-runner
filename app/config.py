@@ -30,8 +30,7 @@ def runtime_warnings(value: Settings) -> list[str]:
     secret_key = value.secret_key.strip()
     if not secret_key or secret_key in {DEFAULT_SECRET_KEY, "change-this-long-random-string"}:
         warnings.append(
-            "RCLONE_RUNNER_SECRET_KEY uses a default session secret; "
-            "set a long random value."
+            "RCLONE_RUNNER_SECRET_KEY uses a default session secret; set a long random value."
         )
     return warnings
 

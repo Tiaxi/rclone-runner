@@ -45,9 +45,7 @@ def inject_runtime_warnings(request: Request) -> dict[str, object]:
     return {"runtime_warnings": runtime_warnings(settings)}
 
 
-templates = Jinja2Templates(
-    directory="app/templates", context_processors=[inject_runtime_warnings]
-)
+templates = Jinja2Templates(directory="app/templates", context_processors=[inject_runtime_warnings])
 
 
 def run_mode_label(trigger: str) -> str:
