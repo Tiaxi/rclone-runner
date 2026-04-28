@@ -27,9 +27,14 @@ def test_headings_after_large_blocks_have_section_spacing():
 
 def test_base_template_links_svg_favicon():
     html = templates.get_template("base.html").render()
+    login_html = templates.get_template("login.html").render()
 
     assert '<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">' in html
     assert '<img class="brand-mark" src="/static/favicon.svg" alt="" aria-hidden="true">' in html
+    assert (
+        '<img class="brand-mark" src="/static/favicon.svg" alt="" aria-hidden="true">' in login_html
+    )
+    assert 'class="login-brand"' in login_html
 
 
 def test_base_template_supports_theme_detection_and_toggle():
@@ -73,6 +78,8 @@ def test_readme_includes_deployment_checklist_and_backup_guidance():
     readme = Path("README.md").read_text()
 
     assert "## Deployment Checklist" in readme
+    assert "Email Notifications" in readme
+    assert "smtp.gmail.com" in readme
     assert "RCLONE_RUNNER_ADMIN_PASSWORD_HASH" in readme
     assert "RCLONE_RUNNER_SECRET_KEY" in readme
     assert "/health" in readme
@@ -574,6 +581,24 @@ def test_settings_page_shows_prune_feedback_and_clear_history_action():
         known_logs=3,
         pruned=2,
         cleared=4,
+        email_settings=SimpleNamespace(
+            enabled=True,
+            smtp_host="smtp.gmail.com",
+            smtp_port=587,
+            smtp_username="user@gmail.com",
+            smtp_password="secret",
+            sender="user@gmail.com",
+            recipients="ops@example.com",
+            use_starttls=True,
+            notify_success=False,
+            notify_failure=True,
+            notify_canceled=True,
+            app_base_url="http://runner.local",
+            include_log_tail_lines=200,
+        ),
+        email_saved=None,
+        email_test=None,
+        email_error=None,
     )
 
     assert "Deleted 2 old log files." in html
@@ -581,6 +606,13 @@ def test_settings_page_shows_prune_feedback_and_clear_history_action():
     assert 'action="/settings/clear-history"' in html
     assert "Clear all history" in html
     assert "Job configuration remains intact." in html
+    assert 'action="/settings/email"' in html
+    assert 'action="/settings/email/test"' in html
+    assert 'name="smtp_password" value=""' in html
+    assert "secret" not in html
+    assert "Email notifications" in html
+    assert "Maintenance" in html
+    assert "Remove old log files according to the configured retention window." in html
 
 
 def test_post_forms_include_csrf_fields_and_destructive_confirmations():
@@ -624,6 +656,24 @@ def test_post_forms_include_csrf_fields_and_destructive_confirmations():
         known_logs=0,
         pruned=None,
         cleared=None,
+        email_settings=SimpleNamespace(
+            enabled=False,
+            smtp_host="smtp.gmail.com",
+            smtp_port=587,
+            smtp_username="",
+            smtp_password="",
+            sender="",
+            recipients="",
+            use_starttls=True,
+            notify_success=False,
+            notify_failure=True,
+            notify_canceled=True,
+            app_base_url="",
+            include_log_tail_lines=200,
+        ),
+        email_saved=None,
+        email_test=None,
+        email_error=None,
         csrf_field=lambda: csrf_input,
     )
     runs_html = templates.get_template("runs.html").render(
@@ -634,7 +684,7 @@ def test_post_forms_include_csrf_fields_and_destructive_confirmations():
     )
 
     assert jobs_html.count('name="csrf_token"') == 4
-    assert settings_html.count('name="csrf_token"') == 3
+    assert settings_html.count('name="csrf_token"') == 4
     assert runs_html.count('name="csrf_token"') == 4
     assert 'return confirm("Delete backup? Run history will be kept.")' in jobs_html
     assert "return confirm('Prune old log files?')" in settings_html

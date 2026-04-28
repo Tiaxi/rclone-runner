@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from starlette.requests import Request
 
 import app.main as main
+from app.core.notifications import load_email_notification_settings
 from app.core.runner import LiveJobRunner
 from app.db import (
     Base,
@@ -552,6 +553,141 @@ async def test_settings_prune_reports_deleted_count():
 
             assert response.status_code == 303
             assert response.headers["location"] == "/settings?pruned=1"
+
+
+async def test_save_email_settings_persists_values_and_preserves_blank_password():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            response = await main.save_email_settings(
+                None,
+                db,
+                None,
+                enabled="on",
+                smtp_host="smtp.gmail.com",
+                smtp_port=587,
+                smtp_username="user@gmail.com",
+                smtp_password="app-password",
+                sender="user@gmail.com",
+                recipients="ops@example.com\nadmin@example.com",
+                use_starttls="on",
+                notify_success=None,
+                notify_failure="on",
+                notify_canceled="on",
+                app_base_url="http://runner.local",
+                include_log_tail_lines=200,
+            )
+            second = await main.save_email_settings(
+                None,
+                db,
+                None,
+                enabled=None,
+                smtp_host="smtp.example.com",
+                smtp_port=2525,
+                smtp_username="other@example.com",
+                smtp_password="",
+                sender="sender@example.com",
+                recipients="ops@example.com",
+                use_starttls=None,
+                notify_success="on",
+                notify_failure="on",
+                notify_canceled=None,
+                app_base_url="",
+                include_log_tail_lines=50,
+            )
+
+            saved = load_email_notification_settings(db)
+
+            assert response.headers["location"] == "/settings?email_saved=1"
+            assert second.headers["location"] == "/settings?email_saved=1"
+            assert saved.enabled is False
+            assert saved.smtp_host == "smtp.example.com"
+            assert saved.smtp_password == "app-password"
+            assert saved.notify_success is True
+            assert saved.notify_canceled is False
+
+
+async def test_send_test_email_reports_success_and_failure(monkeypatch):
+    calls = []
+
+    async def fake_send_test_notification(settings):
+        calls.append(settings.smtp_host)
+
+    monkeypatch.setattr(main, "send_test_notification", fake_send_test_notification)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            await main.save_email_settings(
+                None,
+                db,
+                None,
+                enabled="on",
+                smtp_host="smtp.gmail.com",
+                smtp_port=587,
+                smtp_username="user@gmail.com",
+                smtp_password="app-password",
+                sender="user@gmail.com",
+                recipients="ops@example.com",
+                use_starttls="on",
+                notify_success=None,
+                notify_failure="on",
+                notify_canceled="on",
+                app_base_url="",
+                include_log_tail_lines=200,
+            )
+
+            response = await main.send_test_email(
+                None,
+                db,
+                None,
+                enabled="on",
+                smtp_host="mail.example.com",
+                smtp_port=2525,
+                smtp_username="notify@example.com",
+                smtp_password="",
+                sender="notify@example.com",
+                recipients="ops@example.com",
+                use_starttls=None,
+                notify_success="on",
+                notify_failure="on",
+                notify_canceled=None,
+                app_base_url="http://runner.local",
+                include_log_tail_lines=50,
+            )
+            saved = load_email_notification_settings(db)
+
+            assert response.headers["location"] == "/settings?email_test=sent"
+            assert calls == ["mail.example.com"]
+            assert saved.smtp_host == "mail.example.com"
+            assert saved.smtp_password == "app-password"
+
+    async def failing_send_test_notification(settings):
+        raise ValueError("bad smtp")
+
+    monkeypatch.setattr(main, "send_test_notification", failing_send_test_notification)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            response = await main.send_test_email(
+                None,
+                db,
+                None,
+                enabled="on",
+                smtp_host="mail.example.com",
+                smtp_port=2525,
+                smtp_username="notify@example.com",
+                smtp_password="app-password",
+                sender="notify@example.com",
+                recipients="ops@example.com",
+                use_starttls="on",
+                notify_success=None,
+                notify_failure="on",
+                notify_canceled="on",
+                app_base_url="",
+                include_log_tail_lines=200,
+            )
+
+            assert response.headers["location"] == "/settings?email_error=bad+smtp"
 
 
 async def test_clear_history_removes_run_records_and_logs_but_keeps_jobs():

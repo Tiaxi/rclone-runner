@@ -23,6 +23,12 @@ from app.config import runtime_warnings, settings
 from app.core.commands import CommandPolicyError, build_rclone_argv, parse_console_command
 from app.core.logs import read_log_append, read_log_chunk
 from app.core.models import utc_now
+from app.core.notifications import (
+    EmailNotificationSettings,
+    load_email_notification_settings,
+    save_email_notification_settings,
+    send_test_notification,
+)
 from app.core.pty_console import bridge_pty, display_argv
 from app.core.retention import prune_logs
 from app.core.schedule import cron_summary, normalize_cron
@@ -719,6 +725,9 @@ async def settings_page(
     db: DbSession,
     pruned: int | None = None,
     cleared: int | None = None,
+    email_saved: int | None = None,
+    email_test: str | None = None,
+    email_error: str | None = None,
 ) -> Response:
     count = _prunable_logs(db)
     return templates.TemplateResponse(
@@ -729,8 +738,98 @@ async def settings_page(
             "known_logs": len(count),
             "pruned": pruned,
             "cleared": cleared,
+            "email_settings": load_email_notification_settings(db),
+            "email_saved": email_saved,
+            "email_test": email_test,
+            "email_error": email_error,
         },
     )
+
+
+@app.post("/settings/email")
+async def save_email_settings(
+    _: AuthRequired,
+    db: DbSession,
+    _csrf: Annotated[None, Depends(require_csrf)],
+    enabled: str | None = Form(None),
+    smtp_host: str = Form(""),
+    smtp_port: int = Form(587),
+    smtp_username: str = Form(""),
+    smtp_password: str = Form(""),
+    sender: str = Form(""),
+    recipients: str = Form(""),
+    use_starttls: str | None = Form(None),
+    notify_success: str | None = Form(None),
+    notify_failure: str | None = Form(None),
+    notify_canceled: str | None = Form(None),
+    app_base_url: str = Form(""),
+    include_log_tail_lines: int = Form(200),
+) -> Response:
+    save_email_notification_settings(
+        db,
+        _email_settings_from_form(
+            enabled=enabled,
+            smtp_host=smtp_host,
+            smtp_port=smtp_port,
+            smtp_username=smtp_username,
+            smtp_password=smtp_password,
+            sender=sender,
+            recipients=recipients,
+            use_starttls=use_starttls,
+            notify_success=notify_success,
+            notify_failure=notify_failure,
+            notify_canceled=notify_canceled,
+            app_base_url=app_base_url,
+            include_log_tail_lines=include_log_tail_lines,
+        ),
+        preserve_password=True,
+    )
+    return RedirectResponse("/settings?email_saved=1", status_code=303)
+
+
+@app.post("/settings/email/test")
+async def send_test_email(
+    _: AuthRequired,
+    db: DbSession,
+    _csrf: Annotated[None, Depends(require_csrf)],
+    enabled: str | None = Form(None),
+    smtp_host: str = Form(""),
+    smtp_port: int = Form(587),
+    smtp_username: str = Form(""),
+    smtp_password: str = Form(""),
+    sender: str = Form(""),
+    recipients: str = Form(""),
+    use_starttls: str | None = Form(None),
+    notify_success: str | None = Form(None),
+    notify_failure: str | None = Form(None),
+    notify_canceled: str | None = Form(None),
+    app_base_url: str = Form(""),
+    include_log_tail_lines: int = Form(200),
+) -> Response:
+    notification_settings = _email_settings_from_form(
+        enabled=enabled,
+        smtp_host=smtp_host,
+        smtp_port=smtp_port,
+        smtp_username=smtp_username,
+        smtp_password=smtp_password,
+        sender=sender,
+        recipients=recipients,
+        use_starttls=use_starttls,
+        notify_success=notify_success,
+        notify_failure=notify_failure,
+        notify_canceled=notify_canceled,
+        app_base_url=app_base_url,
+        include_log_tail_lines=include_log_tail_lines,
+    )
+    save_email_notification_settings(db, notification_settings, preserve_password=True)
+    try:
+        await send_test_notification(notification_settings)
+    except Exception as exc:
+        return RedirectResponse(
+            f"/settings?{urlencode({'email_error': str(exc)})}",
+            status_code=303,
+        )
+    return RedirectResponse("/settings?email_test=sent", status_code=303)
 
 
 @app.post("/settings/prune")
@@ -751,6 +850,39 @@ async def clear_history(
 ) -> Response:
     cleared = _clear_history(db)
     return RedirectResponse(f"/settings?cleared={cleared}", status_code=303)
+
+
+def _email_settings_from_form(
+    *,
+    enabled: str | None,
+    smtp_host: str,
+    smtp_port: int,
+    smtp_username: str,
+    smtp_password: str,
+    sender: str,
+    recipients: str,
+    use_starttls: str | None,
+    notify_success: str | None,
+    notify_failure: str | None,
+    notify_canceled: str | None,
+    app_base_url: str,
+    include_log_tail_lines: int,
+) -> EmailNotificationSettings:
+    return EmailNotificationSettings(
+        enabled=enabled == "on",
+        smtp_host=smtp_host.strip(),
+        smtp_port=smtp_port,
+        smtp_username=smtp_username.strip(),
+        smtp_password=smtp_password,
+        sender=sender.strip(),
+        recipients=recipients.strip(),
+        use_starttls=use_starttls == "on",
+        notify_success=notify_success == "on",
+        notify_failure=notify_failure == "on",
+        notify_canceled=notify_canceled == "on",
+        app_base_url=app_base_url.strip(),
+        include_log_tail_lines=include_log_tail_lines,
+    )
 
 
 def _replace_steps(job: JobRecord, steps_text: str) -> None:

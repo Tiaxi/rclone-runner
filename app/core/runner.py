@@ -13,6 +13,7 @@ from app.core.models import Job, JobRunResult, JobStep, StepRunResult, utc_now
 from app.db import JobRunRecord, JobStepRunRecord
 
 Executor = Callable[[list[str], dict[str, str], Path], Awaitable[int]]
+NotificationCallback = Callable[[int], Awaitable[None]]
 
 
 async def subprocess_executor(argv: list[str], env: dict[str, str], log_path: Path) -> int:
@@ -107,11 +108,16 @@ class JobRunner:
 
 class LiveJobRunner:
     def __init__(
-        self, log_root: Path, session_factory, executor: Executor = subprocess_executor
+        self,
+        log_root: Path,
+        session_factory,
+        executor: Executor = subprocess_executor,
+        notification_callback: NotificationCallback | None = None,
     ) -> None:
         self._log_root = log_root
         self._session_factory = session_factory
         self._executor = executor
+        self._notification_callback = notification_callback
         self._active_job_ids: set[int] = set()
         self._tasks: dict[int, asyncio.Task[None]] = {}
 
@@ -249,6 +255,9 @@ class LiveJobRunner:
                 self._finish_step_run(step_run.id, "failed", None)
         finally:
             self._finish_job_run(job_run_id, job_status)
+            if self._notification_callback is not None:
+                with suppress(Exception):
+                    await self._notification_callback(job_run_id)
 
     def _get_first_step_run(self, job_run_id: int) -> JobStepRunRecord:
         with self._session_factory() as db:

@@ -328,6 +328,7 @@ pre {
 }
 
 label {
+  align-content: start;
   color: var(--muted);
   display: grid;
   gap: 8px;
@@ -362,6 +363,21 @@ textarea {
 .actions {
   display: flex;
   gap: 10px;
+}
+
+.option-group {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 14px;
+}
+
+.option-group legend {
+  color: var(--muted);
+  font-weight: 700;
+  padding: 0 6px;
 }
 
 .button-row {
@@ -472,6 +488,12 @@ textarea {
   max-width: 420px;
   padding: 28px;
   width: calc(100% - 32px);
+}
+
+.login-brand {
+  align-items: center;
+  display: flex;
+  gap: 10px;
 }
 
 .stack {
@@ -759,6 +781,7 @@ textarea {
   padding: 10px 0;
 }
 
+.settings-section,
 .danger-zone {
   border-top: 1px solid var(--line);
   margin-top: 28px;

@@ -78,6 +78,17 @@ Important variables:
 
 `.env` is ignored by Git. Keep real secrets, dataset paths, and deployment-specific values there.
 
+## Email Notifications
+
+Email notifications are configured from the Settings page. The app supports generic SMTP settings,
+including Gmail with `smtp.gmail.com`, port `587`, STARTTLS, your Gmail address as the username,
+and a Gmail app password as the SMTP password.
+
+The SMTP password is stored in the SQLite database and is write-only in the UI: leaving the password
+field blank keeps the saved value. You can choose which job outcomes send mail: success, failure,
+and canceled runs. Failed and canceled job emails include the configured tail of the job log so the
+problem is visible without opening the app.
+
 ## Docker Compose
 
 For local development or a TrueNAS SCALE custom app using "Install via YAML":

@@ -8,6 +8,15 @@
 {% if cleared is not none %}
 <p class="notice">Cleared {{ cleared }} history {{ "record" if cleared == 1 else "records" }} and their known log files.</p>
 {% endif %}
+{% if email_saved %}
+<p class="notice">Saved email notification settings.</p>
+{% endif %}
+{% if email_test == "sent" %}
+<p class="notice">Sent test email.</p>
+{% endif %}
+{% if email_error %}
+<p class="alert">{{ email_error }}</p>
+{% endif %}
 <dl class="settings-list">
   <dt>Data directory</dt><dd><code>{{ settings.data_dir }}</code></dd>
   <dt>Log directory</dt><dd><code>{{ settings.log_dir }}</code></dd>
@@ -15,10 +24,40 @@
   <dt>Retention</dt><dd>{{ settings.retention_days }} days</dd>
   <dt>Known log files</dt><dd>{{ known_logs }}</dd>
 </dl>
-<form method="post" action="/settings/prune" onsubmit="return confirm('Prune old log files?')">
+
+<h2>Email notifications</h2>
+<form method="post" action="/settings/email" class="form-grid">
   {{ csrf_field()|safe }}
-  <button type="submit">Prune old logs</button>
+  <label class="checkbox full"><input type="checkbox" name="enabled" {% if email_settings.enabled %}checked{% endif %}> Enable email notifications</label>
+  <label>SMTP host <input name="smtp_host" value="{{ email_settings.smtp_host }}" placeholder="smtp.gmail.com"></label>
+  <label>SMTP port <input name="smtp_port" type="number" min="1" value="{{ email_settings.smtp_port }}"></label>
+  <label>SMTP username <input name="smtp_username" value="{{ email_settings.smtp_username }}" autocomplete="username"></label>
+  <label>SMTP app password <input name="smtp_password" value="" type="password" autocomplete="new-password" placeholder="{% if email_settings.smtp_password %}Saved; leave blank to keep{% else %}App password{% endif %}"></label>
+  <label>Sender <input name="sender" value="{{ email_settings.sender }}" placeholder="user@gmail.com"></label>
+  <label>Recipients <textarea name="recipients" rows="3" placeholder="ops@example.com">{{ email_settings.recipients }}</textarea></label>
+  <label>App URL <input name="app_base_url" value="{{ email_settings.app_base_url }}" placeholder="http://rclone-runner.local:8000"></label>
+  <label>Failure log tail lines <input name="include_log_tail_lines" type="number" min="1" value="{{ email_settings.include_log_tail_lines }}"></label>
+  <label class="checkbox"><input type="checkbox" name="use_starttls" {% if email_settings.use_starttls %}checked{% endif %}> Use STARTTLS</label>
+  <fieldset class="full option-group">
+    <legend>Email events</legend>
+    <label class="checkbox"><input type="checkbox" name="notify_success" {% if email_settings.notify_success %}checked{% endif %}> Successful job runs</label>
+    <label class="checkbox"><input type="checkbox" name="notify_failure" {% if email_settings.notify_failure %}checked{% endif %}> Failed job runs</label>
+    <label class="checkbox"><input type="checkbox" name="notify_canceled" {% if email_settings.notify_canceled %}checked{% endif %}> Canceled job runs</label>
+  </fieldset>
+  <div class="actions full">
+    <button type="submit">Save email settings</button>
+    <button class="secondary" type="submit" formaction="/settings/email/test">Send test email</button>
+  </div>
 </form>
+
+<section class="settings-section">
+  <h2>Maintenance</h2>
+  <p>Remove old log files according to the configured retention window.</p>
+  <form method="post" action="/settings/prune" onsubmit="return confirm('Prune old log files?')">
+    {{ csrf_field()|safe }}
+    <button type="submit">Prune old logs</button>
+  </form>
+</section>
 
 <section class="danger-zone">
   <h2>History</h2>

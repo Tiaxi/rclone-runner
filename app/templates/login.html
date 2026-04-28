@@ -21,7 +21,10 @@
   </head>
   <body class="login-body">
     <main class="login-panel">
-      <h1>Rclone Runner</h1>
+      <h1 class="login-brand">
+        <img class="brand-mark" src="/static/favicon.svg" alt="" aria-hidden="true">
+        <span>Rclone Runner</span>
+      </h1>
       {% if error %}<p class="alert">{{ error }}</p>{% endif %}
       <form method="post" action="/login" class="stack">
         {{ csrf_field()|safe }}
