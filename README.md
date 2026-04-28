@@ -106,7 +106,7 @@ RCLONE_RUNNER_MEDIA_PATH=/mnt/tank/media
 - Replace `RCLONE_RUNNER_SECRET_KEY` with a long random value unique to the deployment.
 - Confirm `/data`, `/config/rclone`, and any source dataset mounts point at persistent host paths.
 - Set `RCLONE_RUNNER_TIMEZONE`, `TZ`, and `RCLONE_RUNNER_RETENTION_DAYS` for the deployment.
-- Verify the service health endpoint with `curl http://127.0.0.1:8000/health`.
+- Verify the service health endpoint with `curl http://127.0.0.1:${RCLONE_RUNNER_HOST_PORT:-8000}/health`, using the configured host port if `RCLONE_RUNNER_HOST_PORT` is changed.
 - Put the app behind HTTPS or a trusted reverse proxy before remote access.
 - Back up `/data` and `rclone.conf`; they contain the database, run logs, schedules, and rclone remote configuration.
 - Run Rclone Runner only in a single-admin trusted environment.

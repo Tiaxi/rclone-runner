@@ -2,6 +2,7 @@ import asyncio
 import tempfile
 from pathlib import Path
 
+import httpx
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -21,9 +22,12 @@ from app.main import login_form
 
 
 async def test_health_endpoint_is_public_and_reports_ok():
-    response = await main.health()
+    transport = httpx.ASGITransport(app=main.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/health")
 
-    assert response == {"status": "ok"}
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
 
 
 async def test_login_page_renders_with_current_starlette_template_api():
