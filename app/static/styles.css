@@ -698,6 +698,20 @@ textarea {
   padding: 12px 14px;
 }
 
+.runtime-warning {
+  background: var(--notice-bg);
+  border: 1px solid var(--notice-border);
+  border-radius: 8px;
+  color: var(--notice-text);
+  margin-bottom: 20px;
+  padding: 12px 14px;
+}
+
+.runtime-warning ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
 .settings-list {
   background: var(--panel);
   border: 1px solid var(--line);

@@ -40,6 +40,16 @@
       </div>
     </header>
     <main class="page">
+      {% if runtime_warnings %}
+      <section class="runtime-warning" role="alert">
+        <strong>Deployment warning</strong>
+        <ul>
+          {% for warning in runtime_warnings %}
+          <li>{{ warning }}</li>
+          {% endfor %}
+        </ul>
+      </section>
+      {% endif %}
       {% block content %}{% endblock %}
     </main>
     <script>

@@ -43,6 +43,18 @@ def test_base_template_supports_theme_detection_and_toggle():
     assert "color-scheme: dark" in css
 
 
+def test_base_template_renders_runtime_warnings():
+    html = templates.get_template("base.html").render(
+        runtime_warnings=["RCLONE_RUNNER_SECRET_KEY uses a default session secret."]
+    )
+    css = Path("app/static/styles.css").read_text()
+
+    assert 'class="runtime-warning"' in html
+    assert 'role="alert"' in html
+    assert "RCLONE_RUNNER_SECRET_KEY uses a default session secret." in html
+    assert ".runtime-warning" in css
+
+
 def test_compose_declares_healthcheck():
     compose = Path("docker-compose.yml").read_text()
 

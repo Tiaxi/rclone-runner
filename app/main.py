@@ -17,7 +17,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.websockets import WebSocketDisconnect
 
 from app.auth import SESSION_KEY, AuthRequired, verify_password
-from app.config import settings
+from app.config import runtime_warnings, settings
 from app.core.commands import CommandPolicyError, build_rclone_argv, parse_console_command
 from app.core.logs import read_log_append, read_log_chunk
 from app.core.models import utc_now
@@ -40,7 +40,14 @@ from app.db import (
 from app.runner_service import runner
 from app.scheduler import scheduler, sync_schedules
 
-templates = Jinja2Templates(directory="app/templates")
+
+def inject_runtime_warnings(request: Request) -> dict[str, object]:
+    return {"runtime_warnings": runtime_warnings(settings)}
+
+
+templates = Jinja2Templates(
+    directory="app/templates", context_processors=[inject_runtime_warnings]
+)
 
 
 def run_mode_label(trigger: str) -> str:
@@ -58,6 +65,7 @@ templates.env.globals["format_local_time"] = lambda value: _format_local_time(va
 templates.env.globals["format_duration"] = lambda start, end: _format_duration(start, end)
 templates.env.globals["utc_now"] = utc_now
 templates.env.globals["run_exit_label"] = lambda run: _exit_label(run.status, run.exit_code)
+
 
 LOG_CHUNK_LINES = 200
 HISTORY_PAGE_SIZE = 25
