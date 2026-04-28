@@ -15,8 +15,16 @@
       {{ csrf_field()|safe }}
       <button class="secondary" type="submit">Dry run</button>
     </form>
+    <form method="post" action="/jobs/{{ job.id }}/delete" onsubmit='return confirm({{ ("Delete " ~ job.name ~ "? Run history will be kept.")|tojson }})'>
+      {{ csrf_field()|safe }}
+      <button class="danger" type="submit">Delete job</button>
+    </form>
   </div>
 </div>
+
+{% if delete_blocked %}
+<p class="notice">This job is running. It must finish or be canceled before deletion.</p>
+{% endif %}
 
 {% include "_job_editor.html" %}
 

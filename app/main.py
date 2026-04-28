@@ -141,7 +141,7 @@ async def index(_: AuthRequired) -> Response:
 
 
 @app.get("/jobs", response_class=HTMLResponse)
-async def jobs(request: Request, _: AuthRequired, db: DbSession) -> Response:
+async def jobs(request: Request, _: AuthRequired, db: DbSession, deleted: bool = False) -> Response:
     records = db.query(JobRecord).order_by(JobRecord.name).all()
     ongoing_job_runs = (
         db.query(JobRunRecord).filter_by(status="running").order_by(JobRunRecord.started_at).all()
@@ -166,6 +166,7 @@ async def jobs(request: Request, _: AuthRequired, db: DbSession) -> Response:
             "ongoing_job_runs": _ongoing_job_run_rows(ongoing_job_runs),
             "ongoing_step_runs": ongoing_step_runs,
             "ongoing_console_runs": ongoing_console_runs,
+            "deleted": deleted,
         },
     )
 
@@ -213,7 +214,9 @@ async def create_job(
 
 
 @app.get("/jobs/{job_id}", response_class=HTMLResponse)
-async def job_detail(request: Request, job_id: int, _: AuthRequired, db: DbSession) -> Response:
+async def job_detail(
+    request: Request, job_id: int, _: AuthRequired, db: DbSession, delete_blocked: bool = False
+) -> Response:
     job = db.get(JobRecord, job_id)
     if job is None:
         return RedirectResponse("/jobs", status_code=303)
@@ -243,6 +246,7 @@ async def job_detail(request: Request, job_id: int, _: AuthRequired, db: DbSessi
             "command_previews": _command_previews(job),
             "job_runs": job_runs,
             "runs": runs,
+            "delete_blocked": delete_blocked,
         },
     )
 
@@ -273,6 +277,25 @@ async def update_job(
     db.commit()
     sync_schedules(db)
     return RedirectResponse(f"/jobs/{job.id}", status_code=303)
+
+
+@app.post("/jobs/{job_id}/delete")
+async def delete_job(
+    job_id: int,
+    _: AuthRequired,
+    _csrf: Annotated[None, Depends(require_csrf)],
+    db: DbSession,
+) -> Response:
+    job = db.get(JobRecord, job_id)
+    if job is None:
+        return RedirectResponse("/jobs", status_code=303)
+    running = db.query(JobRunRecord).filter_by(job_id=job_id, status="running").first()
+    if running is not None:
+        return RedirectResponse(f"/jobs/{job_id}?delete_blocked=1", status_code=303)
+    _delete_job_configuration(db, job)
+    db.commit()
+    sync_schedules(db)
+    return RedirectResponse("/jobs?deleted=1", status_code=303)
 
 
 @app.post("/jobs/{job_id}/run")
@@ -769,6 +792,22 @@ def _command_previews(job: JobRecord) -> list[dict[str, str]]:
             tokens = [display_argv([part]) for part in argv]
         previews.append({"id": step.id, "name": step.name, "command": command, "tokens": tokens})
     return previews
+
+
+def _delete_job_configuration(db, job: JobRecord) -> None:
+    step_ids = [step.id for step in job.steps]
+    if step_ids:
+        (
+            db.query(JobStepRunRecord)
+            .filter(JobStepRunRecord.step_id.in_(step_ids))
+            .update({JobStepRunRecord.step_id: None}, synchronize_session="fetch")
+        )
+    (
+        db.query(JobRunRecord)
+        .filter_by(job_id=job.id)
+        .update({JobRunRecord.job_id: None}, synchronize_session="fetch")
+    )
+    db.delete(job)
 
 
 def _prunable_logs(db) -> list[tuple[Path, datetime]]:

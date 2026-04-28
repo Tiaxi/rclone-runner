@@ -9,6 +9,10 @@
   <a class="button" href="/jobs/new">New job</a>
 </div>
 
+{% if deleted %}
+<p class="notice">Deleted job configuration. Run history was kept.</p>
+{% endif %}
+
 <h2>Ongoing activity</h2>
 
 <h3>Job runs</h3>
@@ -97,6 +101,10 @@
             <form method="post" action="/jobs/{{ job.id }}/dry-run">
               {{ csrf_field()|safe }}
               <button class="secondary" type="submit">Dry run</button>
+            </form>
+            <form method="post" action="/jobs/{{ job.id }}/delete" onsubmit='return confirm({{ ("Delete " ~ job.name ~ "? Run history will be kept.")|tojson }})'>
+              {{ csrf_field()|safe }}
+              <button class="danger" type="submit">Delete</button>
             </form>
           </div>
         </td>

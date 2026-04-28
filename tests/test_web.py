@@ -540,6 +540,100 @@ async def test_delete_individual_job_run_removes_steps_and_logs():
             assert not log_path.exists()
 
 
+async def test_delete_job_removes_configuration_but_keeps_history(monkeypatch):
+    synced = []
+
+    def fake_sync_schedules(db):
+        synced.append(db)
+
+    monkeypatch.setattr(main, "sync_schedules", fake_sync_schedules)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        log_path = Path(tmpdir) / "run.log"
+        console_log_path = Path(tmpdir) / "console.log"
+        log_path.write_text("run", encoding="utf-8")
+        console_log_path.write_text("console", encoding="utf-8")
+        with session_factory() as db:
+            job = _create_job(db, step_names=["one", "two"])
+            job_id = job.id
+            step_ids = [step.id for step in job.steps]
+            job_run = JobRunRecord(
+                job_id=job.id,
+                job_name=job.name,
+                trigger="manual",
+                status="success",
+                started_at=main.utc_now(),
+                ended_at=main.utc_now(),
+            )
+            db.add(job_run)
+            db.flush()
+            step_run = JobStepRunRecord(
+                job_run_id=job_run.id,
+                step_id=job.steps[0].id,
+                step_name=job.steps[0].name,
+                argv_json='["rclone", "lsd", "secret:"]',
+                status="success",
+                exit_code=0,
+                log_path=str(log_path),
+                started_at=job_run.started_at,
+                ended_at=job_run.ended_at,
+            )
+            console_run = ConsoleRunRecord(
+                status="success",
+                command="version",
+                argv_json='["rclone", "version"]',
+                exit_code=0,
+                log_path=str(console_log_path),
+                started_at=main.utc_now(),
+                ended_at=main.utc_now(),
+            )
+            db.add_all([step_run, console_run])
+            db.commit()
+            job_run_id = job_run.id
+            step_run_id = step_run.id
+            console_run_id = console_run.id
+
+            response = await main.delete_job(job_id, None, None, db)
+
+            assert response.status_code == 303
+            assert response.headers["location"] == "/jobs?deleted=1"
+            assert db.get(JobRecord, job_id) is None
+            for step_id in step_ids:
+                assert db.get(JobStepRecord, step_id) is None
+            assert db.get(JobRunRecord, job_run_id) is not None
+            assert db.get(JobRunRecord, job_run_id).job_id is None
+            assert db.get(JobStepRunRecord, step_run_id) is not None
+            assert db.get(JobStepRunRecord, step_run_id).step_id is None
+            assert db.get(ConsoleRunRecord, console_run_id) is not None
+            assert log_path.exists()
+            assert console_log_path.exists()
+            assert synced == [db]
+
+
+async def test_delete_job_is_blocked_while_running(monkeypatch):
+    synced = []
+
+    def fake_sync_schedules(db):
+        synced.append(db)
+
+    monkeypatch.setattr(main, "sync_schedules", fake_sync_schedules)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = _create_job(db)
+            job_id = job.id
+            step_id = job.steps[0].id
+            _create_running_step_run(db)
+
+            response = await main.delete_job(job_id, None, None, db)
+
+            assert response.status_code == 303
+            assert response.headers["location"] == f"/jobs/{job_id}?delete_blocked=1"
+            assert db.get(JobRecord, job_id) is not None
+            assert db.get(JobStepRecord, step_id) is not None
+            assert synced == []
+
+
 async def test_delete_individual_step_run_removes_log_only_for_that_step():
     with tempfile.TemporaryDirectory() as tmpdir:
         session_factory = _session_factory(Path(tmpdir) / "runs.db")

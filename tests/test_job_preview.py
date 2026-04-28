@@ -578,12 +578,47 @@ def test_post_forms_include_csrf_fields_and_destructive_confirmations():
         csrf_field=lambda: csrf_input,
     )
 
-    assert jobs_html.count('name="csrf_token"') == 3
+    assert jobs_html.count('name="csrf_token"') == 4
     assert settings_html.count('name="csrf_token"') == 3
     assert runs_html.count('name="csrf_token"') == 4
+    assert 'return confirm("Delete backup? Run history will be kept.")' in jobs_html
     assert "return confirm('Prune old log files?')" in settings_html
     assert "return confirm('Clear all run and console history?')" in settings_html
     assert "return confirm('Delete this run and its log file?')" in runs_html
+
+
+def test_job_delete_actions_render_in_list_and_detail():
+    csrf_input = '<input type="hidden" name="csrf_token" value="token">'
+    job = SimpleNamespace(id=7, name="Nightly backup", cron="", enabled=True, steps=[])
+
+    jobs_html = templates.get_template("jobs.html").render(
+        jobs=[{"record": job, "schedule_summary": "Never"}],
+        ongoing_job_runs=[],
+        ongoing_step_runs=[],
+        ongoing_console_runs=[],
+        deleted=True,
+        csrf_field=lambda: csrf_input,
+    )
+    detail_html = templates.get_template("job_detail.html").render(
+        job=job,
+        schedule_summary="Never",
+        env_lines="",
+        steps_text="",
+        command_previews=[],
+        job_runs=[],
+        runs=[],
+        delete_blocked=True,
+        csrf_field=lambda: csrf_input,
+    )
+
+    assert "Deleted job configuration. Run history was kept." in jobs_html
+    assert 'method="post" action="/jobs/7/delete"' in jobs_html
+    assert 'method="post" action="/jobs/7/delete"' in detail_html
+    assert detail_html.count('name="csrf_token"') == 5
+    assert "Delete job" in detail_html
+    assert 'return confirm("Delete Nightly backup? Run history will be kept.")' in jobs_html
+    assert 'return confirm("Delete Nightly backup? Run history will be kept.")' in detail_html
+    assert "This job is running. It must finish or be canceled before deletion." in detail_html
 
 
 class NestedFormParser(HTMLParser):
