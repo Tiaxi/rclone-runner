@@ -259,6 +259,38 @@ def test_console_ctrl_v_pastes_clipboard_into_terminal():
     assert "sendInput(text);" in html
 
 
+def test_console_terminal_renders_ansi_sequences():
+    html = templates.get_template("console.html").render(recent=[], recent_commands=[])
+    js = Path("app/static/ansi.js").read_text()
+    css = Path("app/static/styles.css").read_text()
+
+    assert '<script src="/static/ansi.js"></script>' in html
+    assert "rcloneRunnerAnsi.render" in html
+    assert "ansi-red" in js
+    assert ".ansi-red" in css
+
+
+def test_log_viewer_renders_ansi_sequences():
+    html = templates.get_template("_log_viewer.html").render(
+        log_chunk=SimpleNamespace(
+            text="\x1b[91mred\x1b[0m",
+            next_before="",
+            has_more=False,
+            end_offset=12,
+        ),
+        log_chunk_url="/logs/chunk",
+        log_append_url="/logs/append",
+        status_url=None,
+        raw_log_url="/logs/raw",
+        run=SimpleNamespace(status="success"),
+        log_status_url=None,
+        log_append_offset=12,
+    )
+
+    assert '<script src="/static/ansi.js"></script>' in html
+    assert "rcloneRunnerAnsi.render" in html
+
+
 def test_history_tables_use_styled_status_labels():
     job_run = SimpleNamespace(
         id=3,

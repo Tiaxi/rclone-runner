@@ -29,6 +29,7 @@
   </table>
 </section>
 
+<script src="/static/ansi.js"></script>
 <script>
   (() => {
     const terminal = document.querySelector("#terminal");
@@ -51,18 +52,11 @@
       localStorage.setItem("terminalFontSize", String(terminalFontSize));
     }
 
-    function escapeHtml(text) {
-      return text
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;");
-    }
-
     function renderTerminal() {
       const beforeCaret = commandBuffer.slice(0, cursorIndex);
       const caretCharacter = commandBuffer[cursorIndex] || " ";
       const afterCaret = commandBuffer.slice(cursorIndex + 1);
-      terminal.innerHTML = `${escapeHtml(committedText)}${escapeHtml(beforeCaret)}<span class="terminal-caret">${escapeHtml(caretCharacter)}</span>${escapeHtml(afterCaret)}`;
+      terminal.innerHTML = `${rcloneRunnerAnsi.render(committedText)}${rcloneRunnerAnsi.render(beforeCaret)}<span class="terminal-caret">${rcloneRunnerAnsi.render(caretCharacter)}</span>${rcloneRunnerAnsi.render(afterCaret)}`;
       terminal.scrollTop = terminal.scrollHeight;
     }
 

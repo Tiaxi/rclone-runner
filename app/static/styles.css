@@ -742,6 +742,54 @@ textarea {
   color: var(--terminal-bg);
 }
 
+.ansi-bold {
+  font-weight: 700;
+}
+
+.ansi-dim {
+  opacity: 0.72;
+}
+
+.ansi-italic {
+  font-style: italic;
+}
+
+.ansi-underline {
+  text-decoration: underline;
+}
+
+.ansi-black {
+  color: #8d9688;
+}
+
+.ansi-red {
+  color: #ff8a80;
+}
+
+.ansi-green {
+  color: #93d993;
+}
+
+.ansi-yellow {
+  color: #f2d574;
+}
+
+.ansi-blue {
+  color: #8db7ff;
+}
+
+.ansi-magenta {
+  color: #dca0ff;
+}
+
+.ansi-cyan {
+  color: #7bd6d8;
+}
+
+.ansi-white {
+  color: #f5f8f2;
+}
+
 .notice {
   background: var(--notice-bg);
   border: 1px solid var(--notice-border);

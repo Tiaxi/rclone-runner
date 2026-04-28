@@ -16,6 +16,7 @@
   >{{ log_chunk.text }}</pre>
 </div>
 
+<script src="/static/ansi.js"></script>
 <script>
   (() => {
     const output = document.querySelector("#log-output");
@@ -28,6 +29,11 @@
     let loading = false;
     let live = output.dataset.live === "true";
     let appendOffset = Number.parseInt(output.dataset.appendOffset || "0", 10);
+    let rawLogText = output.textContent;
+
+    function renderLog() {
+      output.innerHTML = rcloneRunnerAnsi.render(rawLogText);
+    }
 
     function hasMore() {
       return output.dataset.hasMore === "true" && output.dataset.nextBefore !== "";
@@ -47,7 +53,8 @@
       const previousHeight = output.scrollHeight;
       const response = await fetch(`${output.dataset.chunkUrl}?before=${output.dataset.nextBefore}`);
       const chunk = await response.json();
-      output.textContent = `${chunk.text}${output.textContent}`;
+      rawLogText = `${chunk.text}${rawLogText}`;
+      renderLog();
       output.dataset.nextBefore = chunk.next_before ?? "";
       output.dataset.hasMore = chunk.has_more ? "true" : "false";
       output.scrollTop = output.scrollHeight - previousHeight;
@@ -94,7 +101,8 @@
       appendOffset = chunk.offset ?? appendOffset;
       output.dataset.appendOffset = appendOffset;
       if (chunk.text) {
-        output.textContent = `${output.textContent}${chunk.text}`;
+        rawLogText = `${rawLogText}${chunk.text}`;
+        renderLog();
         if (pinned) {
           output.scrollTop = output.scrollHeight;
         }
@@ -119,6 +127,7 @@
     });
 
     updateStatus();
+    renderLog();
     requestAnimationFrame(() => {
       output.scrollTop = output.scrollHeight;
     });
