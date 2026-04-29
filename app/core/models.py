@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from app.core.rclone_stats import RcloneTransferStats
+
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
@@ -35,6 +37,7 @@ class StepRunResult:
     ended_at: datetime
     exit_code: int
     log_path: Path
+    transfer_stats: RcloneTransferStats | None = None
 
     @property
     def success(self) -> bool:

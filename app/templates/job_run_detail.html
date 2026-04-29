@@ -34,6 +34,18 @@
         <span class="run-summary-label">Finished</span>
         <span id="job-run-finished-at">{{ format_local_time(job_run.ended_at) if job_run.ended_at is not none else "Running" }}</span>
       </div>
+      <div class="run-summary-item">
+        <span class="run-summary-label">Data transferred</span>
+        <span id="job-run-data-transferred">{{ run_stats.transferred_data_label }}</span>
+      </div>
+      <div class="run-summary-item">
+        <span class="run-summary-label">Files transferred</span>
+        <span id="job-run-files-transferred">{{ run_stats.transferred_files_label }}</span>
+      </div>
+      <div class="run-summary-item">
+        <span class="run-summary-label">Deleted files</span>
+        <span id="job-run-deleted-files">{{ run_stats.deleted_files_label }}{% if run_stats.has_unavailable %} <span class="muted">(some unavailable)</span>{% endif %}</span>
+      </div>
     </div>
   </div>
   <div class="button-row">
@@ -54,7 +66,7 @@
 <h2>Steps</h2>
 <section class="table-wrap">
   <table>
-    <thead><tr><th>Step</th><th>Status</th><th>Exit</th><th>Log</th></tr></thead>
+    <thead><tr><th>Step</th><th>Status</th><th>Exit</th><th>Stats</th><th>Log</th></tr></thead>
     <tbody>
       {% for row in step_rows %}
       {% set step_run = row.run %}
@@ -62,6 +74,7 @@
         <td>{{ row.name }}</td>
         <td><span class="run-status {{ row.status }}">{{ row.status|capitalize }}</span></td>
         <td data-step-exit="true">{{ run_exit_label(step_run) if step_run else "Pending" }}</td>
+        <td data-step-stats="true">{{ row.stats.label }}</td>
         <td data-step-log="true">
           {% if step_run %}
           <a href="/runs/{{ step_run.id }}">Open</a>
@@ -92,6 +105,9 @@
     const currentStep = document.querySelector("#job-run-current-step");
     const elapsed = document.querySelector("#job-run-elapsed");
     const finishedAt = document.querySelector("#job-run-finished-at");
+    const dataTransferred = document.querySelector("#job-run-data-transferred");
+    const filesTransferred = document.querySelector("#job-run-files-transferred");
+    const deletedFiles = document.querySelector("#job-run-deleted-files");
     const cancelForm = document.querySelector("#cancel-job-run-form");
     let live = statusText && statusText.classList.contains("running");
 
@@ -119,6 +135,17 @@
       if (finishedAt) {
         finishedAt.textContent = state.finished_at ?? "Running";
       }
+      if (state.stats) {
+        if (dataTransferred) {
+          dataTransferred.textContent = state.stats.transferred_data;
+        }
+        if (filesTransferred) {
+          filesTransferred.textContent = state.stats.transferred_files;
+        }
+        if (deletedFiles) {
+          deletedFiles.textContent = state.stats.deleted_files + (state.stats.has_unavailable ? " (some unavailable)" : "");
+        }
+      }
       state.steps.forEach((step) => {
         const row = document.querySelector(`[data-step-key="${step.key}"]`);
         if (!row) {
@@ -132,6 +159,10 @@
         const exitCell = row.querySelector("[data-step-exit]");
         if (exitCell) {
           exitCell.textContent = step.exit_label ?? "Pending";
+        }
+        const statsCell = row.querySelector("[data-step-stats]");
+        if (statsCell) {
+          statsCell.textContent = step.stats_label ?? "Stats unavailable";
         }
         const logCell = row.querySelector("[data-step-log]");
         if (logCell) {

@@ -15,6 +15,14 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.core.rclone_stats import (
+    RcloneTransferStats,
+    RunStatsDisplay,
+    run_stats_display,
+    stats_from_json,
+    stats_from_log,
+    step_stats_display,
+)
 from app.db import JobRunRecord, SettingRecord
 
 EMAIL_SETTINGS_KEY = "email_notifications"
@@ -197,6 +205,7 @@ def _job_log_tail(run: JobRunRecord, line_count: int) -> str:
 
 
 def _plain_text_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: str) -> str:
+    run_stats = _job_run_stats(run)
     lines = [
         f"{run.status.upper()}: {run.job_name}",
         "",
@@ -204,15 +213,21 @@ def _plain_text_body(value: EmailNotificationSettings, run: JobRunRecord, log_ta
         f"Started: {_format_time(run.started_at)}",
         f"Finished: {_format_time(run.ended_at)}",
         f"Duration: {_format_duration(run.started_at, run.ended_at)}",
+        f"Data transferred: {run_stats.transferred_data_label}",
+        f"Files transferred: {run_stats.transferred_files_label}",
+        f"Deleted files: {run_stats.deleted_files_label}",
     ]
+    if run_stats.has_unavailable:
+        lines.append("Some step stats unavailable")
     if value.app_base_url:
         lines.append(f"Run: {value.app_base_url.rstrip('/')}/job-runs/{run.id}")
     lines.append("")
     lines.append("Steps:")
     for step in sorted(run.step_runs, key=lambda item: item.started_at):
+        stats = step_stats_display(_step_transfer_stats(step))
         lines.append(
             f"- {step.step_name}: {step.status.upper()} "
-            f"(exit {_exit_label(step.exit_code, step.status)})"
+            f"(exit {_exit_label(step.exit_code, step.status)}), {stats.label}"
         )
     if log_tail:
         lines.extend(["", "Log tail:", log_tail])
@@ -220,6 +235,7 @@ def _plain_text_body(value: EmailNotificationSettings, run: JobRunRecord, log_ta
 
 
 def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: str) -> str:
+    run_stats = _job_run_stats(run)
     status = html.escape(run.status.upper())
     status_bg, status_text = _status_colors(run.status)
     job_name = html.escape(run.job_name)
@@ -255,18 +271,7 @@ def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: st
         "border-radius: 8px; overflow: hidden; width: 100%;"
     )
     rows = "\n".join(
-        "<tr>"
-        '<td style="padding: 12px 14px; border-top: 1px solid #dbe3d7;">'
-        f"{html.escape(step.step_name)}</td>"
-        '<td style="padding: 12px 14px; border-top: 1px solid #dbe3d7; '
-        'font-weight: 700;">'
-        f"{html.escape(step.status.upper())}</td>"
-        '<td style="padding: 12px 14px; border-top: 1px solid #dbe3d7;">'
-        f"{html.escape(_exit_label(step.exit_code, step.status))}</td>"
-        '<td style="padding: 12px 14px; border-top: 1px solid #dbe3d7;">'
-        f"{html.escape(_format_time(step.started_at))}</td>"
-        "</tr>"
-        for step in sorted(run.step_runs, key=lambda item: item.started_at)
+        _step_row_html(step) for step in sorted(run.step_runs, key=lambda item: item.started_at)
     )
     link = ""
     if value.app_base_url:
@@ -284,8 +289,16 @@ def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: st
             _summary_row("Started", _format_time(run.started_at)),
             _summary_row("Finished", _format_time(run.ended_at)),
             _summary_row("Duration", duration, escape_value=False),
+            _summary_row("Data transferred", run_stats.transferred_data_label),
+            _summary_row("Files transferred", run_stats.transferred_files_label),
+            _summary_row("Deleted files", run_stats.deleted_files_label),
         ]
     )
+    unavailable_note = ""
+    if run_stats.has_unavailable:
+        unavailable_note = (
+            '<p style="color: #62685f; margin: 12px 0 0;">Some step stats unavailable.</p>'
+        )
     log_block = ""
     if log_tail:
         log_block = (
@@ -326,6 +339,7 @@ def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: st
           <table role="presentation" style="border-collapse: collapse; width: 100%;">
             {summary_rows}
           </table>
+          {unavailable_note}
     {link}
           <h2 style="font-size: 18px; margin: 28px 0 10px;">Steps</h2>
           <table style="{steps_table_style}">
@@ -334,6 +348,7 @@ def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: st
                 <th align="left" style="padding: 12px 14px;">Step</th>
                 <th align="left" style="padding: 12px 14px;">Status</th>
                 <th align="left" style="padding: 12px 14px;">Exit</th>
+                <th align="left" style="padding: 12px 14px;">Stats</th>
                 <th align="left" style="padding: 12px 14px;">Started</th>
               </tr>
             </thead>
@@ -345,6 +360,47 @@ def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: st
     </div>
   </body>
 </html>"""
+
+
+def _step_row_html(step) -> str:
+    stats = step_stats_display(_step_transfer_stats(step))
+    return (
+        "<tr>"
+        '<td style="padding: 12px 14px; border-top: 1px solid #dbe3d7;">'
+        f"{html.escape(step.step_name)}</td>"
+        '<td style="padding: 12px 14px; border-top: 1px solid #dbe3d7; '
+        'font-weight: 700;">'
+        f"{html.escape(step.status.upper())}</td>"
+        '<td style="padding: 12px 14px; border-top: 1px solid #dbe3d7;">'
+        f"{html.escape(_exit_label(step.exit_code, step.status))}</td>"
+        '<td style="padding: 12px 14px; border-top: 1px solid #dbe3d7;">'
+        f"{html.escape(stats.label)}</td>"
+        '<td style="padding: 12px 14px; border-top: 1px solid #dbe3d7;">'
+        f"{html.escape(_format_time(step.started_at))}</td>"
+        "</tr>"
+    )
+
+
+def _job_run_stats(run: JobRunRecord) -> RunStatsDisplay:
+    values: list[RcloneTransferStats | None] = []
+    unavailable_count = 0
+    for step in run.step_runs:
+        if step.status == "running" or step.ended_at is None:
+            continue
+        stats = _step_transfer_stats(step)
+        values.append(stats)
+        if stats is None:
+            unavailable_count += 1
+    return run_stats_display(values, unavailable_count=unavailable_count)
+
+
+def _step_transfer_stats(step) -> RcloneTransferStats | None:
+    stored = stats_from_json(step.transfer_stats_json)
+    if stored is not None:
+        return stored
+    if step.ended_at is None:
+        return None
+    return stats_from_log(Path(step.log_path))
 
 
 def _status_colors(status: str) -> tuple[str, str]:

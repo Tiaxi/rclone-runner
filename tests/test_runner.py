@@ -175,6 +175,44 @@ async def test_live_runner_creates_step_record_before_executor_finishes():
 
 
 @pytest.mark.asyncio
+async def test_live_runner_stores_parsed_transfer_stats_when_step_finishes():
+    async def executor(argv, env, log_path):
+        log_path.write_text(
+            "\n".join(
+                [
+                    "Transferred:      1.500 MiB / 1.500 MiB, 100%",
+                    "Deleted:              2 (files), 1 (dirs), 4 KiB (freed)",
+                    "Transferred:          7 / 7, 100%",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return 0
+
+    job = Job(
+        id=42,
+        name="backup",
+        common_args="",
+        env={},
+        steps=[JobStep(id=1, name="one", command="sync /src remote:dst")],
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        runner = LiveJobRunner(Path(tmpdir), session_factory=session_factory, executor=executor)
+        first_step = runner.start_job(job, trigger="manual")
+        assert first_step is not None
+
+        await runner.wait_for_job_run(first_step.job_run_id)
+
+        with session_factory() as db:
+            finished = db.get(JobStepRunRecord, first_step.id)
+            assert finished.transfer_stats_json == (
+                '{"deleted_files": 2, "transferred_bytes": 1572864, "transferred_files": 7}'
+            )
+
+
+@pytest.mark.asyncio
 async def test_live_runner_start_job_works_with_expiring_sessions():
     started = asyncio.Event()
 

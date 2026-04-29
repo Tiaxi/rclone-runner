@@ -117,6 +117,9 @@ def test_job_notification_message_contains_html_summary_and_failure_log(tmp_path
             log_path=str(log_path),
             started_at=run.started_at,
             ended_at=run.ended_at,
+            transfer_stats_json=(
+                '{"transferred_bytes": 1048576, "transferred_files": 3, "deleted_files": 1}'
+            ),
         )
     ]
     settings = EmailNotificationSettings(
@@ -147,6 +150,12 @@ def test_job_notification_message_contains_html_summary_and_failure_log(tmp_path
     assert "background-image: linear-gradient(#2f6f4e, #2f6f4e)" in html
     assert "border: 1px solid #6fbd8f" in html
     assert "Summary" in html
+    assert "Data transferred" in html
+    assert "1.000 MiB" in html
+    assert "Files transferred" in html
+    assert "Deleted files" in html
+    assert "1.000 MiB, 3 files, 1 deleted" in html
+    assert "Stats" in html
     assert "background: #fde2df" in html
     assert "border-radius: 12px" in html
     assert 'role="presentation"' in html
@@ -156,6 +165,60 @@ def test_job_notification_message_contains_html_summary_and_failure_log(tmp_path
     assert "line two" in html
     assert "http://runner.local/job-runs/7" in html
     assert "line two" in text
+    assert "Data transferred: 1.000 MiB" in text
+    assert "- Sync: FAILED (exit 1), 1.000 MiB, 3 files, 1 deleted" in text
+
+
+def test_job_notification_message_marks_missing_step_stats_unavailable(tmp_path):
+    run = JobRunRecord(
+        id=7,
+        job_id=3,
+        job_name="Backup",
+        trigger="manual",
+        status="success",
+        started_at=datetime(2026, 4, 28, 10, 0, tzinfo=UTC),
+        ended_at=datetime(2026, 4, 28, 10, 5, tzinfo=UTC),
+    )
+    run.step_runs = [
+        JobStepRunRecord(
+            id=9,
+            job_run_id=7,
+            step_id=1,
+            step_name="Known",
+            argv_json='["rclone", "sync"]',
+            status="success",
+            exit_code=0,
+            log_path=str(tmp_path / "missing-known.log"),
+            started_at=run.started_at,
+            ended_at=run.ended_at,
+            transfer_stats_json=(
+                '{"transferred_bytes": 2048, "transferred_files": 1, "deleted_files": 0}'
+            ),
+        ),
+        JobStepRunRecord(
+            id=10,
+            job_run_id=7,
+            step_id=2,
+            step_name="Missing",
+            argv_json='["rclone", "sync"]',
+            status="success",
+            exit_code=0,
+            log_path=str(tmp_path / "missing.log"),
+            started_at=run.started_at,
+            ended_at=run.ended_at,
+        ),
+    ]
+    message = build_job_notification_message(
+        EmailNotificationSettings(sender="rclone@example.com", recipients="ops@example.com"),
+        run,
+    )
+    html = message.get_body(("html",)).get_content()
+    text = message.get_body(("plain",)).get_content()
+
+    assert "2 KiB" in html
+    assert "Stats unavailable" in html
+    assert "Some step stats unavailable" in html
+    assert "- Missing: SUCCESS (exit 0), Stats unavailable" in text
 
 
 async def test_send_job_notification_uses_stored_settings_and_failure_log(tmp_path):

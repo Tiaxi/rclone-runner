@@ -10,6 +10,7 @@ from pathlib import Path
 
 from app.core.commands import build_rclone_argv
 from app.core.models import Job, JobRunResult, JobStep, StepRunResult, utc_now
+from app.core.rclone_stats import stats_from_log, stats_to_json
 from app.db import JobRunRecord, JobStepRunRecord
 
 Executor = Callable[[list[str], dict[str, str], Path], Awaitable[int]]
@@ -86,6 +87,7 @@ class JobRunner:
                         ended_at=step_ended_at,
                         exit_code=exit_code,
                         log_path=log_path,
+                        transfer_stats=stats_from_log(log_path),
                     )
                 )
                 if exit_code != 0:
@@ -306,6 +308,8 @@ class LiveJobRunner:
             step_run.status = status
             step_run.exit_code = exit_code
             step_run.ended_at = utc_now()
+            stats = stats_from_log(Path(step_run.log_path))
+            step_run.transfer_stats_json = stats_to_json(stats) if stats is not None else None
             db.commit()
 
     def _cancel_running_step(self, job_run_id: int) -> None:

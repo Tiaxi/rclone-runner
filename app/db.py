@@ -18,6 +18,7 @@ from sqlalchemy.orm import (
 
 from app.config import settings
 from app.core.models import Job, JobRunResult, JobStep, utc_now
+from app.core.rclone_stats import stats_to_json
 
 
 class Base(DeclarativeBase):
@@ -79,6 +80,7 @@ class JobStepRunRecord(Base):
     log_path: Mapped[str] = mapped_column(Text, nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    transfer_stats_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     job_run: Mapped[JobRunRecord] = relationship(back_populates="step_runs")
 
 
@@ -111,6 +113,7 @@ def init_db() -> None:
     settings.log_dir.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
     _migrate_lifecycle_columns()
+    _migrate_transfer_stats_column()
 
 
 def _migrate_lifecycle_columns() -> None:
@@ -143,6 +146,19 @@ def _migrate_lifecycle_columns() -> None:
             connection.exec_driver_sql("PRAGMA foreign_keys=ON")
 
 
+def _migrate_transfer_stats_column() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+    inspector = inspect(engine)
+    if "job_step_runs" not in set(inspector.get_table_names()):
+        return
+    columns = {column["name"] for column in inspector.get_columns("job_step_runs")}
+    if "transfer_stats_json" in columns:
+        return
+    with engine.begin() as connection:
+        connection.exec_driver_sql("ALTER TABLE job_step_runs ADD COLUMN transfer_stats_json TEXT")
+
+
 def _needs_lifecycle_rebuild(inspector, table: str) -> bool:
     columns = {column["name"]: column for column in inspector.get_columns(table)}
     if table == "job_runs":
@@ -168,15 +184,16 @@ def _copy_lifecycle_rows(connection, inspector, table: str) -> None:
             """
         )
     elif table == "job_step_runs":
+        stats_expr = "transfer_stats_json" if "transfer_stats_json" in old_columns else "NULL"
         connection.exec_driver_sql(
             f"""
             INSERT INTO job_step_runs (
                 id, job_run_id, step_id, step_name, argv_json, status, exit_code, log_path,
-                started_at, ended_at
+                started_at, ended_at, transfer_stats_json
             )
             SELECT
                 id, job_run_id, step_id, step_name, argv_json, {status_expr}, exit_code, log_path,
-                started_at, ended_at
+                started_at, ended_at, {stats_expr}
             FROM job_step_runs_old
             """
         )
@@ -270,6 +287,11 @@ def save_job_run(session: Session, result: JobRunResult) -> JobRunRecord:
                 log_path=str(step_run.log_path),
                 started_at=step_run.started_at,
                 ended_at=step_run.ended_at,
+                transfer_stats_json=(
+                    stats_to_json(step_run.transfer_stats)
+                    if step_run.transfer_stats is not None
+                    else None
+                ),
             )
         )
     session.commit()

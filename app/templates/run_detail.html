@@ -29,6 +29,18 @@
         <span class="run-summary-label">Finished</span>
         <span id="run-finished-at">{{ format_local_time(run.ended_at) if run.ended_at is not none else "Running" }}</span>
       </div>
+      <div class="run-summary-item">
+        <span class="run-summary-label">Data transferred</span>
+        <span>{{ step_stats.transferred_data_label }}</span>
+      </div>
+      <div class="run-summary-item">
+        <span class="run-summary-label">Files transferred</span>
+        <span>{{ step_stats.transferred_files_label }}</span>
+      </div>
+      <div class="run-summary-item">
+        <span class="run-summary-label">Deleted files</span>
+        <span>{{ step_stats.deleted_files_label }}</span>
+      </div>
     </div>
   </div>
   <div class="button-row">

@@ -377,6 +377,48 @@ async def test_job_run_status_includes_running_and_pending_steps():
             ]
 
 
+async def test_job_run_status_includes_stats_labels_for_live_refresh():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = _create_job(db)
+            job_run = JobRunRecord(
+                job_id=job.id,
+                job_name=job.name,
+                trigger="manual",
+                status="success",
+                started_at=main.utc_now(),
+                ended_at=main.utc_now(),
+            )
+            db.add(job_run)
+            db.flush()
+            db.add(
+                JobStepRunRecord(
+                    job_run_id=job_run.id,
+                    step_id=job.steps[0].id,
+                    step_name=job.steps[0].name,
+                    argv_json='["rclone", "sync"]',
+                    status="success",
+                    exit_code=0,
+                    log_path=str(Path(tmpdir) / "missing.log"),
+                    started_at=job_run.started_at,
+                    ended_at=job_run.ended_at,
+                    transfer_stats_json=(
+                        '{"transferred_bytes": 1048576, "transferred_files": 3, "deleted_files": 1}'
+                    ),
+                )
+            )
+            db.commit()
+
+            payload = await main.job_run_status(job_run.id, None, db)
+
+            assert payload["stats"]["transferred_data"] == "1.000 MiB"
+            assert payload["stats"]["transferred_files"] == "3"
+            assert payload["stats"]["deleted_files"] == "1"
+            assert payload["stats"]["has_unavailable"] is False
+            assert payload["steps"][0]["stats_label"] == "1.000 MiB, 3 files, 1 deleted"
+
+
 async def test_job_run_status_marks_unstarted_steps_canceled_after_cancellation():
     with tempfile.TemporaryDirectory() as tmpdir:
         session_factory = _session_factory(Path(tmpdir) / "runs.db")
@@ -460,6 +502,83 @@ async def test_job_run_detail_renders_whole_run_tracker():
             assert 'data-step-log="true"' in html
             assert "exitCell.textContent = step.exit_label ??" in html
             assert "logCell.innerHTML" in html
+
+
+async def test_job_run_detail_renders_run_totals_and_step_stats_from_stored_stats():
+    request = _request("/job-runs/1")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = _create_job(db)
+            job_run = JobRunRecord(
+                job_id=job.id,
+                job_name=job.name,
+                trigger="manual",
+                status="success",
+                started_at=main.utc_now(),
+                ended_at=main.utc_now(),
+            )
+            db.add(job_run)
+            db.flush()
+            db.add(
+                JobStepRunRecord(
+                    job_run_id=job_run.id,
+                    step_id=job.steps[0].id,
+                    step_name=job.steps[0].name,
+                    argv_json='["rclone", "sync"]',
+                    status="success",
+                    exit_code=0,
+                    log_path=str(Path(tmpdir) / "missing.log"),
+                    started_at=job_run.started_at,
+                    ended_at=job_run.ended_at,
+                    transfer_stats_json=(
+                        '{"transferred_bytes": 2097152, "transferred_files": 5, "deleted_files": 2}'
+                    ),
+                )
+            )
+            db.commit()
+
+            response = await main.job_run_detail(request, job_run.id, None, db)
+            html = response.body.decode()
+
+            assert "Data transferred" in html
+            assert "2.000 MiB" in html
+            assert "Files transferred" in html
+            assert "Deleted files" in html
+            assert "<th>Stats</th>" in html
+            assert "2.000 MiB, 5 files, 2 deleted" in html
+            assert 'id="job-run-data-transferred"' in html
+
+
+async def test_run_detail_renders_step_stats_from_log_fallback_for_existing_runs():
+    request = _request("/runs/1")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        log_path = Path(tmpdir) / "run.log"
+        log_path.write_text(
+            "\n".join(
+                [
+                    "Transferred:      512 KiB / 512 KiB, 100%",
+                    "Transferred:          4 / 4, 100%",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        with session_factory() as db:
+            step_run = _create_running_step_run(db, log_path=log_path)
+            step_run.status = "success"
+            step_run.exit_code = 0
+            step_run.ended_at = step_run.started_at
+            db.commit()
+
+            response = await main.run_detail(request, step_run.id, None, db)
+            html = response.body.decode()
+
+            assert "Data transferred" in html
+            assert "512 KiB" in html
+            assert "Files transferred" in html
+            assert "4" in html
+            assert "Deleted files" in html
 
 
 async def test_history_page_receives_job_runs():
