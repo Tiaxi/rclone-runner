@@ -233,13 +233,19 @@ def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: st
     )
     eyebrow_style = "font-size: 13px; font-weight: 700; letter-spacing: 0;"
     badge_style = (
-        f"background: {status_bg}; border-radius: 999px; color: {status_text}; "
-        "display: inline-block; font-size: 12px; font-weight: 800; padding: 6px 10px;"
+        f"background: {status_bg}; background-color: {status_bg}; "
+        f"background-image: linear-gradient({status_bg}, {status_bg}); "
+        f"border: 1px solid {status_text}; border-radius: 999px; color: {status_text} !important; "
+        f"-webkit-text-fill-color: {status_text}; display: inline-block; font-size: 12px; "
+        "font-weight: 800; padding: 6px 10px;"
     )
     brand_mark_style = (
-        "background: #2f6f4e; border-radius: 7px; color: #f7f7f4; "
-        "display: inline-block; font-family: Consolas, monospace; font-size: 13px; "
-        "font-weight: 800; line-height: 24px; text-align: center; width: 24px;"
+        "background: #2f6f4e; background-color: #2f6f4e; "
+        "background-image: linear-gradient(#2f6f4e, #2f6f4e); "
+        "border: 1px solid #6fbd8f; border-radius: 7px; color: #f7f7f4 !important; "
+        "-webkit-text-fill-color: #f7f7f4; display: inline-block; "
+        "font-family: Consolas, monospace; font-size: 13px; font-weight: 800; "
+        "line-height: 24px; text-align: center; width: 24px;"
     )
     brand_label_style = (
         f"{eyebrow_style}; padding: 0; text-transform: uppercase; vertical-align: middle;"
