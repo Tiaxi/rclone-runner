@@ -61,8 +61,8 @@
       <tr data-step-key="{{ row.key }}" class="{{ 'active-row' if active_step_run and step_run and step_run.id == active_step_run.id else '' }}">
         <td>{{ row.name }}</td>
         <td><span class="run-status {{ row.status }}">{{ row.status|capitalize }}</span></td>
-        <td>{{ run_exit_label(step_run) if step_run else "Pending" }}</td>
-        <td>
+        <td data-step-exit="true">{{ run_exit_label(step_run) if step_run else "Pending" }}</td>
+        <td data-step-log="true">
           {% if step_run %}
           <a href="/runs/{{ step_run.id }}">Open</a>
           {% else %}
@@ -128,6 +128,22 @@
         if (status) {
           status.textContent = step.status.charAt(0).toUpperCase() + step.status.slice(1);
           status.className = `run-status ${step.status}`;
+        }
+        const exitCell = row.querySelector("[data-step-exit]");
+        if (exitCell) {
+          exitCell.textContent = step.exit_label ?? "Pending";
+        }
+        const logCell = row.querySelector("[data-step-log]");
+        if (logCell) {
+          if (step.run_id) {
+            logCell.innerHTML = "";
+            const link = document.createElement("a");
+            link.href = `/runs/${step.run_id}`;
+            link.textContent = "Open";
+            logCell.append(link);
+          } else {
+            logCell.textContent = "Pending";
+          }
         }
         row.classList.toggle("active-row", step.run_id === state.active_step_run_id);
       });

@@ -456,6 +456,10 @@ async def test_job_run_detail_renders_whole_run_tracker():
             assert "first" in html
             assert "second" in html
             assert "Active log" in html
+            assert 'data-step-exit="true"' in html
+            assert 'data-step-log="true"' in html
+            assert "exitCell.textContent = step.exit_label ??" in html
+            assert "logCell.innerHTML" in html
 
 
 async def test_history_page_receives_job_runs():
