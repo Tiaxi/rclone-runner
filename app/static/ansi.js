@@ -92,6 +92,7 @@
     let open = false;
     let index = 0;
     const sgr = /\x1b\[([0-9;]*)m/g;
+    text = applyTerminalControls(text);
     for (const match of text.matchAll(sgr)) {
       output += escapeHtml(text.slice(index, match.index));
       if (open) {
@@ -111,6 +112,18 @@
       output += "</span>";
     }
     return output;
+  }
+
+  function applyTerminalControls(text) {
+    const output = [];
+    for (const character of text) {
+      if (character === "\b" || character === "\x7f") {
+        output.pop();
+      } else {
+        output.push(character);
+      }
+    }
+    return output.join("");
   }
 
   window.rcloneRunnerAnsi = { render };
