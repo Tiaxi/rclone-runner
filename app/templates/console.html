@@ -42,6 +42,8 @@
     let committedText = "";
     let commandBuffer = "";
     let cursorIndex = 0;
+    let runningInputBuffer = "";
+    let runningCursorIndex = 0;
     let terminalFontSize = Number(localStorage.getItem("terminalFontSize") || 14);
     const commandHistory = {{ recent_commands | tojson }};
     let historyIndex = commandHistory.length;
@@ -53,9 +55,11 @@
     }
 
     function renderTerminal() {
-      const beforeCaret = commandBuffer.slice(0, cursorIndex);
-      const caretCharacter = commandBuffer[cursorIndex] || " ";
-      const afterCaret = commandBuffer.slice(cursorIndex + 1);
+      const activeBuffer = running ? runningInputBuffer : commandBuffer;
+      const activeCursorIndex = running ? runningCursorIndex : cursorIndex;
+      const beforeCaret = activeBuffer.slice(0, activeCursorIndex);
+      const caretCharacter = activeBuffer[activeCursorIndex] || " ";
+      const afterCaret = activeBuffer.slice(activeCursorIndex + 1);
       terminal.innerHTML = `${rcloneRunnerAnsi.render(committedText)}${rcloneRunnerAnsi.render(beforeCaret)}<span class="terminal-caret">${rcloneRunnerAnsi.render(caretCharacter)}</span>${rcloneRunnerAnsi.render(afterCaret)}`;
       terminal.scrollTop = terminal.scrollHeight;
     }
@@ -104,6 +108,41 @@
       renderTerminal();
     }
 
+    function insertRunningInputText(text) {
+      runningInputBuffer = `${runningInputBuffer.slice(0, runningCursorIndex)}${text}${runningInputBuffer.slice(runningCursorIndex)}`;
+      runningCursorIndex += text.length;
+      renderTerminal();
+    }
+
+    function backspaceRunningInput() {
+      if (runningCursorIndex === 0) {
+        return;
+      }
+      runningInputBuffer = `${runningInputBuffer.slice(0, runningCursorIndex - 1)}${runningInputBuffer.slice(runningCursorIndex)}`;
+      runningCursorIndex -= 1;
+      renderTerminal();
+    }
+
+    function deleteRunningInputCharacter() {
+      if (runningCursorIndex >= runningInputBuffer.length) {
+        return;
+      }
+      runningInputBuffer = `${runningInputBuffer.slice(0, runningCursorIndex)}${runningInputBuffer.slice(runningCursorIndex + 1)}`;
+      renderTerminal();
+    }
+
+    function moveRunningCursor(delta) {
+      runningCursorIndex = Math.min(runningInputBuffer.length, Math.max(0, runningCursorIndex + delta));
+      renderTerminal();
+    }
+
+    function sendRunningInputLine() {
+      sendInput(`${runningInputBuffer}\r`);
+      runningInputBuffer = "";
+      runningCursorIndex = 0;
+      renderTerminal();
+    }
+
     function addHistoryCommand(command) {
       if (commandHistory[commandHistory.length - 1] !== command) {
         commandHistory.push(command);
@@ -145,6 +184,11 @@
       }
       if (message.type === "state") {
         running = message.state === "running";
+        if (!running) {
+          runningInputBuffer = "";
+          runningCursorIndex = 0;
+        }
+        renderTerminal();
       }
       if (message.type === "history") {
         appendHistoryRun(message.run);
@@ -192,7 +236,7 @@
           event.preventDefault();
           const text = await navigator.clipboard.readText();
           if (running) {
-            sendInput(text);
+            insertRunningInputText(text);
           } else {
             insertPromptText(text);
           }
@@ -203,7 +247,7 @@
       if (event.key === "Enter") {
         event.preventDefault();
         if (running) {
-          sendInput("\r");
+          sendRunningInputLine();
         } else {
           const command = commandBuffer.trim();
           committedText += `${commandBuffer}\r\n`;
@@ -223,7 +267,7 @@
       if (event.key === "Backspace") {
         event.preventDefault();
         if (running) {
-          sendInput("\x7f");
+          backspaceRunningInput();
         } else {
           backspacePrompt();
         }
@@ -233,7 +277,7 @@
       if (event.key === "Delete") {
         event.preventDefault();
         if (running) {
-          sendInput("\x1b[3~");
+          deleteRunningInputCharacter();
         } else {
           deletePromptCharacter();
         }
@@ -257,7 +301,12 @@
       if (event.key in arrows) {
         event.preventDefault();
         if (running) {
-          sendInput(arrows[event.key]);
+          if (event.key === "ArrowLeft") {
+            moveRunningCursor(-1);
+          }
+          if (event.key === "ArrowRight") {
+            moveRunningCursor(1);
+          }
         } else if (event.key === "ArrowUp" && commandHistory.length > 0) {
           historyIndex = Math.max(0, historyIndex - 1);
           redrawPromptBuffer(commandHistory[historyIndex]);
@@ -277,7 +326,8 @@
       if (event.key === "Home") {
         event.preventDefault();
         if (running) {
-          sendInput("\x1b[H");
+          runningCursorIndex = 0;
+          renderTerminal();
         } else {
           cursorIndex = 0;
           renderTerminal();
@@ -288,7 +338,8 @@
       if (event.key === "End") {
         event.preventDefault();
         if (running) {
-          sendInput("\x1b[F");
+          runningCursorIndex = runningInputBuffer.length;
+          renderTerminal();
         } else {
           cursorIndex = commandBuffer.length;
           renderTerminal();
@@ -299,7 +350,7 @@
       if (event.key.length === 1) {
         event.preventDefault();
         if (running) {
-          sendInput(event.key);
+          insertRunningInputText(event.key);
         } else {
           insertPromptText(event.key);
         }

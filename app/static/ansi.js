@@ -115,15 +115,103 @@
   }
 
   function applyTerminalControls(text) {
-    const output = [];
-    for (const character of text) {
-      if (character === "\b" || character === "\x7f") {
-        output.pop();
-      } else {
-        output.push(character);
+    const lines = [[]];
+    let cursor = 0;
+
+    function line() {
+      return lines[lines.length - 1];
+    }
+
+    function visibleLength() {
+      return line().filter((item) => item.visible).length;
+    }
+
+    function rawIndexForCursor() {
+      let seen = 0;
+      const currentLine = line();
+      for (let index = 0; index < currentLine.length; index += 1) {
+        if (currentLine[index].visible) {
+          if (seen === cursor) {
+            return index;
+          }
+          seen += 1;
+        }
+      }
+      return currentLine.length;
+    }
+
+    function removeVisibleBeforeCursor() {
+      if (cursor <= 0) {
+        return;
+      }
+      let seen = 0;
+      const currentLine = line();
+      for (let index = 0; index < currentLine.length; index += 1) {
+        if (currentLine[index].visible) {
+          seen += 1;
+        }
+        if (seen === cursor) {
+          currentLine.splice(index, 1);
+          cursor -= 1;
+          return;
+        }
       }
     }
-    return output.join("");
+
+    function writeVisible(character) {
+      let seen = 0;
+      const currentLine = line();
+      for (let index = 0; index < currentLine.length; index += 1) {
+        if (!currentLine[index].visible) {
+          continue;
+        }
+        if (seen === cursor) {
+          currentLine[index] = { text: character, visible: true };
+          cursor += 1;
+          return;
+        }
+        seen += 1;
+      }
+      currentLine.splice(rawIndexForCursor(), 0, { text: character, visible: true });
+      cursor += 1;
+    }
+
+    function startNewLine() {
+      lines.push([]);
+      cursor = 0;
+    }
+
+    for (let index = 0; index < text.length; index += 1) {
+      const character = text[index];
+      if (character === "\b" || character === "\x7f") {
+        removeVisibleBeforeCursor();
+      } else if (character === "\r") {
+        cursor = 0;
+      } else if (character === "\n") {
+        startNewLine();
+      } else if (character === "\x1b" && text[index + 1] === "[") {
+        const sequence = text.slice(index).match(/^\x1b\[([0-9]*)([A-Za-z])/);
+        if (sequence) {
+          const amount = Number.parseInt(sequence[1] || "1", 10);
+          const command = sequence[2];
+          if (command === "C") {
+            cursor = Math.min(visibleLength(), cursor + amount);
+          } else if (command === "D") {
+            cursor = Math.max(0, cursor - amount);
+          } else if (command === "m") {
+            line().splice(rawIndexForCursor(), 0, { text: sequence[0], visible: false });
+          } else if (command === "K") {
+            line().splice(rawIndexForCursor());
+          }
+          index += sequence[0].length - 1;
+        } else {
+          writeVisible(character);
+        }
+      } else {
+        writeVisible(character);
+      }
+    }
+    return lines.map((items) => items.map((item) => item.text).join("")).join("\n");
   }
 
   window.rcloneRunnerAnsi = { render };

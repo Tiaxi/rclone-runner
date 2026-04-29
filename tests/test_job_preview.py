@@ -256,7 +256,21 @@ def test_console_ctrl_v_pastes_clipboard_into_terminal():
     assert "navigator.clipboard.readText()" in html
     assert 'if (key === "v")' in html
     assert "insertPromptText(text);" in html
-    assert "sendInput(text);" in html
+    assert "insertRunningInputText(text);" in html
+
+
+def test_console_running_command_uses_local_line_editor():
+    html = templates.get_template("console.html").render(recent=[], recent_commands=[])
+
+    assert "runningInputBuffer" in html
+    assert "runningCursorIndex" in html
+    assert "sendRunningInputLine()" in html
+    assert "sendInput(`${runningInputBuffer}\\r`);" in html
+    assert "moveRunningCursor(-1);" in html
+    assert "moveRunningCursor(1);" in html
+    assert "insertRunningInputText(event.key);" in html
+    assert "committedText += `${runningInputBuffer}" not in html
+    assert "sendInput(arrows[event.key]);" not in html
 
 
 def test_console_terminal_renders_ansi_sequences():
