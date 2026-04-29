@@ -91,11 +91,23 @@ problem is visible without opening the app.
 
 ## Docker Compose
 
-For local development or a TrueNAS SCALE custom app using "Install via YAML":
+For local development, run Compose from the repository root:
 
 ```bash
 docker compose up --build
 ```
+
+For TrueNAS SCALE, clone this repository into a pool dataset and use the custom app
+"Install via YAML" flow in the web UI. The YAML field can be a small wrapper that includes
+this repository's Compose file:
+
+```yaml
+include:
+  - /mnt/pool/services/rclone-runner/docker-compose.yml
+```
+
+Adjust the path to wherever the repository is stored on your TrueNAS system. TrueNAS will
+build the image from the referenced Compose file and start the container.
 
 The important container mounts are:
 
