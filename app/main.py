@@ -1169,7 +1169,6 @@ def _job_run_status_payload(job_run: JobRunRecord, db) -> dict[str, object]:
             "transferred_data": run_stats.transferred_data_label,
             "transferred_files": run_stats.transferred_files_label,
             "deleted_files": run_stats.deleted_files_label,
-            "has_unavailable": run_stats.has_unavailable,
         },
         "steps": [_job_run_step_payload(row) for row in _job_run_step_rows(job_run, db)],
     }
@@ -1186,6 +1185,8 @@ def _job_run_step_payload(row: dict[str, object]) -> dict[str, object]:
         "exit_label": _exit_label(status, step_run.exit_code if step_run is not None else None),
         "stats_label": row["stats"].label,
         "stats_available": row["stats"].available,
+        "started_at": _format_local_time(step_run.started_at) if step_run is not None else None,
+        "duration": _step_duration_label(step_run),
     }
 
 
@@ -1210,6 +1211,7 @@ def _job_run_step_rows(job_run: JobRunRecord, db) -> list[dict[str, object]]:
                         "status": status,
                         "run": step_run,
                         "stats": _step_stats_display_for_run(step_run),
+                        "timing": _step_timing_label(step_run),
                     }
                 )
             return rows
@@ -1223,6 +1225,7 @@ def _job_run_step_rows(job_run: JobRunRecord, db) -> list[dict[str, object]]:
             "status": step_run.status,
             "run": step_run,
             "stats": _step_stats_display_for_run(step_run),
+            "timing": _step_timing_label(step_run),
         }
         for step_run in step_runs
     ]
@@ -1266,21 +1269,34 @@ def _run_status_payload(run: JobStepRunRecord) -> dict[str, object]:
 
 def _job_run_stats(job_run: JobRunRecord) -> RunStatsDisplay:
     values: list[RcloneTransferStats | None] = []
-    unavailable_count = 0
     for step_run in job_run.step_runs:
         if step_run.status == "running" or step_run.ended_at is None:
             continue
         stats = _step_transfer_stats(step_run)
         values.append(stats)
-        if stats is None:
-            unavailable_count += 1
-    return run_stats_display(values, unavailable_count=unavailable_count)
+    return run_stats_display(values)
 
 
 def _step_stats_display_for_run(step_run: JobStepRunRecord | None):
     if step_run is None or step_run.status == "running" or step_run.ended_at is None:
         return pending_stats_display("Pending")
     return step_stats_display(_step_transfer_stats(step_run))
+
+
+def _step_timing_label(step_run: JobStepRunRecord | None) -> dict[str, str]:
+    if step_run is None:
+        return {"started": "Pending", "duration": "Pending"}
+    return {
+        "started": _format_local_time(step_run.started_at),
+        "duration": _step_duration_label(step_run),
+    }
+
+
+def _step_duration_label(step_run: JobStepRunRecord | None) -> str:
+    if step_run is None:
+        return "Pending"
+    ended_at = step_run.ended_at or utc_now()
+    return _format_duration(step_run.started_at, ended_at)
 
 
 def _step_transfer_stats(step_run: JobStepRunRecord) -> RcloneTransferStats | None:

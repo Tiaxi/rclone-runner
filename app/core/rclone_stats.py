@@ -51,14 +51,20 @@ _BYTE_MULTIPLIERS = {
 def parse_rclone_transfer_stats(text: str) -> RcloneTransferStats | None:
     data_matches = list(_DATA_TRANSFER_RE.finditer(text))
     file_matches = list(_FILE_TRANSFER_RE.finditer(text))
-    if not data_matches or not file_matches:
+    if not data_matches:
         return None
 
     data_match = data_matches[-1]
-    file_match = file_matches[-1]
     transferred_bytes = _parse_byte_count(data_match.group(1), data_match.group(2))
-    transferred_files = _parse_count(file_match.group(1))
-    if transferred_bytes is None or transferred_files is None:
+    if transferred_bytes is None:
+        return None
+    transferred_files = 0
+    if file_matches:
+        parsed_files = _parse_count(file_matches[-1].group(1))
+        if parsed_files is None:
+            return None
+        transferred_files = parsed_files
+    elif transferred_bytes != 0:
         return None
 
     deleted_matches = list(_DELETED_RE.finditer(text))
@@ -101,11 +107,11 @@ def step_stats_display(stats: RcloneTransferStats | None) -> StepStatsDisplay:
     if stats is None:
         return StepStatsDisplay(
             stats=None,
-            label="Stats unavailable",
+            label="No changes",
             available=False,
-            transferred_data_label="Stats unavailable",
-            transferred_files_label="Stats unavailable",
-            deleted_files_label="Stats unavailable",
+            transferred_data_label="No changes",
+            transferred_files_label="No changes",
+            deleted_files_label="No changes",
         )
     return StepStatsDisplay(
         stats=stats,
@@ -145,7 +151,7 @@ def run_stats_display(
         transferred_data_label=format_byte_count(transferred_bytes),
         transferred_files_label=str(transferred_files),
         deleted_files_label=str(deleted_files),
-        has_unavailable=unavailable_count > 0,
+        has_unavailable=False,
     )
 
 

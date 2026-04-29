@@ -225,9 +225,10 @@ def _plain_text_body(value: EmailNotificationSettings, run: JobRunRecord, log_ta
     lines.append("Steps:")
     for step in sorted(run.step_runs, key=lambda item: item.started_at):
         stats = step_stats_display(_step_transfer_stats(step))
+        step_duration = _format_duration(step.started_at, step.ended_at)
         lines.append(
             f"- {step.step_name}: {step.status.upper()} "
-            f"(exit {_exit_label(step.exit_code, step.status)}), {stats.label}"
+            f"(exit {_exit_label(step.exit_code, step.status)}, {step_duration}), {stats.label}"
         )
     if log_tail:
         lines.extend(["", "Log tail:", log_tail])
@@ -270,6 +271,11 @@ def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: st
         "border: 1px solid #dbe3d7; border-collapse: collapse; "
         "border-radius: 8px; overflow: hidden; width: 100%;"
     )
+    steps_header_style = (
+        "background: #eef3eb; background-color: #eef3eb; "
+        "background-image: linear-gradient(#eef3eb, #eef3eb); color: #20231f !important; "
+        "-webkit-text-fill-color: #20231f;"
+    )
     rows = "\n".join(
         _step_row_html(step) for step in sorted(run.step_runs, key=lambda item: item.started_at)
     )
@@ -279,9 +285,11 @@ def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: st
         link = (
             '<p style="margin: 20px 0 0;">'
             f'<a href="{html.escape(url)}" '
-            'style="background: #2f6f4e; border-radius: 6px; color: #ffffff; '
-            "display: inline-block; font-weight: 700; padding: 10px 14px; "
-            'text-decoration: none;">Open run</a></p>'
+            'style="background: #2f6f4e; background-color: #2f6f4e; '
+            "background-image: linear-gradient(#2f6f4e, #2f6f4e); border: 1px solid #6fbd8f; "
+            "border-radius: 6px; color: #ffffff !important; display: inline-block; "
+            "font-weight: 700; padding: 10px 14px; text-decoration: none; "
+            '-webkit-text-fill-color: #ffffff;">Open run</a></p>'
         )
     summary_rows = "\n".join(
         [
@@ -294,11 +302,6 @@ def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: st
             _summary_row("Deleted files", run_stats.deleted_files_label),
         ]
     )
-    unavailable_note = ""
-    if run_stats.has_unavailable:
-        unavailable_note = (
-            '<p style="color: #62685f; margin: 12px 0 0;">Some step stats unavailable.</p>'
-        )
     log_block = ""
     if log_tail:
         log_block = (
@@ -339,17 +342,17 @@ def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: st
           <table role="presentation" style="border-collapse: collapse; width: 100%;">
             {summary_rows}
           </table>
-          {unavailable_note}
     {link}
           <h2 style="font-size: 18px; margin: 28px 0 10px;">Steps</h2>
           <table style="{steps_table_style}">
             <thead>
-              <tr style="background: #eef3eb;">
+              <tr style="{steps_header_style}">
                 <th align="left" style="padding: 12px 14px;">Step</th>
                 <th align="left" style="padding: 12px 14px;">Status</th>
                 <th align="left" style="padding: 12px 14px;">Exit</th>
                 <th align="left" style="padding: 12px 14px;">Stats</th>
                 <th align="left" style="padding: 12px 14px;">Started</th>
+                <th align="left" style="padding: 12px 14px;">Duration</th>
               </tr>
             </thead>
             <tbody>{rows}</tbody>
@@ -364,6 +367,7 @@ def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: st
 
 def _step_row_html(step) -> str:
     stats = step_stats_display(_step_transfer_stats(step))
+    duration = _format_duration(step.started_at, step.ended_at)
     return (
         "<tr>"
         '<td style="padding: 12px 14px; border-top: 1px solid #dbe3d7;">'
@@ -377,21 +381,20 @@ def _step_row_html(step) -> str:
         f"{html.escape(stats.label)}</td>"
         '<td style="padding: 12px 14px; border-top: 1px solid #dbe3d7;">'
         f"{html.escape(_format_time(step.started_at))}</td>"
+        '<td style="padding: 12px 14px; border-top: 1px solid #dbe3d7;">'
+        f"{html.escape(duration)}</td>"
         "</tr>"
     )
 
 
 def _job_run_stats(run: JobRunRecord) -> RunStatsDisplay:
     values: list[RcloneTransferStats | None] = []
-    unavailable_count = 0
     for step in run.step_runs:
         if step.status == "running" or step.ended_at is None:
             continue
         stats = _step_transfer_stats(step)
         values.append(stats)
-        if stats is None:
-            unavailable_count += 1
-    return run_stats_display(values, unavailable_count=unavailable_count)
+    return run_stats_display(values)
 
 
 def _step_transfer_stats(step) -> RcloneTransferStats | None:

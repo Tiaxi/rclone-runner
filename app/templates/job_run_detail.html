@@ -44,7 +44,7 @@
       </div>
       <div class="run-summary-item">
         <span class="run-summary-label">Deleted files</span>
-        <span id="job-run-deleted-files">{{ run_stats.deleted_files_label }}{% if run_stats.has_unavailable %} <span class="muted">(some unavailable)</span>{% endif %}</span>
+        <span id="job-run-deleted-files">{{ run_stats.deleted_files_label }}</span>
       </div>
     </div>
   </div>
@@ -66,7 +66,7 @@
 <h2>Steps</h2>
 <section class="table-wrap">
   <table>
-    <thead><tr><th>Step</th><th>Status</th><th>Exit</th><th>Stats</th><th>Log</th></tr></thead>
+    <thead><tr><th>Step</th><th>Status</th><th>Exit</th><th>Stats</th><th>Timing</th><th>Log</th></tr></thead>
     <tbody>
       {% for row in step_rows %}
       {% set step_run = row.run %}
@@ -75,6 +75,10 @@
         <td><span class="run-status {{ row.status }}">{{ row.status|capitalize }}</span></td>
         <td data-step-exit="true">{{ run_exit_label(step_run) if step_run else "Pending" }}</td>
         <td data-step-stats="true">{{ row.stats.label }}</td>
+        <td data-step-timing="true">
+          <div>Started {{ row.timing.started }}</div>
+          <div class="muted">Duration {{ row.timing.duration }}</div>
+        </td>
         <td data-step-log="true">
           {% if step_run %}
           <a href="/runs/{{ step_run.id }}">Open</a>
@@ -143,7 +147,7 @@
           filesTransferred.textContent = state.stats.transferred_files;
         }
         if (deletedFiles) {
-          deletedFiles.textContent = state.stats.deleted_files + (state.stats.has_unavailable ? " (some unavailable)" : "");
+          deletedFiles.textContent = state.stats.deleted_files;
         }
       }
       state.steps.forEach((step) => {
@@ -162,7 +166,17 @@
         }
         const statsCell = row.querySelector("[data-step-stats]");
         if (statsCell) {
-          statsCell.textContent = step.stats_label ?? "Stats unavailable";
+          statsCell.textContent = step.stats_label ?? "No changes";
+        }
+        const timingCell = row.querySelector("[data-step-timing]");
+        if (timingCell) {
+          timingCell.innerHTML = "";
+          const started = document.createElement("div");
+          started.textContent = `Started ${step.started_at ?? "Pending"}`;
+          const duration = document.createElement("div");
+          duration.className = "muted";
+          duration.textContent = `Duration ${step.duration ?? "Pending"}`;
+          timingCell.append(started, duration);
         }
         const logCell = row.querySelector("[data-step-log]");
         if (logCell) {

@@ -16,6 +16,12 @@ Transferred:              0 / 0, -
 Elapsed time:         0.0s
 """
 
+ZERO_SUMMARY_WITHOUT_FILE_LINE = """
+Transferred:              0 B / 0 B, -, 0 B/s, ETA -
+Checks:                5066 / 5066, 100%, Listed 10548
+Elapsed time:         17.4s
+"""
+
 
 def test_parse_rclone_final_summary_with_transfers_and_deleted_files():
     assert parse_rclone_transfer_stats(DRY_RUN_SUMMARY) == RcloneTransferStats(
@@ -27,6 +33,14 @@ def test_parse_rclone_final_summary_with_transfers_and_deleted_files():
 
 def test_parse_rclone_zero_transfer_summary_without_delete_line():
     assert parse_rclone_transfer_stats(ZERO_SUMMARY) == RcloneTransferStats(
+        transferred_bytes=0,
+        transferred_files=0,
+        deleted_files=0,
+    )
+
+
+def test_parse_rclone_zero_transfer_summary_without_file_transfer_line():
+    assert parse_rclone_transfer_stats(ZERO_SUMMARY_WITHOUT_FILE_LINE) == RcloneTransferStats(
         transferred_bytes=0,
         transferred_files=0,
         deleted_files=0,

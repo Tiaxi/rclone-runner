@@ -149,6 +149,10 @@ def test_job_notification_message_contains_html_summary_and_failure_log(tmp_path
     assert "-webkit-text-fill-color: #9f2f28" in html
     assert "background-image: linear-gradient(#2f6f4e, #2f6f4e)" in html
     assert "border: 1px solid #6fbd8f" in html
+    assert "background-color: #2f6f4e" in html
+    assert "background-image: linear-gradient(#2f6f4e, #2f6f4e)" in html
+    assert "background-color: #eef3eb" in html
+    assert "-webkit-text-fill-color: #20231f" in html
     assert "Summary" in html
     assert "Data transferred" in html
     assert "1.000 MiB" in html
@@ -156,6 +160,8 @@ def test_job_notification_message_contains_html_summary_and_failure_log(tmp_path
     assert "Deleted files" in html
     assert "1.000 MiB, 3 files, 1 deleted" in html
     assert "Stats" in html
+    assert "Duration" in html
+    assert "5m 0s" in html
     assert "background: #fde2df" in html
     assert "border-radius: 12px" in html
     assert 'role="presentation"' in html
@@ -166,10 +172,10 @@ def test_job_notification_message_contains_html_summary_and_failure_log(tmp_path
     assert "http://runner.local/job-runs/7" in html
     assert "line two" in text
     assert "Data transferred: 1.000 MiB" in text
-    assert "- Sync: FAILED (exit 1), 1.000 MiB, 3 files, 1 deleted" in text
+    assert "- Sync: FAILED (exit 1, 5m 0s), 1.000 MiB, 3 files, 1 deleted" in text
 
 
-def test_job_notification_message_marks_missing_step_stats_unavailable(tmp_path):
+def test_job_notification_message_marks_missing_step_stats_as_no_changes(tmp_path):
     run = JobRunRecord(
         id=7,
         job_id=3,
@@ -216,9 +222,10 @@ def test_job_notification_message_marks_missing_step_stats_unavailable(tmp_path)
     text = message.get_body(("plain",)).get_content()
 
     assert "2 KiB" in html
-    assert "Stats unavailable" in html
-    assert "Some step stats unavailable" in html
-    assert "- Missing: SUCCESS (exit 0), Stats unavailable" in text
+    assert "No changes" in html
+    assert "Stats unavailable" not in html
+    assert "Some step stats unavailable" not in html
+    assert "- Missing: SUCCESS (exit 0, 5m 0s), No changes" in text
 
 
 async def test_send_job_notification_uses_stored_settings_and_failure_log(tmp_path):
