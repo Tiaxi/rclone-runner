@@ -222,6 +222,7 @@ def _plain_text_body(value: EmailNotificationSettings, run: JobRunRecord, log_ta
 def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: str) -> str:
     status = html.escape(run.status.upper())
     status_bg, status_text = _status_colors(run.status)
+    job_name = html.escape(run.job_name)
     duration = html.escape(_format_duration(run.started_at, run.ended_at))
     body_style = (
         "background: #f5f7f2; color: #20231f; "
@@ -230,13 +231,18 @@ def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: st
     card_style = (
         "background: #ffffff; border: 1px solid #dbe3d7; border-radius: 12px; overflow: hidden;"
     )
-    eyebrow_style = (
-        "font-size: 13px; font-weight: 700; letter-spacing: 0; "
-        "margin-bottom: 10px; text-transform: uppercase;"
-    )
+    eyebrow_style = "font-size: 13px; font-weight: 700; letter-spacing: 0;"
     badge_style = (
         f"background: {status_bg}; border-radius: 999px; color: {status_text}; "
-        "display: inline-block; font-size: 13px; font-weight: 800; padding: 6px 10px;"
+        "display: inline-block; font-size: 12px; font-weight: 800; padding: 6px 10px;"
+    )
+    brand_mark_style = (
+        "background: #2f6f4e; border-radius: 7px; color: #f7f7f4; "
+        "display: inline-block; font-family: Consolas, monospace; font-size: 13px; "
+        "font-weight: 800; line-height: 24px; text-align: center; width: 24px;"
+    )
+    brand_label_style = (
+        f"{eyebrow_style}; padding: 0; text-transform: uppercase; vertical-align: middle;"
     )
     steps_table_style = (
         "border: 1px solid #dbe3d7; border-collapse: collapse; "
@@ -259,7 +265,13 @@ def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: st
     link = ""
     if value.app_base_url:
         url = f"{value.app_base_url.rstrip('/')}/job-runs/{run.id}"
-        link = f'<p><a href="{html.escape(url)}">{html.escape(url)}</a></p>'
+        link = (
+            '<p style="margin: 20px 0 0;">'
+            f'<a href="{html.escape(url)}" '
+            'style="background: #2f6f4e; border-radius: 6px; color: #ffffff; '
+            "display: inline-block; font-weight: 700; padding: 10px 14px; "
+            'text-decoration: none;">Open run</a></p>'
+        )
     summary_rows = "\n".join(
         [
             _summary_row("Mode", _run_mode_label(run.trigger), include_width=True),
@@ -282,11 +294,26 @@ def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: st
     <div style="margin: 0 auto; max-width: 680px;">
       <div style="{card_style}">
         <div style="background: #1a1f18; color: #edf2e9; padding: 22px 24px;">
-          <div style="{eyebrow_style}">Rclone Runner</div>
-          <h1 style="font-size: 26px; line-height: 1.25; margin: 0 0 12px;">
-            {html.escape(run.job_name)}
-          </h1>
-          <span style="{badge_style}">{status}</span>
+          <table role="presentation" style="border-collapse: collapse; margin-bottom: 16px;">
+            <tr>
+              <td style="padding: 0 10px 0 0; vertical-align: middle;">
+                <span class="brand-mark" style="{brand_mark_style}">&gt;_</span>
+              </td>
+              <td style="{brand_label_style}">
+                Rclone Runner
+              </td>
+            </tr>
+          </table>
+          <table role="presentation" style="border-collapse: collapse; width: 100%;">
+            <tr>
+              <td style="padding: 0 12px 0 0; vertical-align: middle;">
+                <h1 style="font-size: 26px; line-height: 1.25; margin: 0;">{job_name}</h1>
+              </td>
+              <td align="right" style="padding: 0; vertical-align: middle; white-space: nowrap;">
+                <span style="{badge_style}">{status}</span>
+              </td>
+            </tr>
+          </table>
         </div>
         <div style="padding: 24px;">
           <h2 style="font-size: 18px; margin: 0 0 10px;">Summary</h2>

@@ -136,6 +136,11 @@ def test_job_notification_message_contains_html_summary_and_failure_log(tmp_path
     assert "Backup" in html
     assert "FAILED" in html
     assert "Rclone Runner" in html
+    assert "brand-mark" in html
+    assert "&gt;_" in html
+    assert "FAILED</span>" in html
+    assert "Backup</h1>" in html
+    assert "margin: 0 0 12px;" not in html
     assert "Summary" in html
     assert "background: #fde2df" in html
     assert "border-radius: 12px" in html
