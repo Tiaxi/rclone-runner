@@ -114,6 +114,17 @@
       renderTerminal();
     }
 
+    function insertPastedText(text) {
+      if (!text) {
+        return;
+      }
+      if (running) {
+        insertRunningInputText(text);
+      } else {
+        insertPromptText(text);
+      }
+    }
+
     function backspaceRunningInput() {
       if (runningCursorIndex === 0) {
         return;
@@ -199,6 +210,11 @@
     socket.onclose = () => append("\r\n[terminal disconnected]\r\n");
     applyTerminalFontSize();
     terminal.addEventListener("mousedown", () => terminal.focus());
+    terminal.addEventListener("paste", (event) => {
+      event.preventDefault();
+      const text = event.clipboardData.getData("text");
+      insertPastedText(text);
+    });
     smallerFont.addEventListener("click", () => {
       terminalFontSize -= 1;
       applyTerminalFontSize();
@@ -233,12 +249,10 @@
           sendInput("\x04");
         }
         if (key === "v") {
-          event.preventDefault();
-          const text = await navigator.clipboard.readText();
-          if (running) {
-            insertRunningInputText(text);
-          } else {
-            insertPromptText(text);
+          if (navigator.clipboard?.readText) {
+            event.preventDefault();
+            const text = await navigator.clipboard.readText();
+            insertPastedText(text);
           }
         }
         return;

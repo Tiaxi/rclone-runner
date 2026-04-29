@@ -254,6 +254,10 @@ def test_console_ctrl_v_pastes_clipboard_into_terminal():
     html = templates.get_template("console.html").render(recent=[], recent_commands=[])
 
     assert "navigator.clipboard.readText()" in html
+    assert "insertPastedText(text);" in html
+    assert 'terminal.addEventListener("paste"' in html
+    assert "event.clipboardData.getData" in html
+    assert "if (navigator.clipboard?.readText)" in html
     assert 'if (key === "v")' in html
     assert "insertPromptText(text);" in html
     assert "insertRunningInputText(text);" in html
