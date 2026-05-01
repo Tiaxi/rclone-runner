@@ -175,6 +175,43 @@ def test_job_notification_message_contains_html_summary_and_failure_log(tmp_path
     assert "- Sync: FAILED (exit 1, 5m 0s), 1.000 MiB, 3 files, 1 deleted" in text
 
 
+def test_job_notification_message_treats_naive_database_times_as_utc(tmp_path):
+    run = JobRunRecord(
+        id=7,
+        job_id=3,
+        job_name="Nightly backup",
+        trigger="schedule",
+        status="success",
+        started_at=datetime(2026, 5, 1, 2, 0),
+        ended_at=datetime(2026, 5, 1, 2, 2, 35),
+    )
+    run.step_runs = [
+        JobStepRunRecord(
+            id=9,
+            job_run_id=7,
+            step_id=1,
+            step_name="Backup",
+            argv_json='["rclone", "sync"]',
+            status="success",
+            exit_code=0,
+            log_path=str(tmp_path / "backup.log"),
+            started_at=datetime(2026, 5, 1, 2, 0, 42),
+            ended_at=datetime(2026, 5, 1, 2, 1, 31),
+        )
+    ]
+
+    message = build_job_notification_message(
+        EmailNotificationSettings(sender="rclone@example.com", recipients="ops@example.com"),
+        run,
+    )
+    html = message.get_body(("html",)).get_content()
+    text = message.get_body(("plain",)).get_content()
+
+    assert "Started: 2026-05-01 05:00:00 EEST" in text
+    assert "Finished: 2026-05-01 05:02:35 EEST" in text
+    assert "2026-05-01 05:00:42 EEST" in html
+
+
 def test_job_notification_message_marks_missing_step_stats_as_no_changes(tmp_path):
     run = JobRunRecord(
         id=7,

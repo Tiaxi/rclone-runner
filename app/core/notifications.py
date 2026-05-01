@@ -7,7 +7,7 @@ import logging
 import smtplib
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from email.message import EmailMessage
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -444,6 +444,8 @@ def _run_mode_label(trigger: str) -> str:
 def _format_time(value: datetime | None) -> str:
     if value is None:
         return "Running"
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
     return value.astimezone(ZoneInfo(settings.timezone)).strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
