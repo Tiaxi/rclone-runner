@@ -1,6 +1,7 @@
 services:
   rclone-runner:
     build: .
+    pull_policy: build
     container_name: rclone-runner
     restart: unless-stopped
     env_file: ${ENV_FILE:-.env}
