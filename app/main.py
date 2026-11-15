@@ -37,10 +37,12 @@ from app.core.commands import (
     run_variables,
 )
 from app.core.estimates import (
+    SAMPLE_RUNS,
     bwlimit_bytes_per_second,
     choose_speed,
     estimate_seconds,
     format_estimate,
+    is_upload_sample,
     load_expected_speed,
     observed_speed,
     save_expected_speed,
@@ -68,7 +70,7 @@ from app.core.rclone_stats import (
 )
 from app.core.retention import prune_logs
 from app.core.schedule import cron_summary, normalize_cron
-from app.core.sources import SizeCommand, ensure_flags, size_command
+from app.core.sources import SizeCommand, ensure_flags, size_command, split_command
 from app.db import (
     ConsoleRunRecord,
     DbSession,
@@ -122,6 +124,8 @@ logger = logging.getLogger(__name__)
 LOG_CHUNK_LINES = 200
 login_throttle = LoginThrottle()
 HISTORY_PAGE_SIZE = 25
+# How far back estimates look for speed samples and dry runs.
+HISTORY_SCAN_LIMIT = 2000
 BANDWIDTH_PRESETS = [
     ("off", "Unlimited"),
     *((rate, rate_label(rate)) for rate in ("100M", "50M", "20M", "10M", "5M", "2M", "1M", "512K")),
@@ -465,9 +469,13 @@ def _sources_context(job: JobRecord, db) -> dict[str, object]:
     return {"source_rows": rows, "source_speed": base_speed, "source_totals": totals}
 
 
-def _upload_samples(job: JobRecord, db) -> list[tuple[int, float]]:
-    """(bytes, seconds) of the job's recent real step runs, newest first."""
-    step_runs = (
+def _recent_successful_step_runs(job: JobRecord, db):
+    """The job's successful step runs, newest first, read in batches.
+
+    Dry runs can only be told apart by reading each command, so callers filter as they go
+    and stop when they have enough; HISTORY_SCAN_LIMIT bounds the search.
+    """
+    return (
         db.query(JobStepRunRecord)
         .join(JobStepRunRecord.job_run)
         .filter(
@@ -476,17 +484,26 @@ def _upload_samples(job: JobRecord, db) -> list[tuple[int, float]]:
             JobStepRunRecord.ended_at.is_not(None),
         )
         .order_by(JobStepRunRecord.started_at.desc())
-        .limit(50)
-        .all()
+        .limit(HISTORY_SCAN_LIMIT)
+        .yield_per(100)
     )
-    samples = []
-    for step_run in step_runs:
+
+
+def _upload_samples(job: JobRecord, db) -> list[tuple[int, float]]:
+    """(bytes, seconds) of the job's recent real step runs that moved data, newest first."""
+    samples: list[tuple[int, float]] = []
+    sizeable = 0
+    for step_run in _recent_successful_step_runs(job, db):
         if _is_dry_run(step_run):
             continue
         stats = _step_transfer_stats(step_run)
-        if stats is not None:
-            seconds = _duration_seconds(step_run.started_at, step_run.ended_at)
-            samples.append((stats.transferred_bytes, seconds))
+        if stats is None:
+            continue
+        seconds = _duration_seconds(step_run.started_at, step_run.ended_at)
+        samples.append((stats.transferred_bytes, seconds))
+        sizeable += is_upload_sample(stats.transferred_bytes, seconds)
+        if sizeable >= SAMPLE_RUNS:
+            break
     return samples
 
 
@@ -498,33 +515,28 @@ def _is_dry_run(step_run: JobStepRunRecord) -> bool:
         argv = json.loads(step_run.argv_json)
     except ValueError:
         return False
-    for arg in argv:
-        if arg == "--":
-            break
-        if arg in {"--dry-run", "-n"}:
-            return True
-        if arg.startswith("--dry-run="):
-            return arg.split("=", 1)[1].lower() not in {"false", "0", "f"}
-    return False
+    if len(argv) < 2:
+        return False
+    # rclone uses the last value given, and -n may be combined with other short flags (-vn).
+    dry_run = False
+    flags, _paths = split_command(argv)
+    for flag in flags:
+        name, has_value, value = flag[0].partition("=")
+        if name == "--dry-run":
+            dry_run = value.lower() not in {"false", "0", "f"} if has_value else True
+        elif not name.startswith("--") and name[1:].isalpha() and "n" in name[1:]:
+            dry_run = True
+    return dry_run
 
 
 def _latest_dry_run_stats(job: JobRecord, db) -> dict[int, dict[str, object]]:
     """What each step's latest successful dry run said it would transfer."""
-    step_runs = (
-        db.query(JobStepRunRecord)
-        .join(JobStepRunRecord.job_run)
-        .filter(
-            JobRunRecord.job_id == job.id,
-            JobStepRunRecord.status == "success",
-            JobStepRunRecord.step_id.is_not(None),
-        )
-        .order_by(JobStepRunRecord.started_at.desc())
-        .limit(200)
-        .all()
-    )
+    step_ids = {step.id for step in job.steps}
     latest: dict[int, dict[str, object]] = {}
-    for step_run in step_runs:
-        if step_run.step_id in latest or not _is_dry_run(step_run):
+    for step_run in _recent_successful_step_runs(job, db):
+        if step_run.step_id not in step_ids or step_run.step_id in latest:
+            continue
+        if not _is_dry_run(step_run):
             continue
         stats = _step_transfer_stats(step_run)
         latest[step_run.step_id] = {
@@ -532,6 +544,8 @@ def _latest_dry_run_stats(job: JobRecord, db) -> dict[int, dict[str, object]]:
             "files": stats.transferred_files if stats is not None else 0,
             "at": step_run.started_at,
         }
+        if len(latest) == len(step_ids):
+            break
     return latest
 
 

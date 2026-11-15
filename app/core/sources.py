@@ -50,6 +50,11 @@ _DROPPED_FLAGS = {
     "-v",
     "--quiet",
     "-q",
+    # rclone size never transfers, so this would always make it fail.
+    "--error-on-no-transfer",
+    # Profiles go to files; a measurement would overwrite the step's own.
+    "--cpuprofile",
+    "--memprofile",
 }
 _DROPPED_PREFIXES = ("--rc", "--log-", "--stats", "--use-json-log", "--dump", "-vv")
 # Local flags with a global equivalent.

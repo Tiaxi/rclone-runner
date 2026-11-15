@@ -59,13 +59,17 @@ def save_expected_speed(db: Session, mib_per_second: float | None) -> None:
     db.commit()
 
 
+def is_upload_sample(transferred: int, seconds: float) -> bool:
+    return transferred >= MIN_SAMPLE_BYTES and seconds >= MIN_SAMPLE_SECONDS
+
+
 def observed_speed(samples: list[tuple[int, float]]) -> tuple[float, int] | None:
     """Median bytes per second of (bytes, seconds) samples big enough to mean something,
     newest first, and how many counted."""
     rates = [
         transferred / seconds
         for transferred, seconds in samples
-        if transferred >= MIN_SAMPLE_BYTES and seconds >= MIN_SAMPLE_SECONDS
+        if is_upload_sample(transferred, seconds)
     ][:SAMPLE_RUNS]
     if not rates:
         return None
