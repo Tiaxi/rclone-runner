@@ -17,13 +17,14 @@
   <label class="full">Steps
     <textarea name="steps_text" rows="10" placeholder="Sync Music|sync /media/Musiikki remote:/Musiikki">{{ steps_text }}</textarea>
   </label>
+  <p class="field-note full">To delete old <code>--backup-dir</code> folders named by <code>${RUN_DATE}</code>, end the job with a step such as <code>Prune versions|prune-dated remote:versions --keep-days 30 --keep-min 7</code>. It purges <code>YYYY-MM-DD</code> folders more than 30 days older than the run's date, always keeps the newest 7, and leaves anything else alone. It runs only if the steps before it succeed.</p>
   <section class="full command-preview">
     <h2>Full commands</h2>
     {% if command_previews %}
       {% for preview in command_previews %}
       <div class="command-preview-row">
         <div class="command-preview-header">
-          <strong>{{ preview.name }}</strong>
+          <strong>{{ preview.name }}{% if preview.deletes %} <span class="badge destructive">Deletes folders</span>{% endif %}</strong>
           {% if job %}
           <div class="button-row">
             <button type="submit" form="run-step-{{ preview.id }}">Run step</button>
@@ -37,6 +38,9 @@
             {% for token in preview.tokens %}{{ token }}{% if not loop.last %} <wbr>{% endif %}{% endfor %}
           </div>
         </div>
+        {% if preview.deletes %}
+        <p class="destructive-note">This step {{ preview.deletes }}. Dry run step lists what it would delete.</p>
+        {% endif %}
       </div>
       {% endfor %}
     {% else %}
@@ -55,7 +59,7 @@
 
 {% if job %}
   {% for preview in command_previews %}
-    <form id="run-step-{{ preview.id }}" method="post" action="/jobs/{{ job.id }}/steps/{{ preview.id }}/run" onsubmit='return confirm({{ ("Run step " ~ preview.name ~ " now? This is a real run, not a dry run.")|tojson }})'>
+    <form id="run-step-{{ preview.id }}" method="post" action="/jobs/{{ job.id }}/steps/{{ preview.id }}/run" onsubmit='return confirm({{ ("Run step " ~ preview.name ~ " now? This is a real run, not a dry run" ~ (": it " ~ preview.deletes ~ "." if preview.deletes else "."))|tojson }})'>
       {{ csrf_field()|safe }}
     </form>
     <form id="dry-run-step-{{ preview.id }}" method="post" action="/jobs/{{ job.id }}/steps/{{ preview.id }}/dry-run">

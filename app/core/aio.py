@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable
+from contextlib import suppress
 
 
 async def run_to_completion(cleanup: Awaitable[None]) -> bool:
@@ -22,3 +23,17 @@ async def run_to_completion(cleanup: Awaitable[None]) -> bool:
             if task.cancelled():
                 raise
             cancelled = True
+
+
+async def stop_process(process: asyncio.subprocess.Process, timeout: float) -> None:
+    """Ask a process to stop, and kill it if it has not stopped after timeout seconds."""
+    if process.returncode is not None:
+        return
+    with suppress(ProcessLookupError):
+        process.terminate()
+    try:
+        await asyncio.wait_for(process.wait(), timeout=timeout)
+    except TimeoutError:
+        with suppress(ProcessLookupError):
+            process.kill()
+        await process.wait()

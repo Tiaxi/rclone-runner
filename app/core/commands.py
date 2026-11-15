@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 import re
 import shlex
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
+
+from app.core import prune
 
 
 class CommandPolicyError(ValueError):
@@ -74,10 +76,19 @@ def run_variables(started_at: datetime, timezone: str) -> dict[str, str]:
     For example ``--backup-dir remote:versions/${RUN_DATE}`` keeps each day's replaced and
     deleted files apart. A job's own environment line with the same name wins.
     """
+    local = _local(started_at, timezone)
+    return {"RUN_DATE": local.strftime("%Y-%m-%d"), "RUN_TIME": local.strftime("%H-%M-%S")}
+
+
+def run_date(started_at: datetime, timezone: str) -> date:
+    """The run's date in the app's time zone, as ${RUN_DATE} gives it."""
+    return _local(started_at, timezone).date()
+
+
+def _local(started_at: datetime, timezone: str) -> datetime:
     if started_at.tzinfo is None:
         started_at = started_at.replace(tzinfo=UTC)
-    local = started_at.astimezone(ZoneInfo(timezone))
-    return {"RUN_DATE": local.strftime("%Y-%m-%d"), "RUN_TIME": local.strftime("%H-%M-%S")}
+    return started_at.astimezone(ZoneInfo(timezone))
 
 
 def child_environment(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -108,8 +119,23 @@ def _split(value: str, env: dict[str, str]) -> list[str]:
         raise CommandPolicyError(str(exc)) from exc
 
 
-def build_rclone_argv(step_command: str, common_args: str, env: dict[str, str]) -> list[str]:
+def build_step_argv(step_command: str, common_args: str, env: dict[str, str]) -> list[str]:
+    """A job step's command: an rclone command, or a built-in such as prune-dated."""
     step_parts = _split(step_command, env)
+    if step_parts and step_parts[0] == prune.PRUNE_COMMAND:
+        try:
+            command = prune.parse_step(step_parts[1:], _split(common_args, env))
+        except prune.PruneCommandError as exc:
+            raise CommandPolicyError(f"{prune.PRUNE_COMMAND}: {exc}") from exc
+        return command.argv()
+    return _rclone_argv(step_parts, common_args, env)
+
+
+def build_rclone_argv(step_command: str, common_args: str, env: dict[str, str]) -> list[str]:
+    return _rclone_argv(_split(step_command, env), common_args, env)
+
+
+def _rclone_argv(step_parts: list[str], common_args: str, env: dict[str, str]) -> list[str]:
     if not step_parts:
         raise CommandPolicyError("step command is empty")
     if step_parts[0] == "rclone":

@@ -112,6 +112,38 @@ BW_LIMIT=8M
 example, `--backup-dir crypt:versions/${RUN_DATE}/Music` keeps each day's replaced and deleted
 files in their own folder.
 
+### Pruning dated backup folders
+
+Those dated folders pile up. `rclone delete --min-age` can't clear them, because moved files keep
+their original modification times. The built-in `prune-dated` step goes by the folder names
+instead. Put it last, after the syncs:
+
+```text
+Music|sync /media/Music crypt:/Music --backup-dir crypt:versions/${RUN_DATE}/Music
+Prune versions|prune-dated crypt:versions --keep-days 30 --keep-min 7
+```
+
+It lists the folders in `crypt:versions` and purges each one named `YYYY-MM-DD` that is more
+than 30 days before the run's `${RUN_DATE}`, oldest first, logging each one. Anything else in
+that folder is left alone.
+
+- The newest `--keep-min` dated folders are always kept, whatever their dates, so a wrong clock
+  can't empty it.
+- It refuses an empty path, the root of a remote or of the file system, paths with `..`, and
+  connection string options in the path (`remote,opt=x:`): set those in the remote's config.
+- A dry run lists what it would purge and deletes nothing. So does `--dry-run` in the step.
+  For any step, a dry run refuses to start if the step or the common arguments contain
+  `--dry-run=false` (or `-n=false`), since that would make it a real run.
+- A failed purge stops the step and fails the run. The step runs only if the steps before it
+  succeed, and a folder that doesn't exist yet counts as nothing to prune.
+- The common arguments, and any other flags in the step, go to `rclone lsf` and `rclone purge`.
+  Give a flag's value with `=` in the step, like `--b2-hard-delete=true`. Filters such as
+  `--exclude`, `--files-from` or `--min-age`, and `--max-depth`, are left out, from the
+  arguments and from the environment (`RCLONE_EXCLUDE`): they are meant for the syncs, and
+  `rclone purge` refuses them.
+- Symlinks are never followed, even with `-L`: a dated folder that is a link isn't purged,
+  and links inside a purged folder are deleted as links, not what they point to.
+
 Pausing a running job slows rclone right down instead of stopping it, so it resumes in a couple
 of seconds. To stop for longer, use Stop: the next run skips files already copied.
 

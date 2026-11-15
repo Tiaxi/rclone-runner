@@ -552,6 +552,20 @@ textarea {
   border-color: var(--badge-dry-line);
 }
 
+.badge.destructive {
+  background: transparent;
+  border-color: var(--danger);
+  color: var(--danger);
+  font-weight: 600;
+  margin-left: 6px;
+}
+
+.destructive-note {
+  color: var(--danger);
+  font-size: 14px;
+  margin: 8px 0 0;
+}
+
 .command-preview h2 {
   font-size: 18px;
   margin-bottom: 12px;

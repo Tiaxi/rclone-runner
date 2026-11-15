@@ -8,7 +8,7 @@
     <p>{{ schedule_summary }} · {{ "Enabled" if job.enabled else "Disabled" }}</p>
   </div>
   <div class="button-row">
-    <form method="post" action="/jobs/{{ job.id }}/run" onsubmit='return confirm({{ ("Run " ~ job.name ~ " now? This is a real run, not a dry run: sync can delete files at the destination.")|tojson }})'>
+    <form method="post" action="/jobs/{{ job.id }}/run" onsubmit='return confirm({{ ("Run " ~ job.name ~ " now? This is a real run, not a dry run: sync can delete files at the destination." ~ (run_warning or ""))|tojson }})'>
       {{ csrf_field()|safe }}
       <button type="submit">Run now</button>
     </form>

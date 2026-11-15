@@ -5,15 +5,16 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from app.config import settings
-from app.core.aio import run_to_completion
+from app.core.aio import run_to_completion, stop_process
 from app.core.commands import (
     CommandPolicyError,
-    build_rclone_argv,
+    build_step_argv,
     child_environment,
+    run_date,
     run_variables,
 )
 from app.core.live_control import (
@@ -27,6 +28,7 @@ from app.core.live_control import (
     with_flags,
 )
 from app.core.models import Job, JobRunResult, JobStep, StepRunResult, utc_now
+from app.core.prune import is_prune_command, may_turn_off_dry_run, run_prune
 from app.core.rclone_stats import STATS_UNAVAILABLE_JSON, stats_from_log, stats_to_json
 from app.db import ConsoleRunRecord, JobRunRecord, JobStepRunRecord
 
@@ -37,6 +39,8 @@ INTERRUPTED_LOG_NOTE = (
 )
 
 Executor = Callable[[list[str], dict[str, str], Path], Awaitable[int]]
+# Runs a built-in prune-dated step: (argv, job env, log path, the run's date) -> exit code.
+PruneExecutor = Callable[[list[str], dict[str, str], Path, date], Awaitable[int]]
 NotificationCallback = Callable[[int], Awaitable[None]]
 
 
@@ -73,23 +77,24 @@ async def subprocess_executor(argv: list[str], env: dict[str, str], log_path: Pa
             raise
 
 
+async def prune_executor(argv: list[str], env: dict[str, str], log_path: Path, today: date) -> int:
+    return await run_prune(argv, child_environment(env), log_path, today, settings.timezone)
+
+
 async def _stop_process(process: asyncio.subprocess.Process) -> None:
-    if process.returncode is not None:
-        return
-    with suppress(ProcessLookupError):
-        process.terminate()
-    try:
-        await asyncio.wait_for(process.wait(), timeout=TERMINATE_TIMEOUT_SECONDS)
-    except TimeoutError:
-        with suppress(ProcessLookupError):
-            process.kill()
-        await process.wait()
+    await stop_process(process, TERMINATE_TIMEOUT_SECONDS)
 
 
 class JobRunner:
-    def __init__(self, log_root: Path, executor: Executor = subprocess_executor) -> None:
+    def __init__(
+        self,
+        log_root: Path,
+        executor: Executor = subprocess_executor,
+        prune: PruneExecutor = prune_executor,
+    ) -> None:
         self._log_root = log_root
         self._executor = executor
+        self._prune = prune
         self._active_job_ids: set[int] = set()
         self._lock = asyncio.Lock()
 
@@ -114,13 +119,20 @@ class JobRunner:
         status = "success"
         try:
             run_stamp = _stamp(started_at)
+            today = run_date(started_at, settings.timezone)
             for step in _selected_steps(job, step_id):
-                argv = build_rclone_argv(
-                    step.command, _common_args(job, dry_run), _expansion_env(job, started_at)
+                argv = _step_argv(
+                    step.command,
+                    _common_args(job, dry_run),
+                    _expansion_env(job, started_at),
+                    dry_run,
                 )
                 step_started_at = utc_now()
                 log_path = self._log_root / f"job-{job.id}" / f"{run_stamp}-step-{step.id}.log"
-                exit_code = await self._executor(argv, job.env, log_path)
+                if is_prune_command(argv):
+                    exit_code = await self._prune(argv, job.env, log_path, today)
+                else:
+                    exit_code = await self._executor(argv, job.env, log_path)
                 step_ended_at = utc_now()
                 step_runs.append(
                     StepRunResult(
@@ -160,10 +172,12 @@ class LiveJobRunner:
         executor: Executor = subprocess_executor,
         notification_callback: NotificationCallback | None = None,
         control_dir: Path | None = None,
+        prune: PruneExecutor = prune_executor,
     ) -> None:
         self._log_root = log_root
         self._session_factory = session_factory
         self._executor = executor
+        self._prune = prune
         self._notification_callback = notification_callback
         # Where steps' remote control sockets go; None turns live control off. It must be a
         # private directory: anyone who can open a socket there controls that rclone.
@@ -201,7 +215,7 @@ class LiveJobRunner:
         planned_steps: list[tuple[JobStep, list[str]]] = []
         for step in selected_steps:
             try:
-                planned_steps.append((step, build_rclone_argv(step.command, common_args, env)))
+                planned_steps.append((step, _step_argv(step.command, common_args, env, dry_run)))
             except CommandPolicyError as exc:
                 return self._record_invalid_run(job, trigger, step, run_stamp, exc)
 
@@ -240,8 +254,10 @@ class LiveJobRunner:
                 job_run_id = job_run.id
                 first_step_run = _detached_copy(step_run)
 
+            # A prune-dated step counts days from the run's ${RUN_DATE} day.
+            today = run_date(now, settings.timezone)
             task = asyncio.create_task(
-                self._run_job_background(job_run_id, job, planned_steps, run_stamp)
+                self._run_job_background(job_run_id, job, planned_steps, run_stamp, today)
             )
         except BaseException:
             self._active_job_ids.discard(job.id)
@@ -423,6 +439,7 @@ class LiveJobRunner:
         job: Job,
         planned_steps: list[tuple[JobStep, list[str]]],
         run_stamp: str,
+        today: date,
     ) -> None:
         job_status = "success"
         step_run: JobStepRunRecord | None = None
@@ -433,7 +450,7 @@ class LiveJobRunner:
                 else:
                     step_run = self._create_step_run(job_run_id, job, step, argv, run_stamp)
 
-                exit_code = await self._run_step(job_run_id, step_run, job.env)
+                exit_code = await self._run_step(job_run_id, step_run, job.env, today)
                 step_status = "success" if exit_code == 0 else "failed"
                 self._finish_step_run(step_run.id, step_status, exit_code)
                 if exit_code != 0:
@@ -459,11 +476,17 @@ class LiveJobRunner:
                     await self._notification_callback(job_run_id)
 
     async def _run_step(
-        self, job_run_id: int, step_run: JobStepRunRecord, env: dict[str, str]
+        self, job_run_id: int, step_run: JobStepRunRecord, env: dict[str, str], today: date
     ) -> int:
         argv = json.loads(step_run.argv_json)
         log_path = Path(step_run.log_path)
         control = self._controls.get(job_run_id)
+        if is_prune_command(argv):
+            # Not an rclone process with a control socket: bandwidth changes and pauses wait
+            # for the next step.
+            if control is not None:
+                control.configured = None
+            return await self._prune(argv, env, log_path, today)
         if control is None or self._control_dir is None:
             return await self._executor(argv, env, log_path)
         control.configured = configured_rate(argv)
@@ -620,11 +643,23 @@ def _expansion_env(job: Job, started_at: datetime) -> dict[str, str]:
     return run_variables(started_at, settings.timezone) | job.env
 
 
+def _step_argv(command: str, common_args: str, env: dict[str, str], dry_run: bool) -> list[str]:
+    argv = build_step_argv(command, common_args, env)
+    if dry_run and may_turn_off_dry_run(argv):
+        # rclone uses the last value given, so the step's own --dry-run=false would beat the
+        # one a dry run adds and make it a real run.
+        raise CommandPolicyError(
+            "a dry run can't start: the step or the common arguments turn dry runs off "
+            "(--dry-run=false or -n=false)"
+        )
+    return argv
+
+
 def _common_args(job: Job, dry_run: bool) -> str:
     if not dry_run:
         return job.common_args
-    if "--dry-run" in job.common_args.split():
-        return job.common_args
+    # Always first, even when the common arguments name it already: there it may be another
+    # flag's value (--exclude --dry-run), and first it can't be.
     return f"--dry-run {job.common_args}".strip()
 
 
