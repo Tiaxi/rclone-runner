@@ -92,14 +92,14 @@ class SourceSize:
     files: int
 
 
-def _read_flags(command: list[str]) -> FlagSet:
+def _read_flags(command: list[str]) -> FlagSet | None:
     try:
         output = subprocess.run(
             command, capture_output=True, text=True, timeout=HELP_TIMEOUT_SECONDS, check=True
         ).stdout
     except OSError, subprocess.SubprocessError:
         logger.warning("Could not read rclone's flags from %s", " ".join(command))
-        return FlagSet(frozenset(), frozenset())
+        return None
     names: set[str] = set()
     with_values: set[str] = set()
     for line in output.splitlines():
@@ -115,10 +115,16 @@ def _read_flags(command: list[str]) -> FlagSet:
 
 
 def _flags(name: str) -> FlagSet:
-    """rclone's global flags ("global") or a subcommand's own, read once."""
+    """rclone's global flags ("global") or a subcommand's own, read once.
+
+    A failed read is not kept, so a slow moment does not spoil detection until a restart.
+    """
     if name not in _flag_sets:
         command = ["rclone", "help", "flags"] if name == "global" else ["rclone", name, "--help"]
-        _flag_sets[name] = _read_flags(command)
+        flags = _read_flags(command)
+        if flags is None:
+            return FlagSet(frozenset(), frozenset())
+        _flag_sets[name] = flags
     return _flag_sets[name]
 
 

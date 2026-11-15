@@ -15,74 +15,12 @@ from app.core.measure import SourceMeasurer
 from app.core.sources import FlagSet, SizeCommand, parse_size_output, size_command
 from app.db import Base, SourceMeasurementRecord
 
-# A small stand-in for rclone's flag lists: global flags, and each subcommand's own.
-GLOBAL_FLAGS = FlagSet(
-    names=frozenset(
-        {
-            "--backup-dir",
-            "--transfers",
-            "--exclude",
-            "--max-delete",
-            "--bwlimit",
-            "--config",
-            "--fast-list",
-            "-L",
-            "--copy-links",
-            "--filter",
-            "-f",
-            "--filter-from",
-            "--cutoff-mode",
-            "--sftp-host",
-            "--rc",
-            "--rc-addr",
-            "-v",
-            "--verbose",
-            "--error-on-no-transfer",
-            "--cpuprofile",
-            "--memprofile",
-            "--dry-run",
-            "-n",
-        }
-    ),
-    with_values=frozenset(
-        {
-            "--backup-dir",
-            "--transfers",
-            "--exclude",
-            "--max-delete",
-            "--bwlimit",
-            "--config",
-            "--filter",
-            "-f",
-            "--filter-from",
-            "--cutoff-mode",
-            "--sftp-host",
-            "--rc-addr",
-            "--cpuprofile",
-            "--memprofile",
-        }
-    ),
-)
-LOCAL_FLAGS = {
-    "sync": FlagSet(frozenset({"--combined"}), frozenset({"--combined"})),
-    "bisync": FlagSet(frozenset({"--filters-file"}), frozenset({"--filters-file"})),
-}
-
-
-@pytest.fixture
-def known_flags(monkeypatch):
-    flag_sets = {"global": GLOBAL_FLAGS} | {
-        name: LOCAL_FLAGS.get(name, FlagSet(frozenset(), frozenset()))
-        for name in sources.SOURCE_SUBCOMMANDS
-    }
-    monkeypatch.setattr(sources, "_flag_sets", flag_sets)
-
 
 def _size(step: str, common: str = "", env=None) -> SizeCommand | None:
     return size_command(build_rclone_argv(step, common, {}), env)
 
 
-def test_size_command_finds_the_source_past_flag_values(known_flags):
+def test_size_command_finds_the_source_past_flag_values():
     command = _size(
         "sync /media/Musa crypt:current/Musa",
         "--backup-dir crypt:versions/2026-11-15/Musa --transfers 8 --exclude '*.tmp' -v",
@@ -93,7 +31,7 @@ def test_size_command_finds_the_source_past_flag_values(known_flags):
     assert command.argv == ["rclone", "size", "--json", "--exclude", "*.tmp", "--", "/media/Musa"]
 
 
-def test_size_command_handles_terminators_and_flag_values_named_like_them(known_flags):
+def test_size_command_handles_terminators_and_flag_values_named_like_them():
     assert _size("copy -- /src remote:dst").source == "/src"
     assert _size("copy /src remote:dst --backup-dir -- -v").source == "/src"
     # A source starting with "-" stays a path.
@@ -111,7 +49,7 @@ def test_size_command_handles_terminators_and_flag_values_named_like_them(known_
     ]
 
 
-def test_size_command_keeps_connection_settings_and_all_filters(known_flags):
+def test_size_command_keeps_connection_settings_and_all_filters():
     command = _size(
         "copy --config /etc/custom.conf remote:src /dst",
         "--sftp-host box.example -f '- *.tmp' --rc --rc-addr :5572 --dry-run",
@@ -137,13 +75,13 @@ def test_size_command_keeps_connection_settings_and_all_filters(known_flags):
     assert _size("bisync /a remote:b --filters-file=/f.txt").argv[3] == "--filter-from=/f.txt"
 
 
-def test_size_command_skips_commands_without_a_source(known_flags):
+def test_size_command_skips_commands_without_a_source():
     assert _size("lsd remote:") is None
     assert _size("check /a remote:a") is None
     assert _size("sync --dry-run") is None
 
 
-def test_size_command_key_follows_source_filters_and_rclone_environment(known_flags):
+def test_size_command_key_follows_source_filters_and_rclone_environment():
     first = _size("sync /a r:a", "--backup-dir r:v/2026-11-15 --exclude x")
     next_day = _size("sync /a r:a", "--backup-dir r:v/2026-11-16 --exclude x")
     other_filter = _size("sync /a r:a", "--exclude y")
@@ -185,9 +123,9 @@ def test_parse_size_output():
     assert (result.files, result.bytes) == (38201, 442721468416)
 
 
+@pytest.mark.real_rclone
 @pytest.mark.skipif(shutil.which("rclone") is None, reason="needs the rclone binary")
 def test_real_rclone_flag_list_and_size(tmp_path):
-    sources._flag_sets.clear()
     source = tmp_path / "Musa"
     source.mkdir()
     (source / "a.flac").write_bytes(b"x" * 1000)
@@ -294,7 +232,7 @@ def test_key_holds_the_argv_and_environment_digest():
     assert json.loads(command.key) == {"argv": command.argv, "env": "ab"}
 
 
-def test_size_command_drops_flags_that_fail_size_or_write_files(known_flags):
+def test_size_command_drops_flags_that_fail_size_or_write_files():
     command = _size(
         "copy /src remote:dst --error-on-no-transfer",
         "--cpuprofile /logs/backup.cpu --memprofile /logs/backup.mem",
