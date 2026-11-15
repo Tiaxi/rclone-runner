@@ -24,31 +24,46 @@ Executor = Callable[[list[str], dict[str, str], Path], Awaitable[int]]
 NotificationCallback = Callable[[int], Awaitable[None]]
 
 
+OUTPUT_READ_SIZE = 64 * 1024
+TERMINATE_TIMEOUT_SECONDS = 5
+
+
 async def subprocess_executor(argv: list[str], env: dict[str, str], log_path: Path) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     merged_env = os.environ | env
-    process = await asyncio.create_subprocess_exec(
-        *argv,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        env=merged_env,
-    )
-    assert process.stdout is not None
-    try:
-        with log_path.open("wb") as log_file:
-            async for chunk in process.stdout:
+    # Open the log before starting rclone so a log error cannot leave it running.
+    with log_path.open("wb") as log_file:
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env=merged_env,
+        )
+        assert process.stdout is not None
+        try:
+            # Read fixed-size chunks rather than lines: line iteration fails on lines longer
+            # than the stream limit, which would abandon a still-running rclone.
+            while chunk := await process.stdout.read(OUTPUT_READ_SIZE):
                 log_file.write(chunk)
                 log_file.flush()
-        return await process.wait()
-    except asyncio.CancelledError:
+            return await process.wait()
+        except BaseException:
+            await _stop_process(process)
+            raise
+
+
+async def _stop_process(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    with suppress(ProcessLookupError):
         process.terminate()
-        try:
-            await asyncio.wait_for(process.wait(), timeout=5)
-        except TimeoutError:
+    try:
+        await asyncio.wait_for(process.wait(), timeout=TERMINATE_TIMEOUT_SECONDS)
+    except TimeoutError:
+        with suppress(ProcessLookupError):
             process.kill()
-            await process.wait()
-        raise
+        await process.wait()
 
 
 class JobRunner:
