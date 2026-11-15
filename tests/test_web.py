@@ -119,13 +119,14 @@ async def test_new_job_page_uses_empty_values_with_hints():
     assert 'name="name" value=""' in html
     assert 'name="cron" value=""' in html
     assert "Google Drive backups" not in html
-    assert "--fast-list --transfers=20 --checkers=40 --verbose --bwlimit ${BW_LIMIT}" in html
+    assert "--transfers=4 --checkers=8 --verbose --bwlimit ${BW_LIMIT}" in html
+    assert "--fast-list" not in html
     assert 'placeholder="BW_LIMIT=8M"></textarea>' in html
     assert 'placeholder="Sync Music|sync /media/Musiikki remote:/Musiikki"></textarea>' in html
     assert 'placeholder="Nightly media backup"' in html
 
 
-async def test_jobs_page_receives_ongoing_activity():
+async def test_jobs_page_receives_running_now_rows():
     request = _request("/jobs")
     with tempfile.TemporaryDirectory() as tmpdir:
         session_factory = _session_factory(Path(tmpdir) / "runs.db")

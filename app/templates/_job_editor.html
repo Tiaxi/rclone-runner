@@ -9,7 +9,7 @@
   <div class="field-note">Schedule: {{ schedule_summary }}</div>
   <label class="checkbox"><input type="checkbox" name="enabled" {% if not values or values.enabled %}checked{% endif %}> Enabled</label>
   <label class="full">Common rclone args
-    <textarea name="common_args" rows="3" placeholder="--fast-list --transfers=20 --checkers=40 --verbose --bwlimit ${BW_LIMIT}"> {{- values.common_args if values else '' -}}</textarea>
+    <textarea name="common_args" rows="3" placeholder="--transfers=4 --checkers=8 --verbose --bwlimit ${BW_LIMIT}"> {{- values.common_args if values else '' -}}</textarea>
   </label>
   <label class="full">Environment
     <textarea name="env_lines" rows="4" placeholder="BW_LIMIT=8M">{{ env_lines }}</textarea>

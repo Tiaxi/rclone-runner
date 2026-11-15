@@ -177,8 +177,13 @@ Sync Musa|sync /media/Musa secret:/Musa
 Common args are inserted after the rclone subcommand:
 
 ```text
---fast-list --transfers=20 --checkers=40 --tpslimit=10 --drive-chunk-size=32M --max-backlog 200000 --verbose --bwlimit ${BW_LIMIT}
+--transfers=4 --checkers=8 --verbose --bwlimit ${BW_LIMIT}
 ```
+
+Tune them for the remote. For example, Google Drive benefits from Drive-specific flags such as
+`--fast-list` and `--drive-chunk-size=32M`, while an SFTP server may limit simultaneous connections,
+so keep `--transfers` plus `--checkers` below that limit. Add `--verbose` to see live progress on
+run pages.
 
 Environment variables are configured as `KEY=value` lines:
 
