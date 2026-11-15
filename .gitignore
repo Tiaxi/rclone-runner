@@ -12,3 +12,4 @@ logs/
 .codex
 .worktrees/
 docker-compose-override.yml
+rclone-config/
