@@ -544,15 +544,16 @@ async def job_run_detail(
         "job_run_cancel_url": f"/job-runs/{job_run.id}/cancel",
     }
     if active_step_run is not None:
-        log_path = Path(active_step_run.log_path)
+        log_chunk = read_log_chunk(Path(active_step_run.log_path), limit=LOG_CHUNK_LINES)
         context |= {
             "run": active_step_run,
             "argv": json.loads(active_step_run.argv_json),
-            "log_chunk": read_log_chunk(log_path, limit=LOG_CHUNK_LINES),
+            "log_chunk": log_chunk,
             "log_chunk_url": f"/runs/{active_step_run.id}/log/chunk",
             "log_append_url": f"/runs/{active_step_run.id}/log/append",
             "log_status_url": f"/runs/{active_step_run.id}/status",
-            "log_append_offset": _log_size(log_path),
+            # From the same read as the text, so nothing written in between is skipped.
+            "log_append_offset": log_chunk.end,
             "raw_log_url": f"/runs/{active_step_run.id}/log/raw",
         }
     return templates.TemplateResponse(request, "job_run_detail.html", context)
@@ -599,7 +600,6 @@ async def run_detail(request: Request, run_id: int, _: AuthRequired, db: DbSessi
     if run is None:
         return RedirectResponse("/runs", status_code=303)
     log_chunk = read_log_chunk(Path(run.log_path), limit=LOG_CHUNK_LINES)
-    log_size = _log_size(Path(run.log_path))
     return templates.TemplateResponse(
         request,
         "run_detail.html",
@@ -613,7 +613,7 @@ async def run_detail(request: Request, run_id: int, _: AuthRequired, db: DbSessi
             "log_chunk_url": f"/runs/{run.id}/log/chunk",
             "log_append_url": f"/runs/{run.id}/log/append",
             "log_status_url": f"/runs/{run.id}/status",
-            "log_append_offset": log_size,
+            "log_append_offset": log_chunk.end,
             "raw_log_url": f"/runs/{run.id}/log/raw",
         },
     )
@@ -704,7 +704,6 @@ async def console_run_detail(
     if run is None:
         return RedirectResponse("/console", status_code=303)
     log_chunk = read_log_chunk(Path(run.log_path), limit=LOG_CHUNK_LINES)
-    log_size = _log_size(Path(run.log_path))
     return templates.TemplateResponse(
         request,
         "console_run_detail.html",
@@ -715,7 +714,7 @@ async def console_run_detail(
             "log_chunk_url": f"/console/runs/{run.id}/log/chunk",
             "log_append_url": "",
             "log_status_url": "",
-            "log_append_offset": log_size,
+            "log_append_offset": log_chunk.end,
             "raw_log_url": f"/console/runs/{run.id}/log/raw",
         },
     )
@@ -1583,12 +1582,6 @@ def _log_chunk_payload(path: Path, before: int | None) -> dict[str, object]:
         "next_before": chunk.next_before,
         "has_more": chunk.has_more,
     }
-
-
-def _log_size(path: Path) -> int:
-    if not path.exists():
-        return 0
-    return path.stat().st_size
 
 
 def _raw_log_response(path: Path) -> Response:

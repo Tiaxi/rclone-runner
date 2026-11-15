@@ -360,7 +360,12 @@ async def test_run_log_append_returns_new_bytes():
 
             append = await main.run_log_append(step_run.id, None, db, offset=offset)
 
-            assert append == {"text": "second\n", "offset": log_path.stat().st_size}
+            assert append == {
+                "text": "second\n",
+                "offset": log_path.stat().st_size,
+                "start": offset,
+                "more": False,
+            }
 
 
 async def test_job_run_status_includes_running_and_pending_steps():
