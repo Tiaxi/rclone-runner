@@ -18,6 +18,7 @@ import json
 import logging
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 # Subcommands whose first path is a source of files to back up.
 SOURCE_SUBCOMMANDS = ("sync", "copy", "move", "copyto", "moveto", "bisync")
 HELP_TIMEOUT_SECONDS = 10
+FLAG_RETRY_SECONDS = 60
 
 # Global flags that don't change which files rclone size counts.
 _DROPPED_FLAGS = {
@@ -114,28 +116,48 @@ def _read_flags(command: list[str]) -> FlagSet | None:
     return FlagSet(frozenset(names), frozenset(with_values))
 
 
-def _flags(name: str) -> FlagSet:
-    """rclone's global flags ("global") or a subcommand's own, read once.
+_EMPTY = FlagSet(frozenset(), frozenset())
+_FLAG_LIST_NAMES = ("global", *SOURCE_SUBCOMMANDS)
+_failed_at: dict[str, float] = {}
 
-    A failed read is not kept, so a slow moment does not spoil detection until a restart.
+
+def _flags(name: str) -> FlagSet:
+    """rclone's global flags ("global") or a subcommand's own, if loaded.
+
+    Only reads what ensure_flags or load_flags loaded: request handling never starts rclone.
     """
-    if name not in _flag_sets:
-        command = ["rclone", "help", "flags"] if name == "global" else ["rclone", name, "--help"]
-        flags = _read_flags(command)
-        if flags is None:
-            return FlagSet(frozenset(), frozenset())
-        _flag_sets[name] = flags
-    return _flag_sets[name]
+    return _flag_sets.get(name, _EMPTY)
+
+
+def flags_available() -> bool:
+    return "global" in _flag_sets
+
+
+def _due(name: str) -> bool:
+    if name in _flag_sets:
+        return False
+    failed_at = _failed_at.get(name)
+    return failed_at is None or time.monotonic() - failed_at >= FLAG_RETRY_SECONDS
 
 
 def load_flags() -> None:
-    for name in ("global", *SOURCE_SUBCOMMANDS):
-        _flags(name)
+    """Read the flag lists not loaded yet. A failed read is retried after FLAG_RETRY_SECONDS,
+    so a slow moment does not spoil detection until a restart, nor hold up every request."""
+    for name in _FLAG_LIST_NAMES:
+        if not _due(name):
+            continue
+        command = ["rclone", "help", "flags"] if name == "global" else ["rclone", name, "--help"]
+        flags = _read_flags(command)
+        if flags is None:
+            _failed_at[name] = time.monotonic()
+        else:
+            _flag_sets[name] = flags
+            _failed_at.pop(name, None)
 
 
 async def ensure_flags() -> None:
     """Read rclone's flag lists in a thread, so request handlers never wait on rclone."""
-    if any(name not in _flag_sets for name in ("global", *SOURCE_SUBCOMMANDS)):
+    if any(_due(name) for name in _FLAG_LIST_NAMES):
         await asyncio.to_thread(load_flags)
 
 
@@ -171,7 +193,8 @@ def split_command(argv: list[str]) -> tuple[list[list[str]], list[str]]:
 
 def size_command(argv: list[str], env: dict[str, str] | None = None) -> SizeCommand | None:
     """The ``rclone size`` command for a step's source, or None if it has no source."""
-    if len(argv) < 3 or argv[1] not in SOURCE_SUBCOMMANDS:
+    if len(argv) < 3 or argv[1] not in SOURCE_SUBCOMMANDS or not flags_available():
+        # Without rclone's flag list, a flag's value could pass for the source.
         return None
     flags, paths = split_command(argv)
     if not paths:
@@ -194,8 +217,7 @@ def size_command(argv: list[str], env: dict[str, str] | None = None) -> SizeComm
 def _keeps(name: str, global_flags: frozenset[str]) -> bool:
     if name in _DROPPED_FLAGS or name.startswith(_DROPPED_PREFIXES):
         return False
-    # Without rclone's flag list, keep everything rather than measure the wrong files.
-    return not global_flags or name in global_flags
+    return name in global_flags
 
 
 def _env_digest(env: dict[str, str]) -> str:

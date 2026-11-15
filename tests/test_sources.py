@@ -126,6 +126,7 @@ def test_parse_size_output():
 @pytest.mark.real_rclone
 @pytest.mark.skipif(shutil.which("rclone") is None, reason="needs the rclone binary")
 def test_real_rclone_flag_list_and_size(tmp_path):
+    sources.load_flags()
     source = tmp_path / "Musa"
     source.mkdir()
     (source / "a.flac").write_bytes(b"x" * 1000)
@@ -238,3 +239,31 @@ def test_size_command_drops_flags_that_fail_size_or_write_files():
         "--cpuprofile /logs/backup.cpu --memprofile /logs/backup.mem",
     )
     assert command.argv == ["rclone", "size", "--json", "--", "/src"]
+
+
+async def test_failed_flag_reads_back_off_and_never_block_requests(monkeypatch):
+    calls = []
+
+    def failing_read(command):
+        calls.append(command)
+        return None
+
+    clock = [1000.0]
+    monkeypatch.setattr(sources, "_flag_sets", {})
+    monkeypatch.setattr(sources, "_failed_at", {})
+    monkeypatch.setattr(sources, "_read_flags", failing_read)
+    monkeypatch.setattr(sources.time, "monotonic", lambda: clock[0])
+
+    await sources.ensure_flags()
+    reads = len(sources.SOURCE_SUBCOMMANDS) + 1
+    assert len(calls) == reads
+
+    # Request code only reads the cache: no source without the flag list, and no rclone call.
+    assert _size("sync /a r:a", "--exclude *.tmp") is None
+    assert sources.split_command(["rclone", "sync", "-n", "/a", "r:a"])[0] == [["-n"]]
+    await sources.ensure_flags()  # within the back-off
+    assert len(calls) == reads
+
+    clock[0] += sources.FLAG_RETRY_SECONDS
+    await sources.ensure_flags()
+    assert len(calls) == 2 * reads

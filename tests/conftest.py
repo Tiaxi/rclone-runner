@@ -65,6 +65,7 @@ def known_flags(monkeypatch, request):
 
     Tests marked ``real_rclone`` read rclone's own lists instead.
     """
+    monkeypatch.setattr(sources, "_failed_at", {})
     if request.node.get_closest_marker("real_rclone"):
         monkeypatch.setattr(sources, "_flag_sets", {})
         return
