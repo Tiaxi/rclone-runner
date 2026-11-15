@@ -3,7 +3,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import math
 import secrets
+import time
+from collections import deque
+from collections.abc import Callable
 from typing import Annotated
 
 from fastapi import Depends, Form, HTTPException, Request, status
@@ -47,6 +51,48 @@ def verify_password_hash(password: str, password_hash: str) -> bool:
         return False
     actual = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
     return hmac.compare_digest(actual, expected)
+
+
+class LoginThrottle:
+    """Refuse login attempts from a client after too many recent failures.
+
+    Clients are keyed by address, so behind a reverse proxy that does not forward the client
+    address all clients share one limit.
+    """
+
+    def __init__(
+        self,
+        max_failures: int = 10,
+        window_seconds: float = 15 * 60,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._max_failures = max_failures
+        self._window_seconds = window_seconds
+        self._clock = clock
+        self._failures: dict[str, deque[float]] = {}
+
+    def retry_after(self, client: str) -> int | None:
+        """Seconds until the client may try again, or None if it is not throttled."""
+        failures = self._recent_failures(client)
+        if len(failures) < self._max_failures:
+            return None
+        return max(1, math.ceil(failures[0] + self._window_seconds - self._clock()))
+
+    def record_failure(self, client: str) -> None:
+        self._recent_failures(client).append(self._clock())
+
+    def reset(self, client: str) -> None:
+        self._failures.pop(client, None)
+
+    def _recent_failures(self, client: str) -> deque[float]:
+        cutoff = self._clock() - self._window_seconds
+        for key in list(self._failures):
+            failures = self._failures[key]
+            while failures and failures[0] <= cutoff:
+                failures.popleft()
+            if not failures and key != client:
+                del self._failures[key]
+        return self._failures.setdefault(client, deque())
 
 
 def csrf_token(request: Request) -> str:

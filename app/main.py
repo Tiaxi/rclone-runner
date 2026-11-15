@@ -19,7 +19,14 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.websockets import WebSocketDisconnect
 
-from app.auth import SESSION_KEY, AuthRequired, csrf_field, require_csrf, verify_password
+from app.auth import (
+    SESSION_KEY,
+    AuthRequired,
+    LoginThrottle,
+    csrf_field,
+    require_csrf,
+    verify_password,
+)
 from app.config import runtime_warnings, settings
 from app.core.commands import CommandPolicyError, build_rclone_argv, parse_console_command
 from app.core.logs import read_log_append, read_log_chunk
@@ -86,6 +93,7 @@ templates.env.globals["run_exit_label"] = lambda run: _exit_label(run.status, ru
 
 
 LOG_CHUNK_LINES = 200
+login_throttle = LoginThrottle()
 # Deleting a run that is still in progress would orphan the rclone process behind it.
 DELETE_BLOCKED_URL = "/runs?delete_blocked=1"
 HISTORY_PAGE_SIZE = 25
@@ -133,9 +141,22 @@ async def login(
     username: str = Form(),
     password: str = Form(),
 ) -> Response:
+    client = request.client.host if request.client else "unknown"
+    retry_after = login_throttle.retry_after(client)
+    if retry_after is not None:
+        minutes = ceil(retry_after / 60)
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {"error": f"Too many failed logins. Try again in {minutes} min."},
+            status_code=429,
+            headers={"Retry-After": str(retry_after)},
+        )
     if username == settings.admin_user and verify_password(password):
+        login_throttle.reset(client)
         request.session[SESSION_KEY] = True
         return RedirectResponse("/jobs", status_code=303)
+    login_throttle.record_failure(client)
     return templates.TemplateResponse(
         request, "login.html", {"error": "Invalid credentials"}, status_code=401
     )

@@ -87,6 +87,29 @@ async def test_login_rejects_missing_and_invalid_csrf():
     assert invalid.status_code == 403
 
 
+async def test_login_is_throttled_after_repeated_failures(monkeypatch):
+    monkeypatch.setattr(main, "login_throttle", main.LoginThrottle(max_failures=3))
+    transport = httpx.ASGITransport(app=main.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        page = await client.get("/login")
+        token = page.text.split('name="csrf_token" value="', 1)[1].split('"', 1)[0]
+        failures = [
+            await client.post(
+                "/login", data={"username": "admin", "password": "wrong", "csrf_token": token}
+            )
+            for _ in range(3)
+        ]
+        blocked = await client.post(
+            "/login",
+            data={"username": settings.admin_user, "password": "admin", "csrf_token": token},
+        )
+
+    assert [response.status_code for response in failures] == [401, 401, 401]
+    assert blocked.status_code == 429
+    assert int(blocked.headers["retry-after"]) > 0
+    assert "Too many failed logins" in blocked.text
+
+
 async def test_new_job_page_uses_empty_values_with_hints():
     request = _request("/jobs/new")
 
