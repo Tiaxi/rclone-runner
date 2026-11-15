@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from math import ceil
 from pathlib import Path
 from typing import Annotated
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Form, Request, WebSocket
@@ -680,7 +680,7 @@ async def delete_console_run(
 
 @app.websocket("/console/terminal")
 async def console_terminal(websocket: WebSocket) -> None:
-    if websocket.session.get(SESSION_KEY) is not True:
+    if not _is_same_origin(websocket) or websocket.session.get(SESSION_KEY) is not True:
         await websocket.close(code=1008)
         return
     await websocket.accept()
@@ -768,6 +768,26 @@ async def console_terminal(websocket: WebSocket) -> None:
             command_task.cancel()
             with suppress(asyncio.CancelledError):
                 await command_task
+
+
+def _is_same_origin(websocket: WebSocket) -> bool:
+    """Reject cross-site WebSocket handshakes, which browsers send with the session cookie.
+
+    Browsers always send Origin on WebSocket handshakes and page scripts cannot forge it or
+    the forwarding headers, so an Origin matching Host (or the proxy's X-Forwarded-Host)
+    means the page was served by this app.
+    """
+    origin = websocket.headers.get("origin")
+    if origin is None:
+        return True
+    origin_host = urlsplit(origin).netloc.lower()
+    allowed_hosts = {
+        value.strip().lower()
+        for header in ("host", "x-forwarded-host")
+        for value in websocket.headers.get(header, "").split(",")
+        if value.strip()
+    }
+    return origin_host in allowed_hosts
 
 
 @app.get("/settings", response_class=HTMLResponse)
