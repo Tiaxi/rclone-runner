@@ -1450,6 +1450,47 @@ def test_console_marks_command_failed_when_its_output_cannot_be_written(monkeypa
         assert "Console command failed" in (Path(tmpdir) / "console.log").read_text()
 
 
+async def test_running_job_run_reports_live_progress_from_active_step_log():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        log_path = Path(tmpdir) / "run.log"
+        log_path.write_text(
+            "Transferred:   \t  412.000 GiB / 2.000 TiB, 20%, 57.000 MiB/s, ETA 7h50m0s\n",
+            encoding="utf-8",
+        )
+        with session_factory() as db:
+            step_run = _create_running_step_run(db, log_path=log_path)
+
+            payload = await main.job_run_status(step_run.job_run_id, None, db)
+            step_payload = await main.run_status(step_run.id, None, db)
+            page = await main.job_run_detail(_request("/job-runs/1"), step_run.job_run_id, None, db)
+
+            expected = "412.000 GiB / 2.000 TiB (20%) · 57.000 MiB/s · ETA 7h50m0s"
+            assert payload["progress"] == expected
+            assert step_payload["progress"] == expected
+            assert expected in page.body.decode()
+
+            _finish(db, step_run)
+            payload = await main.job_run_status(step_run.job_run_id, None, db)
+            page = await main.job_run_detail(_request("/job-runs/1"), step_run.job_run_id, None, db)
+
+            assert payload["progress"] is None
+            assert 'id="job-run-progress"' not in page.body.decode()
+
+
+async def test_running_step_page_explains_missing_progress():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        log_path = Path(tmpdir) / "run.log"
+        log_path.write_text("starting\n", encoding="utf-8")
+        with session_factory() as db:
+            step_run = _create_running_step_run(db, log_path=log_path)
+
+            page = await main.run_detail(_request("/runs/1"), step_run.id, None, db)
+
+            assert "rclone reports progress every minute with --verbose" in page.body.decode()
+
+
 def _session_factory(database_path: Path):
     engine = create_engine(f"sqlite:///{database_path}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
