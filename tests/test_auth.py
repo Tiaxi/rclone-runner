@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+
 import pytest
 from fastapi import HTTPException
 
@@ -9,7 +12,7 @@ from app.auth import (
     require_csrf,
     verify_password_hash,
 )
-from app.config import Settings, runtime_warnings
+from app.config import Settings, runtime_warnings, startup_permission_error
 
 
 class SessionRequest:
@@ -88,3 +91,51 @@ def test_login_throttle_reset_clears_failures():
     throttle.reset("10.0.0.5")
 
     assert throttle.retry_after("10.0.0.5") is None
+
+
+needs_non_root = pytest.mark.skipif(os.geteuid() == 0, reason="root can write anywhere")
+
+
+@needs_non_root
+def test_startup_permission_error_names_unwritable_data_folder(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    data_dir.chmod(0o555)
+    try:
+        value = Settings(
+            data_dir=data_dir,
+            log_dir=data_dir / "logs",
+            database_url=f"sqlite:///{data_dir}/rclone-runner.db",
+        )
+
+        message = startup_permission_error(value)
+    finally:
+        data_dir.chmod(0o755)
+
+    assert message is not None
+    assert str(data_dir) in message
+    assert f"chown -R {os.getuid()}:{os.getgid()}" in message
+
+
+def test_startup_permission_error_is_none_for_writable_folders(tmp_path: Path):
+    value = Settings(
+        data_dir=tmp_path / "data",
+        log_dir=tmp_path / "data" / "logs",
+        database_url=f"sqlite:///{tmp_path}/data/rclone-runner.db",
+    )
+
+    assert startup_permission_error(value) is None
+
+
+@needs_non_root
+def test_runtime_warnings_flag_unwritable_rclone_config_folder(tmp_path: Path, monkeypatch):
+    config_dir = tmp_path / "rclone"
+    config_dir.mkdir()
+    config_dir.chmod(0o555)
+    monkeypatch.setenv("RCLONE_CONFIG", str(config_dir / "rclone.conf"))
+    try:
+        warnings = runtime_warnings(Settings(admin_password_hash="hash", secret_key="x" * 40))
+    finally:
+        config_dir.chmod(0o755)
+
+    assert any("not writable" in warning for warning in warnings)

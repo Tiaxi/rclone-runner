@@ -27,7 +27,7 @@ from app.auth import (
     require_csrf,
     verify_password,
 )
-from app.config import runtime_warnings, settings
+from app.config import runtime_warnings, settings, startup_permission_error
 from app.core.commands import CommandPolicyError, build_rclone_argv, parse_console_command
 from app.core.logs import read_log_append, read_log_chunk
 from app.core.models import utc_now
@@ -101,6 +101,9 @@ HISTORY_PAGE_SIZE = 25
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    permission_error = startup_permission_error(settings)
+    if permission_error is not None:
+        raise RuntimeError(permission_error)
     init_db()
     runner.recover_interrupted_runs()
     with next_db() as session:

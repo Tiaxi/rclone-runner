@@ -66,6 +66,7 @@ Important variables:
 | Variable | Purpose |
 | --- | --- |
 | `RCLONE_RUNNER_HOST_PORT` | Host port mapped to the web UI. |
+| `RCLONE_RUNNER_UID`, `RCLONE_RUNNER_GID` | User and group the container runs as (default `1000:1000`). |
 | `RCLONE_RUNNER_ADMIN_USER` | Login username. |
 | `RCLONE_RUNNER_ADMIN_PASSWORD_HASH` | Password hash generated with `app.auth.hash_password`. |
 | `RCLONE_RUNNER_SECRET_KEY` | Session signing secret. |
@@ -118,16 +119,45 @@ The important container mounts are:
 For TrueNAS SCALE, set these in `.env` or adapt the Compose YAML before deployment:
 
 ```dotenv
+RCLONE_RUNNER_UID=568
+RCLONE_RUNNER_GID=568
 RCLONE_RUNNER_DATA_PATH=/mnt/tank/apps/rclone-runner/data
 RCLONE_RUNNER_RCLONE_CONFIG_PATH=/mnt/tank/apps/rclone-runner/rclone-config
 RCLONE_RUNNER_MEDIA_PATH=/mnt/tank/media
 ```
+
+### Container user
+
+The container runs as an unprivileged user, `RCLONE_RUNNER_UID:RCLONE_RUNNER_GID` (default
+`1000:1000`). On TrueNAS SCALE, `568:568` is the built-in `apps` user. That user needs:
+
+- Write access to the host folders mounted at `/data` and `/config/rclone`, including the folders
+  themselves. rclone saves renewed OAuth tokens by writing a new `rclone.conf` next to the old one.
+- Read access to the source datasets mounted at `/media`.
+
+If `/data` is not writable, the app stops at startup with a message naming the folder and the
+user. Commands run with `docker exec` (for example `docker exec -it rclone-runner rclone config`)
+run as the same user, so files they create keep the right owner.
+
+### Upgrading from a version that ran as root
+
+Earlier versions ran the container as root, so the existing data and rclone config on the host are
+owned by root. Before redeploying, give them to the new user, using your host paths and user:
+
+```bash
+sudo chown -R 568:568 /mnt/tank/apps/rclone-runner/data /mnt/tank/apps/rclone-runner/rclone-config
+```
+
+Do this right before the redeploy, while no job is running, so the old container does not create
+new root-owned files in between.
 
 ## Deployment Checklist
 
 - Generate and set `RCLONE_RUNNER_ADMIN_PASSWORD_HASH` before exposing the app.
 - Replace `RCLONE_RUNNER_SECRET_KEY` with a long random value unique to the deployment.
 - Confirm `/data`, `/config/rclone`, and any source dataset mounts point at persistent host paths.
+- Set `RCLONE_RUNNER_UID`/`RCLONE_RUNNER_GID`, and make `/data` and `/config/rclone` on the host
+  owned by that user (see [Container user](#container-user)).
 - Set `RCLONE_RUNNER_TIMEZONE`, `TZ`, and `RCLONE_RUNNER_RETENTION_DAYS` for the deployment.
 - Verify the service health endpoint with `curl http://127.0.0.1:${RCLONE_RUNNER_HOST_PORT:-8000}/health`, using the configured host port if `RCLONE_RUNNER_HOST_PORT` is changed.
 - Put the app behind HTTPS or a trusted reverse proxy before remote access.

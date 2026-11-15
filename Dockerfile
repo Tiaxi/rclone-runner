@@ -3,7 +3,10 @@ FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim
 ENV PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
     UV_CACHE_DIR=/tmp/uv-cache \
-    RCLONE_CONFIG=/config/rclone/rclone.conf
+    RCLONE_CONFIG=/config/rclone/rclone.conf \
+    RCLONE_RUNNER_DATA_DIR=/data \
+    RCLONE_RUNNER_LOG_DIR=/data/logs \
+    RCLONE_RUNNER_DATABASE_URL=sqlite:////data/rclone-runner.db
 
 # Bump this to update rclone; changing it invalidates the layer below.
 # Not named RCLONE_*: rclone reads RCLONE_<FLAG> env vars as flags.
@@ -45,8 +48,17 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
 COPY app ./app
-RUN mkdir -p /data/logs /config/rclone /media
+
+# Run as an unprivileged user. 1000:1000 is only the image default: Compose sets the real user
+# from RCLONE_RUNNER_UID/RCLONE_RUNNER_GID, and the host folders mounted at /data and
+# /config/rclone must be writable by that user. HOME gives rclone a writable cache folder.
+RUN mkdir -p /data/logs /config/rclone /media \
+    && chown -R 1000:1000 /data /config/rclone
+ENV HOME=/data \
+    PATH="/app/.venv/bin:$PATH"
+USER 1000:1000
 
 EXPOSE 8000
 VOLUME ["/data", "/config/rclone", "/media"]
-CMD ["uv", "run", "--no-sync", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Start uvicorn from the virtualenv directly: `uv run` would need uv's root-owned build cache.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

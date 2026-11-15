@@ -4,6 +4,8 @@ services:
     pull_policy: build
     container_name: rclone-runner
     restart: unless-stopped
+    # The host folders for /data and /config/rclone must be owned by this user.
+    user: "${RCLONE_RUNNER_UID:-1000}:${RCLONE_RUNNER_GID:-1000}"
     env_file: ${ENV_FILE:-.env}
     ports:
       - "${RCLONE_RUNNER_HOST_PORT:-8000}:8000"
