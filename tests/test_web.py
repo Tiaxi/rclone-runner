@@ -17,6 +17,7 @@ from starlette.websockets import WebSocketDisconnect
 import app.main as main
 from app.config import settings
 from app.core.notifications import load_email_notification_settings
+from app.core.rclone_stats import RcloneTransferStats, stats_to_json
 from app.core.runner import LiveJobRunner
 from app.db import (
     Base,
@@ -665,30 +666,56 @@ async def test_run_detail_renders_step_stats_from_log_fallback_for_existing_runs
             assert "Deleted files" in html
 
 
-async def test_history_page_receives_job_runs():
+async def test_history_page_summarizes_finished_job_runs():
     request = _request("/runs")
     with tempfile.TemporaryDirectory() as tmpdir:
         session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        log_path = Path(tmpdir) / "run.log"
+        log_path.write_text("", encoding="utf-8")
         with session_factory() as db:
-            job = _create_job(db)
-            db.add(
-                JobRunRecord(
-                    job_id=job.id,
-                    job_name=job.name,
-                    trigger="manual",
-                    status="success",
-                    started_at=main.utc_now(),
-                    ended_at=main.utc_now(),
+            step_run = _finish(db, _create_running_step_run(db, log_path=log_path))
+            step_run.transfer_stats_json = stats_to_json(
+                RcloneTransferStats(
+                    transferred_bytes=3 * 1024**3, transferred_files=12, deleted_files=2
                 )
             )
             db.commit()
 
             response = await main.runs(request, None, db)
+            html = response.body.decode()
 
-            assert response.context["job_runs"][0].job_name == "backup"
+            (row,) = response.context["rows"]
+            assert row["run"].job_name == "backup"
+            assert row["transfer"] == {"data": "3.000 GiB", "detail": "12 files, 2 deleted"}
+            assert "3.000 GiB" in html
+            assert "12 files, 2 deleted" in html
+            assert response.context["view"] == "jobs"
+            assert [tab["count"] for tab in response.context["tabs"]] == [1, 1, 0]
 
 
-async def test_history_page_paginates_independent_tables():
+async def test_history_transfer_summary_handles_empty_and_failed_runs():
+    assert main._transfer_summary(0, 0, 0, "success") == {"data": "No changes", "detail": None}
+    assert main._transfer_summary(0, 0, 0, "failed") == {"data": "-", "detail": None}
+    assert main._transfer_summary(512, 1, 0, "failed") == {"data": "512 B", "detail": "1 file"}
+
+
+async def test_history_page_shows_running_runs_without_summary():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            _create_running_step_run(db, log_path=Path(tmpdir) / "run.log")
+
+            jobs_view = await main.runs(_request("/runs"), None, db)
+            steps_view = await main.runs(_request("/runs"), None, db, view="steps")
+
+            for response in (jobs_view, steps_view):
+                (row,) = response.context["rows"]
+                assert row["duration"] == "-"
+                assert row["transfer"] is None
+                assert '<span class="run-status running">Running</span>' in response.body.decode()
+
+
+async def test_history_page_shows_one_view_at_a_time_with_pagination():
     request = _request("/runs")
     with tempfile.TemporaryDirectory() as tmpdir:
         session_factory = _session_factory(Path(tmpdir) / "runs.db")
@@ -718,6 +745,7 @@ async def test_history_page_paginates_independent_tables():
                         ended_at=job_run.ended_at,
                     )
                 )
+            for index in range(3):
                 db.add(
                     ConsoleRunRecord(
                         status="success",
@@ -725,25 +753,37 @@ async def test_history_page_paginates_independent_tables():
                         argv_json='["rclone", "version"]',
                         exit_code=0,
                         log_path=str(Path(tmpdir) / f"console-{index}.log"),
-                        started_at=job_run.started_at,
-                        ended_at=job_run.ended_at,
+                        started_at=main.utc_now(),
+                        ended_at=main.utc_now(),
                     )
                 )
             db.commit()
 
-            response = await main.runs(request, None, db, job_page=2, step_page=2, console_page=2)
+            steps = await main.runs(request, None, db, view="steps", page=2)
+            console = await main.runs(request, None, db, view="console", page=9)
+            unknown = await main.runs(request, None, db, view="nope")
 
-            assert len(response.context["job_runs"]) == 5
-            assert len(response.context["step_runs"]) == 5
-            assert len(response.context["console_runs"]) == 5
-            assert response.context["job_pagination"]["page"] == 2
-            assert response.context["job_pagination"]["total_pages"] == 2
-            assert response.context["job_pagination"]["has_previous"] is True
-            assert response.context["job_pagination"]["has_next"] is False
-            assert response.context["step_pagination"]["page"] == 2
-            assert response.context["step_pagination"]["total_pages"] == 2
-            assert response.context["console_pagination"]["page"] == 2
-            assert response.context["console_pagination"]["total_pages"] == 2
+            assert steps.context["view"] == "steps"
+            assert len(steps.context["rows"]) == 5
+            assert steps.context["pagination"] == {
+                "page": 2,
+                "total_pages": 2,
+                "total_items": 30,
+                "first_item": 26,
+                "last_item": 30,
+                "has_previous": True,
+                "has_next": False,
+                "previous_url": "/runs?view=steps",
+                "next_url": None,
+            }
+            assert [tab["count"] for tab in steps.context["tabs"]] == [30, 30, 3]
+            assert [tab["current"] for tab in steps.context["tabs"]] == [False, True, False]
+            # A page past the end shows the last page instead of an empty table.
+            assert console.context["pagination"]["page"] == 1
+            assert len(console.context["rows"]) == 3
+            assert unknown.context["view"] == "jobs"
+            assert len(unknown.context["rows"]) == 25
+            assert unknown.context["pagination"]["next_url"] == "/runs?page=2"
 
 
 async def test_settings_prune_reports_deleted_count():
@@ -1080,10 +1120,10 @@ async def test_delete_individual_step_run_removes_log_only_for_that_step():
             step_run = _finish(db, _create_running_step_run(db, log_path=log_path))
             job_run_id = step_run.job_run_id
 
-            response = await main.delete_run(step_run.id, None, None, db)
+            response = await main.delete_run(step_run.id, None, None, db, page=3)
 
             assert response.status_code == 303
-            assert response.headers["location"] == "/runs"
+            assert response.headers["location"] == "/runs?view=steps&page=3"
             assert db.get(JobRunRecord, job_run_id) is not None
             assert db.get(JobStepRunRecord, step_run.id) is None
             assert not log_path.exists()
@@ -1110,7 +1150,7 @@ async def test_delete_individual_console_run_removes_log():
             response = await main.delete_console_run(run.id, None, None, db)
 
             assert response.status_code == 303
-            assert response.headers["location"] == "/runs"
+            assert response.headers["location"] == "/runs?view=console"
             assert db.get(ConsoleRunRecord, run.id) is None
             assert not log_path.exists()
 
@@ -1393,9 +1433,11 @@ async def test_running_runs_cannot_be_deleted():
                 await main.delete_console_run(console_run.id, None, None, db),
             ]
 
-            assert {response.headers["location"] for response in responses} == {
-                "/runs?delete_blocked=1"
-            }
+            assert [response.headers["location"] for response in responses] == [
+                "/runs?delete_blocked=1",
+                "/runs?view=steps&delete_blocked=1",
+                "/runs?view=console&delete_blocked=1",
+            ]
             assert db.get(JobRunRecord, step_run.job_run_id) is not None
             assert db.get(JobStepRunRecord, step_run.id) is not None
             assert db.get(ConsoleRunRecord, console_run.id) is not None
