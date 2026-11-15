@@ -101,3 +101,13 @@ async def test_bridge_pty_writes_input_larger_than_pty_buffer():
 
     assert exit_code == 0
     assert "received 1000" in output
+
+
+async def test_bridge_pty_hides_app_settings_from_console_commands(monkeypatch):
+    monkeypatch.setenv("RCLONE_RUNNER_SECRET_KEY", "session-secret")
+    script = "import os; print('secret' if 'RCLONE_RUNNER_SECRET_KEY' in os.environ else 'clean')"
+
+    exit_code, output = await _run_bridge([sys.executable, "-c", script])
+
+    assert exit_code == 0
+    assert "clean" in output
