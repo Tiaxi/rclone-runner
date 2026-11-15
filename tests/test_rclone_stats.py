@@ -210,3 +210,11 @@ def test_live_progress_waits_for_a_complete_line(tmp_path: Path):
 
     log_path.write_text(line + "\n", encoding="utf-8")
     assert live_progress_from_log(log_path).percent == "35%"
+
+
+def test_step_stats_display_reports_zero_totals_as_no_changes():
+    zero = RcloneTransferStats(transferred_bytes=0, transferred_files=0, deleted_files=0)
+
+    assert step_stats_display(zero, "success").label == "No changes"
+    # A failed step that printed zero totals did report them; keep the numbers.
+    assert step_stats_display(zero, "failed").label == "0 B, 0 files, 0 deleted"

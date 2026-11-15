@@ -255,7 +255,7 @@ def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: st
     duration = html.escape(_format_duration(run.started_at, run.ended_at))
     body_style = (
         "background: #f5f7f2; color: #20231f; "
-        "font-family: Inter, Arial, sans-serif; margin: 0; padding: 24px;"
+        "font-family: Inter, Arial, sans-serif; margin: 0; padding: 16px 12px;"
     )
     card_style = (
         "background: #ffffff; border: 1px solid #dbe3d7; border-radius: 12px; overflow: hidden;"
@@ -282,17 +282,13 @@ def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: st
     brand_label_style = (
         f"{eyebrow_style}; padding: 0; text-transform: uppercase; vertical-align: middle;"
     )
-    steps_table_style = (
-        "border: 1px solid #dbe3d7; border-collapse: collapse; "
-        "border-radius: 8px; overflow: hidden; width: 100%;"
-    )
-    steps_header_style = (
-        "background: #2b3328; background-color: #2b3328; "
-        "background-image: linear-gradient(#2b3328, #2b3328); color: #eef3eb !important; "
-        "-webkit-text-fill-color: #eef3eb;"
+    steps_list_style = (
+        "border: 1px solid #dbe3d7; border-collapse: separate; border-radius: 8px; "
+        "border-spacing: 0; width: 100%;"
     )
     rows = "\n".join(
-        _step_row_html(step) for step in sorted(run.step_runs, key=lambda item: item.started_at)
+        _step_row_html(step, first=index == 0)
+        for index, step in enumerate(sorted(run.step_runs, key=lambda item: item.started_at))
     )
     link = ""
     if value.app_base_url:
@@ -322,15 +318,18 @@ def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: st
         log_block = (
             '<h2 style="font-size: 18px; margin: 28px 0 10px;">Log tail</h2>'
             '<pre style="background: #111510; border-radius: 8px; color: #eef5ea; '
-            "font-family: Consolas, monospace; font-size: 13px; line-height: 1.45; "
-            f'margin: 0; overflow-x: auto; padding: 14px;">{html.escape(log_tail)}</pre>'
+            "font-family: Consolas, monospace; font-size: 12px; line-height: 1.45; "
+            # Wrap long lines: most mail apps ignore overflow scrolling, and one long line
+            # would otherwise widen the whole message.
+            "margin: 0; overflow-wrap: anywhere; padding: 14px; white-space: pre-wrap; "
+            f'word-break: break-word;">{html.escape(log_tail)}</pre>'
         )
     return f"""<!doctype html>
 <html>
   <body style="{body_style}">
     <div style="margin: 0 auto; max-width: 680px;">
       <div style="{card_style}">
-        <div style="background: #1a1f18; color: #edf2e9; padding: 22px 24px;">
+        <div style="background: #1a1f18; color: #edf2e9; padding: 20px;">
           <table role="presentation" style="border-collapse: collapse; margin-bottom: 16px;">
             <tr>
               <td style="padding: 0 10px 0 0; vertical-align: middle;">
@@ -352,25 +351,15 @@ def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: st
             </tr>
           </table>
         </div>
-        <div style="padding: 24px;">
+        <div style="padding: 20px;">
           <h2 style="font-size: 18px; margin: 0 0 10px;">Summary</h2>
           <table role="presentation" style="border-collapse: collapse; width: 100%;">
             {summary_rows}
           </table>
     {link}
           <h2 style="font-size: 18px; margin: 28px 0 10px;">Steps</h2>
-          <table style="{steps_table_style}">
-            <thead>
-              <tr style="{steps_header_style}">
-                <th align="left" style="padding: 12px 14px;">Step</th>
-                <th align="left" style="padding: 12px 14px;">Status</th>
-                <th align="left" style="padding: 12px 14px;">Exit</th>
-                <th align="left" style="padding: 12px 14px;">Stats</th>
-                <th align="left" style="padding: 12px 14px;">Started</th>
-                <th align="left" style="padding: 12px 14px;">Duration</th>
-              </tr>
-            </thead>
-            <tbody>{rows}</tbody>
+          <table role="presentation" width="100%" style="{steps_list_style}">
+            {rows}
           </table>
           {log_block}
         </div>
@@ -380,25 +369,41 @@ def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: st
 </html>"""
 
 
-def _step_row_html(step) -> str:
+def _step_row_html(step, first: bool = False) -> str:
+    # One stacked block per step instead of a wide table: mail apps cannot scroll a table
+    # sideways, so six columns did not fit a phone held upright.
     stats = step_stats_display(_step_transfer_stats(step), step.status)
     duration = _format_duration(step.started_at, step.ended_at)
+    color = _status_color(step.status)
+    border = "" if first else " border-top: 1px solid #dbe3d7;"
+    badge_style = (
+        f"background: {color}; background-color: {color}; "
+        f"background-image: linear-gradient({color}, {color}); border-radius: 999px; "
+        "color: #ffffff !important; -webkit-text-fill-color: #ffffff; display: inline-block; "
+        "font-size: 11px; font-weight: 800; padding: 3px 8px;"
+    )
+    details = " · ".join(
+        f'<span style="white-space: nowrap;">{html.escape(part)}</span>'
+        for part in (
+            f"Started {_format_time(step.started_at)}",
+            duration,
+            f"Exit {_exit_label(step.exit_code, step.status)}",
+        )
+    )
     return (
+        f'<tr><td style="padding: 12px 14px;{border}">'
+        '<table role="presentation" width="100%" style="border-collapse: collapse; width: 100%;">'
         "<tr>"
-        '<td style="padding: 12px 14px; border-top: 1px solid #dbe3d7;">'
+        '<td style="font-weight: 700; padding: 0 8px 0 0; vertical-align: middle;">'
         f"{html.escape(step.step_name)}</td>"
-        '<td style="padding: 12px 14px; border-top: 1px solid #dbe3d7; '
-        'font-weight: 700;">'
-        f"{html.escape(step.status.upper())}</td>"
-        '<td style="padding: 12px 14px; border-top: 1px solid #dbe3d7;">'
-        f"{html.escape(_exit_label(step.exit_code, step.status))}</td>"
-        '<td style="padding: 12px 14px; border-top: 1px solid #dbe3d7;">'
-        f"{html.escape(stats.label)}</td>"
-        '<td style="padding: 12px 14px; border-top: 1px solid #dbe3d7;">'
-        f"{html.escape(_format_time(step.started_at))}</td>"
-        '<td style="padding: 12px 14px; border-top: 1px solid #dbe3d7;">'
-        f"{html.escape(duration)}</td>"
-        "</tr>"
+        '<td align="right" style="padding: 0; vertical-align: middle; white-space: nowrap;">'
+        f'<span style="{badge_style}">{html.escape(step.status.upper())}</span></td>'
+        "</tr></table>"
+        '<div style="font-size: 14px; line-height: 1.5; margin-top: 6px;">'
+        f"{html.escape(stats.label)}</div>"
+        '<div style="color: #62685f; font-size: 13px; line-height: 1.5;">'
+        f"{details}</div>"
+        "</td></tr>"
     )
 
 

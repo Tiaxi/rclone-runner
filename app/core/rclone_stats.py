@@ -241,6 +241,10 @@ def step_transfer_stats(step_run: _StepRunStats) -> RcloneTransferStats | None:
 def step_stats_display(
     stats: RcloneTransferStats | None, status: str | None = None
 ) -> StepStatsDisplay:
+    if stats is not None and not (
+        stats.transferred_bytes or stats.transferred_files or stats.deleted_files
+    ):
+        stats = None if status not in {"failed", "canceled"} else stats
     if stats is None:
         # rclone prints no transfer line when there was nothing to do, so missing stats on a
         # successful step mean no changes. A failed or canceled step may simply have stopped

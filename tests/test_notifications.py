@@ -155,17 +155,24 @@ def test_job_notification_message_contains_html_summary_and_failure_log(tmp_path
     assert "border: 1px solid #6fbd8f" in html
     assert "background-color: #2f6f4e" in html
     assert "background-image: linear-gradient(#2f6f4e, #2f6f4e)" in html
-    # Dark header with light text, so mail apps' dark mode cannot make it dark-on-dark.
-    assert "background-color: #2b3328" in html
-    assert "-webkit-text-fill-color: #eef3eb" in html
     assert "-webkit-text-fill-color: #20231f" not in html
+    # Steps stack instead of forming a wide table that a phone cannot fit or scroll.
+    assert "<th" not in html.split("Steps</h2>", 1)[1]
+    assert (
+        '<span style="white-space: nowrap;">Started 2026-04-28 13:00:00 EEST</span> · '
+        '<span style="white-space: nowrap;">5m 0s</span> · '
+        '<span style="white-space: nowrap;">Exit 1</span>'
+    ) in html
+    assert 'padding: 3px 8px;">FAILED</span>' in html
+    # Long log lines wrap instead of widening the message.
+    assert "white-space: pre-wrap" in html
+    assert "overflow-x" not in html
     assert "Summary" in html
     assert "Data transferred" in html
     assert "1.000 MiB" in html
     assert "Files transferred" in html
     assert "Deleted files" in html
     assert "1.000 MiB, 3 files, 1 deleted" in html
-    assert "Stats" in html
     assert "Duration" in html
     assert "5m 0s" in html
     assert "background: #9f2f28" in html
