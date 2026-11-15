@@ -9,6 +9,10 @@ class CommandPolicyError(ValueError):
     """Raised when a command is outside the allowed rclone-only policy."""
 
 
+# The app's own settings, including the session secret and the admin password hash. They are
+# kept out of ${VAR} expansion and out of the environment rclone and console commands get.
+APP_ENV_PREFIX = "RCLONE_RUNNER_"
+
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _ALLOWED_RCLONE_SUBCOMMANDS = {
     "about",
@@ -62,8 +66,16 @@ _ALLOWED_RCLONE_SUBCOMMANDS = {
 }
 
 
+def child_environment(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment for rclone: the container's, without the app's settings, plus extra."""
+    inherited = {
+        key: value for key, value in os.environ.items() if not key.startswith(APP_ENV_PREFIX)
+    }
+    return inherited | (extra or {})
+
+
 def _expand_env(value: str, env: dict[str, str]) -> str:
-    merged = os.environ | env
+    merged = child_environment(env)
 
     def replace(match: re.Match[str]) -> str:
         name = match.group(1)

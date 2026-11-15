@@ -9,6 +9,8 @@ import subprocess
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 
+from app.core.commands import child_environment
+
 DRAIN_TIMEOUT_SECONDS = 5.0
 TERMINATE_TIMEOUT_SECONDS = 5.0
 
@@ -26,6 +28,7 @@ async def bridge_pty(
             stdout=slave_fd,
             stderr=slave_fd,
             start_new_session=True,
+            env=child_environment(),
         )
     except BaseException:
         os.close(master_fd)

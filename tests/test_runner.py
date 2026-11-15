@@ -699,6 +699,18 @@ async def test_live_runner_stores_marker_when_step_log_has_no_stats():
             assert db.get(JobStepRunRecord, first_step.id).transfer_stats_json == "null"
 
 
+@pytest.mark.asyncio
+async def test_subprocess_executor_hides_app_settings_from_rclone(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("RCLONE_RUNNER_SECRET_KEY", "session-secret")
+    log_path = tmp_path / "step.log"
+    names = "{'RCLONE_RUNNER_SECRET_KEY', 'BW_LIMIT'}"
+    script = f"import os; print(sorted(k for k in os.environ if k in {names}))"
+
+    await subprocess_executor([sys.executable, "-c", script], {"BW_LIMIT": "8M"}, log_path)
+
+    assert log_path.read_text().strip() == "['BW_LIMIT']"
+
+
 def _session_factory(database_path: Path, expire_on_commit: bool = False):
     engine = create_engine(f"sqlite:///{database_path}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)

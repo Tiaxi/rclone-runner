@@ -3,13 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 
-from app.core.commands import CommandPolicyError, build_rclone_argv
+from app.core.commands import CommandPolicyError, build_rclone_argv, child_environment
 from app.core.models import Job, JobRunResult, JobStep, StepRunResult, utc_now
 from app.core.rclone_stats import STATS_UNAVAILABLE_JSON, stats_from_log, stats_to_json
 from app.db import ConsoleRunRecord, JobRunRecord, JobStepRunRecord
@@ -30,7 +29,7 @@ TERMINATE_TIMEOUT_SECONDS = 5
 
 async def subprocess_executor(argv: list[str], env: dict[str, str], log_path: Path) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    merged_env = os.environ | env
+    merged_env = child_environment(env)
     # Open the log before starting rclone so a log error cannot leave it running.
     with log_path.open("wb") as log_file:
         process = await asyncio.create_subprocess_exec(

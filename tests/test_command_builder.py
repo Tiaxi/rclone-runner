@@ -1,6 +1,11 @@
 import pytest
 
-from app.core.commands import CommandPolicyError, build_rclone_argv, parse_console_command
+from app.core.commands import (
+    CommandPolicyError,
+    build_rclone_argv,
+    child_environment,
+    parse_console_command,
+)
 
 
 def test_builds_rclone_command_with_common_args_after_operation():
@@ -57,3 +62,23 @@ def test_console_accepts_rclone_version_flag_as_version_command():
 def test_console_rejects_non_rclone_commands():
     with pytest.raises(CommandPolicyError):
         parse_console_command("bash")
+
+
+def test_app_settings_are_not_expanded_into_commands(monkeypatch):
+    monkeypatch.setenv("RCLONE_RUNNER_SECRET_KEY", "session-secret")
+    monkeypatch.setenv("SHARED_REMOTE", "holvi")
+
+    with pytest.raises(CommandPolicyError, match="RCLONE_RUNNER_SECRET_KEY"):
+        build_rclone_argv("lsd ${RCLONE_RUNNER_SECRET_KEY}:", "", {})
+    assert build_rclone_argv("lsd ${SHARED_REMOTE}:", "", {}) == ["rclone", "lsd", "holvi:"]
+
+
+def test_child_environment_drops_app_settings_and_adds_job_values(monkeypatch):
+    monkeypatch.setenv("RCLONE_RUNNER_ADMIN_PASSWORD_HASH", "hash")
+    monkeypatch.setenv("RCLONE_CONFIG", "/config/rclone/rclone.conf")
+
+    env = child_environment({"BW_LIMIT": "8M"})
+
+    assert "RCLONE_RUNNER_ADMIN_PASSWORD_HASH" not in env
+    assert env["RCLONE_CONFIG"] == "/config/rclone/rclone.conf"
+    assert env["BW_LIMIT"] == "8M"
