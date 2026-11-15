@@ -325,6 +325,36 @@ button.secondary:hover,
   margin-top: 28px;
 }
 
+.section-heading-row {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.section-heading-row h2 {
+  margin: 0;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.table-wrap + .field-note {
+  margin-top: 8px;
+  padding-bottom: 0;
+}
+
+.alert-text {
+  color: var(--danger);
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
 table {
   border-collapse: collapse;
   width: 100%;

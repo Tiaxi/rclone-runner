@@ -59,6 +59,7 @@ from app.core.rclone_stats import (
 )
 from app.core.retention import prune_logs
 from app.core.schedule import cron_summary, normalize_cron
+from app.core.sources import SizeCommand, size_command
 from app.db import (
     ConsoleRunRecord,
     DbSession,
@@ -67,12 +68,13 @@ from app.db import (
     JobStepRecord,
     JobStepRunRecord,
     SessionLocal,
+    SourceMeasurementRecord,
     env_to_lines,
     init_db,
     parse_env_lines,
     record_to_job,
 )
-from app.runner_service import runner
+from app.runner_service import measurer, runner
 from app.scheduler import cron_error, next_run_time, scheduler, sync_schedules
 
 
@@ -102,6 +104,7 @@ templates.env.globals["local_time"] = lambda value: _local_time_html(value)
 templates.env.globals["format_duration"] = lambda start, end: _format_duration(start, end)
 templates.env.globals["format_seconds"] = lambda seconds: _format_seconds(seconds)
 templates.env.globals["utc_now"] = utc_now
+templates.env.globals["format_bytes"] = lambda value: format_byte_count(value)
 templates.env.globals["run_exit_label"] = lambda run: _exit_label(run.status, run.exit_code)
 
 
@@ -132,6 +135,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         raise RuntimeError(permission_error)
     init_db()
     runner.recover_interrupted_runs()
+    measurer.recover_interrupted()
     with next_db() as session:
         sync_schedules(session)
     scheduler.start()
@@ -343,10 +347,59 @@ def _job_detail_context(job: JobRecord, db) -> dict[str, object]:
         "env_lines": env_to_lines(job.env_json),
         "steps_text": _steps_to_text(job.steps),
         "command_previews": _command_previews(job),
+        "source_rows": _source_rows(job, db),
         "job_run_rows": [_history_row("jobs", job_run) for job_run in job_runs],
         "runs": runs,
         "delete_blocked": False,
     }
+
+
+@app.post("/jobs/{job_id}/measure")
+async def measure_job_sources(
+    job_id: int,
+    _: AuthRequired,
+    _csrf: Annotated[None, Depends(require_csrf)],
+    db: DbSession,
+) -> Response:
+    job = db.get(JobRecord, job_id)
+    if job is None:
+        return RedirectResponse("/jobs", status_code=303)
+    commands = [command for _step, command in _step_size_commands(job) if command is not None]
+    measurer.start(commands, parse_env_lines(env_to_lines(job.env_json)))
+    return RedirectResponse(f"/jobs/{job_id}#step-sources", status_code=303)
+
+
+def _step_size_commands(job: JobRecord) -> list[tuple[JobStepRecord, SizeCommand | None]]:
+    """Each step with the rclone size command for its source, or None without one."""
+    env = run_variables(utc_now(), settings.timezone) | parse_env_lines(env_to_lines(job.env_json))
+    pairs = []
+    for step in sorted(job.steps, key=lambda item: item.position):
+        try:
+            argv = build_rclone_argv(step.command, job.common_args or "", env)
+        except CommandPolicyError:
+            pairs.append((step, None))
+            continue
+        pairs.append((step, size_command(argv)))
+    return pairs
+
+
+def _source_rows(job: JobRecord, db) -> list[dict[str, object]]:
+    pairs = _step_size_commands(job)
+    keys = [command.key for _step, command in pairs if command is not None]
+    records = {
+        record.key: record
+        for record in db.query(SourceMeasurementRecord)
+        .filter(SourceMeasurementRecord.key.in_(keys))
+        .all()
+    }
+    return [
+        {
+            "step": step,
+            "source": command.source if command is not None else None,
+            "measurement": records.get(command.key) if command is not None else None,
+        }
+        for step, command in pairs
+    ]
 
 
 @app.post("/jobs/{job_id}")

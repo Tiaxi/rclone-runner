@@ -37,6 +37,52 @@
 
 {% include "_job_editor.html" %}
 
+{% set measuring = source_rows|selectattr("measurement")|map(attribute="measurement")|selectattr("status", "equalto", "running")|list %}
+<div class="section-heading section-heading-row" id="step-sources">
+  <h2>Step sources</h2>
+  {% if source_rows|selectattr("source")|list %}
+  <form method="post" action="/jobs/{{ job.id }}/measure">
+    {{ csrf_field()|safe }}
+    <button class="secondary small" type="submit"{% if measuring %} disabled{% endif %}>{{ "Measuring…" if measuring else "Measure sources" }}</button>
+  </form>
+  {% endif %}
+</div>
+<section class="table-wrap" id="step-sources-table" data-measuring="{{ 'true' if measuring else 'false' }}">
+  <table>
+    <thead><tr><th>Step</th><th>Source</th><th>Size</th><th>Files</th><th>Measured</th></tr></thead>
+    <tbody>
+      {% for row in source_rows %}
+      {% set measurement = row.measurement %}
+      <tr>
+        <td>{{ row.step.name }}</td>
+        {% if not row.source %}
+        <td colspan="4" class="muted">No source to measure for this command.</td>
+        {% else %}
+        <td><code>{{ row.source }}</code></td>
+        <td class="numeric">{{ format_bytes(measurement.bytes) if measurement and measurement.bytes is not none else "-" }}</td>
+        <td class="numeric">{{ "{:,}".format(measurement.files) if measurement and measurement.files is not none else "-" }}</td>
+        <td>
+          {% if measurement and measurement.status == "running" %}
+          <span class="run-status running">Measuring</span>
+          {% elif measurement and measurement.measured_at %}
+          {{ local_time(measurement.measured_at) }}
+          {% else %}
+          <span class="muted">Not measured</span>
+          {% endif %}
+          {% if measurement and measurement.status == "failed" %}
+          <div class="table-subtext alert-text">Failed: {{ measurement.error }}</div>
+          {% endif %}
+        </td>
+        {% endif %}
+      </tr>
+      {% else %}
+      <tr><td colspan="5">No steps yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+<p class="field-note">Counts the files each step looks at, with the job's filters, using <code>rclone size</code>. A large folder can take a few minutes.</p>
+
 <h2 class="section-heading">Recent job runs</h2>
 <section class="table-wrap">
   <table>
@@ -77,4 +123,30 @@
     </tbody>
   </table>
 </section>
+<script>
+  (() => {
+    const refresh = async () => {
+      const current = document.getElementById("step-sources-table");
+      if (!current || current.dataset.measuring !== "true" || document.hidden) {
+        return;
+      }
+      try {
+        const response = await fetch(window.location.pathname);
+        if (response.ok) {
+          const next = new DOMParser().parseFromString(await response.text(), "text/html");
+          for (const id of ["step-sources", "step-sources-table"]) {
+            const fresh = next.getElementById(id);
+            const old = document.getElementById(id);
+            if (fresh && old) {
+              old.replaceWith(fresh);
+            }
+          }
+        }
+      } catch {
+        // Try again on the next round.
+      }
+    };
+    window.setInterval(refresh, 3000);
+  })();
+</script>
 {% endblock %}

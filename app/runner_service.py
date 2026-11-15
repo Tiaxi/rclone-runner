@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 from app.config import settings
+from app.core.measure import SourceMeasurer
 from app.core.notifications import send_job_notification
 from app.core.runner import LiveJobRunner
 from app.db import SessionLocal
@@ -16,3 +17,5 @@ runner = LiveJobRunner(
     # paths are limited to about 100 characters.
     control_dir=Path(tempfile.mkdtemp(prefix="rclone-runner-rc-")),
 )
+
+measurer = SourceMeasurer(SessionLocal)

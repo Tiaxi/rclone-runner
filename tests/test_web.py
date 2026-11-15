@@ -26,6 +26,7 @@ from app.db import (
     JobRunRecord,
     JobStepRecord,
     JobStepRunRecord,
+    SourceMeasurementRecord,
 )
 from app.main import login_form
 
@@ -1755,3 +1756,86 @@ async def test_paused_progress_drops_speed_and_eta(monkeypatch):
 
     assert payload["progress"] == "Paused · 412.000 GiB / 2.000 TiB (20%)"
     assert jobs_page.context["running_now"][0]["progress"] == payload["progress"]
+
+
+class FakeMeasurer:
+    def __init__(self):
+        self.started = []
+
+    def start(self, commands, env):
+        self.started.append(([command.source for command in commands], env))
+        return len(commands)
+
+
+def _create_job_with_sources(db):
+    job = JobRecord(
+        name="backup",
+        cron="",
+        enabled=True,
+        common_args="--exclude *.tmp",
+        env_json='{"RCLONE_CONFIG_PASS": "x"}',
+    )
+    job.steps.append(JobStepRecord(position=1, name="Music", command="sync /media/a remote:a"))
+    job.steps.append(JobStepRecord(position=2, name="List", command="lsd remote:"))
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+async def test_measure_route_queues_each_step_source(monkeypatch):
+    fake = FakeMeasurer()
+    monkeypatch.setattr(main, "measurer", fake)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = _create_job_with_sources(db)
+
+            response = await main.measure_job_sources(job.id, None, None, db)
+
+    assert response.headers["location"] == f"/jobs/{job.id}#step-sources"
+    assert fake.started == [(["/media/a"], {"RCLONE_CONFIG_PASS": "x"})]
+
+
+async def test_job_page_shows_source_measurements():
+    from app.core.sources import size_command
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = _create_job_with_sources(db)
+            argv = main.build_rclone_argv("sync /media/a remote:a", "--exclude *.tmp", {})
+            key = size_command(argv).key
+
+            page = await main.job_detail(_request(f"/jobs/{job.id}"), job.id, None, db)
+            html = page.body.decode()
+            assert "Not measured" in html
+            assert "No source to measure for this command." in html
+            assert ">Measure sources</button>" in html
+
+            db.add(
+                SourceMeasurementRecord(
+                    key=key,
+                    source="/media/a",
+                    status="failed",
+                    bytes=3 * 1024**3,
+                    files=38201,
+                    started_at=main.utc_now(),
+                    measured_at=main.utc_now(),
+                    error="ERROR : directory not found",
+                )
+            )
+            db.commit()
+            html = (await main.job_detail(_request("/"), job.id, None, db)).body.decode()
+            assert "3.000 GiB" in html
+            assert "38,201" in html
+            assert "Failed: ERROR : directory not found" in html
+            assert 'data-measuring="false"' in html
+
+            record = db.query(SourceMeasurementRecord).one()
+            record.status = "running"
+            db.commit()
+            html = (await main.job_detail(_request("/"), job.id, None, db)).body.decode()
+            assert '<span class="run-status running">Measuring</span>' in html
+            assert 'data-measuring="true"' in html
+            assert "disabled>Measuring…</button>" in html
