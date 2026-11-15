@@ -226,10 +226,6 @@ button.secondary:hover,
   margin-top: 28px;
 }
 
-.history-section + .history-section {
-  margin-top: 28px;
-}
-
 .table-wrap + h3 {
   margin-top: 20px;
 }
@@ -242,8 +238,49 @@ button.secondary:hover,
   margin-top: 10px;
 }
 
-.pagination + h2 {
-  margin-top: 28px;
+.tabs {
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 4px;
+  margin: 8px 0 16px;
+  overflow-x: auto;
+}
+
+.tabs a {
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-weight: 600;
+  margin-bottom: -1px;
+  padding: 8px 12px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.tabs a:hover {
+  color: var(--text);
+}
+
+.tabs a.current {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+
+.tab-count {
+  background: var(--badge-bg);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  margin-left: 4px;
+  padding: 1px 7px;
+}
+
+.command-link {
+  text-decoration: none;
+}
+
+.command-link:hover code {
+  text-decoration: underline;
 }
 
 .pagination-page {

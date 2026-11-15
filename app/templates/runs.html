@@ -5,131 +5,106 @@
 {% if delete_blocked %}
 <p class="notice">That run is still in progress. Cancel it or let it finish before deleting it.</p>
 {% endif %}
-<section class="history-section" id="job-runs-section">
-<h2>Job runs</h2>
+
+<nav class="tabs" aria-label="History views">
+  {% for tab in tabs %}
+  <a href="{{ tab.url }}"{% if tab.current %} class="current" aria-current="page"{% endif %}>{{ tab.label }} <span class="tab-count">{{ tab.count }}</span></a>
+  {% endfor %}
+</nav>
+
+{% macro delete_form(action) %}
+<form method="post" action="{{ action }}" onsubmit="return confirm('Delete this run and its log file?')">
+  {{ csrf_field()|safe }}
+  <input type="hidden" name="page" value="{{ pagination.page }}">
+  <button class="danger small" type="submit">Delete</button>
+</form>
+{% endmacro %}
+
+{% macro transfer_cell(transfer) %}
+<td class="numeric">
+  {% if transfer %}
+  <div>{{ transfer.data }}</div>
+  {% if transfer.detail %}<div class="table-subtext">{{ transfer.detail }}</div>{% endif %}
+  {% else %}-{% endif %}
+</td>
+{% endmacro %}
+
 <section class="table-wrap">
-  <table>
-    <thead><tr><th>Job</th><th>Mode</th><th>Started</th><th>Finished</th><th>Status</th><th>Run</th><th class="action-column"></th></tr></thead>
+  <table class="history-table">
+    {% if view == "jobs" %}
+    <thead><tr><th>Job</th><th>Mode</th><th>Started</th><th>Duration</th><th>Transferred</th><th>Status</th><th class="action-column"></th></tr></thead>
     <tbody>
-      {% for run in job_runs %}
+      {% for row in rows %}
+      {% set run = row.run %}
       <tr>
-        <td>{{ run.job_name }}</td>
+        <td><a href="/job-runs/{{ run.id }}">{{ run.job_name }}</a></td>
         <td><span class="badge {{ 'dry-run' if 'dry-run' in run.trigger else '' }}">{{ run_mode_label(run.trigger) }}</span></td>
-        <td>{{ format_local_time(run.started_at) }}</td>
-        <td>{{ format_local_time(run.ended_at) if run.ended_at is not none else "Running" }}</td>
+        <td class="numeric">{{ format_local_time(run.started_at) }}</td>
+        <td class="numeric">{{ row.duration }}</td>
+        {{ transfer_cell(row.transfer) }}
         <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
-        <td><a href="/job-runs/{{ run.id }}">Open</a></td>
-        <td class="action-cell">
-          <form method="post" action="/job-runs/{{ run.id }}/delete" onsubmit="return confirm('Delete this run and its log file?')">
-            {{ csrf_field()|safe }}
-            <button class="danger small" type="submit">Delete</button>
-          </form>
-        </td>
+        <td class="action-cell">{{ delete_form("/job-runs/" ~ run.id ~ "/delete") }}</td>
       </tr>
       {% else %}
       <tr><td colspan="7">No job runs recorded.</td></tr>
       {% endfor %}
     </tbody>
-  </table>
-</section>
-{% with pagination=job_pagination, label="Job runs pagination" %}
-{% include "_pagination.html" %}
-{% endwith %}
-</section>
-
-<section class="history-section" id="step-runs-section">
-<h2>Job step runs</h2>
-<section class="table-wrap">
-  <table>
-    <thead><tr><th>Step</th><th>Mode</th><th>Started</th><th>Status</th><th>Exit</th><th>Log</th><th class="action-column"></th></tr></thead>
+    {% elif view == "steps" %}
+    <thead><tr><th>Step</th><th>Mode</th><th>Started</th><th>Duration</th><th>Transferred</th><th>Status</th><th>Exit</th><th class="action-column"></th></tr></thead>
     <tbody>
-      {% for run in step_runs %}
+      {% for row in rows %}
+      {% set run = row.run %}
       <tr>
-        <td>{{ run.step_name }}</td>
+        <td>
+          <a href="/runs/{{ run.id }}">{{ run.step_name }}</a>
+          <div class="table-subtext">{{ run.job_run.job_name }}</div>
+        </td>
         <td><span class="badge {{ 'dry-run' if 'dry-run' in run.job_run.trigger else '' }}">{{ run_mode_label(run.job_run.trigger) }}</span></td>
-        <td>{{ format_local_time(run.started_at) }}</td>
+        <td class="numeric">{{ format_local_time(run.started_at) }}</td>
+        <td class="numeric">{{ row.duration }}</td>
+        {{ transfer_cell(row.transfer) }}
         <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
-        <td>{{ run_exit_label(run) }}</td>
-        <td><a href="/runs/{{ run.id }}">Open</a></td>
-        <td class="action-cell">
-          <form method="post" action="/runs/{{ run.id }}/delete" onsubmit="return confirm('Delete this run and its log file?')">
-            {{ csrf_field()|safe }}
-            <button class="danger small" type="submit">Delete</button>
-          </form>
-        </td>
+        <td class="numeric">{{ run_exit_label(run) }}</td>
+        <td class="action-cell">{{ delete_form("/runs/" ~ run.id ~ "/delete") }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="7">No job runs recorded.</td></tr>
+      <tr><td colspan="8">No step runs recorded.</td></tr>
       {% endfor %}
     </tbody>
-  </table>
-</section>
-{% with pagination=step_pagination, label="Job step runs pagination" %}
-{% include "_pagination.html" %}
-{% endwith %}
-</section>
-
-<section class="history-section" id="console-runs-section">
-<h2>Console runs</h2>
-<section class="table-wrap">
-  <table>
-    <thead><tr><th>Command</th><th>Started</th><th>Status</th><th>Exit</th><th>Log</th><th class="action-column"></th></tr></thead>
+    {% else %}
+    <thead><tr><th>Command</th><th>Started</th><th>Duration</th><th>Status</th><th>Exit</th><th class="action-column"></th></tr></thead>
     <tbody>
-      {% for run in console_runs %}
+      {% for row in rows %}
+      {% set run = row.run %}
       <tr>
-        <td><code>{{ run.command }}</code></td>
-        <td>{{ format_local_time(run.started_at) }}</td>
+        <td><a class="command-link" href="/console/runs/{{ run.id }}"><code>{{ run.command }}</code></a></td>
+        <td class="numeric">{{ format_local_time(run.started_at) }}</td>
+        <td class="numeric">{{ row.duration }}</td>
         <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
-        <td>{{ run.exit_code if run.exit_code is not none else "Pending" }}</td>
-        <td><a href="/console/runs/{{ run.id }}">Open</a></td>
-        <td class="action-cell">
-          <form method="post" action="/console/runs/{{ run.id }}/delete" onsubmit="return confirm('Delete this run and its log file?')">
-            {{ csrf_field()|safe }}
-            <button class="danger small" type="submit">Delete</button>
-          </form>
-        </td>
+        <td class="numeric">{{ run.exit_code if run.exit_code is not none else "-" }}</td>
+        <td class="action-cell">{{ delete_form("/console/runs/" ~ run.id ~ "/delete") }}</td>
       </tr>
       {% else %}
       <tr><td colspan="6">No console runs recorded.</td></tr>
       {% endfor %}
     </tbody>
+    {% endif %}
   </table>
 </section>
-{% with pagination=console_pagination, label="Console runs pagination" %}
-{% include "_pagination.html" %}
-{% endwith %}
-</section>
 
-<script>
-  (() => {
-    document.addEventListener("click", async (event) => {
-      const link = event.target.closest(".pagination a[data-history-target]");
-      if (!link) {
-        return;
-      }
-      event.preventDefault();
-      const targetId = link.dataset.historyTarget;
-      const currentSection = document.getElementById(targetId);
-      if (!currentSection) {
-        window.location.assign(link.href);
-        return;
-      }
-      const url = new URL(link.href);
-      const response = await fetch(url);
-      if (!response.ok) {
-        window.location.assign(link.href);
-        return;
-      }
-      const html = await response.text();
-      const nextDocument = new DOMParser().parseFromString(html, "text/html");
-      const nextSection = nextDocument.getElementById(targetId);
-      if (!nextSection) {
-        window.location.assign(link.href);
-        return;
-      }
-      currentSection.replaceWith(nextSection);
-      history.pushState({}, "", `${url.pathname}${url.search}`);
-    });
-  })();
-</script>
+{% if pagination.total_items %}
+<nav class="pagination" aria-label="History pagination">
+  <span class="pagination-page">{{ pagination.first_item }}–{{ pagination.last_item }} of {{ pagination.total_items }}</span>
+  {% if pagination.has_previous %}
+  <a class="button secondary small" href="{{ pagination.previous_url }}">Newer</a>
+  {% else %}
+  <span class="button secondary small disabled">Newer</span>
+  {% endif %}
+  {% if pagination.has_next %}
+  <a class="button secondary small" href="{{ pagination.next_url }}">Older</a>
+  {% else %}
+  <span class="button secondary small disabled">Older</span>
+  {% endif %}
+</nav>
+{% endif %}
 {% endblock %}

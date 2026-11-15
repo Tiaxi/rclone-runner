@@ -19,7 +19,7 @@ def test_headings_after_large_blocks_have_section_spacing():
     css = Path("app/static/styles.css").read_text()
 
     assert ".table-wrap + h2" in css
-    assert ".history-section + .history-section" in css
+    assert ".tabs a.current" in css
     assert ".form-grid + h2" in css
     assert ".terminal-output + h2" in css
     assert ".section-heading" in css
@@ -325,36 +325,62 @@ def test_log_viewer_renders_ansi_sequences():
     assert "rcloneRunnerAnsi.render" in html
 
 
-def test_history_tables_use_styled_status_labels():
+def _history_html(view, runs, *, transfer=None, pagination=None, **extra):
+    rows = [{"run": run, "duration": "1m 0s", "transfer": transfer} for run in runs]
+    tabs = [
+        {"view": name, "label": label, "count": 1, "url": url, "current": name == view}
+        for name, label, url in (
+            ("jobs", "Job runs", "/runs"),
+            ("steps", "Step runs", "/runs?view=steps"),
+            ("console", "Console", "/runs?view=console"),
+        )
+    ]
+    default_pagination = {
+        "page": 1,
+        "total_pages": 1,
+        "total_items": len(rows),
+        "first_item": 1 if rows else 0,
+        "last_item": len(rows),
+        "has_previous": False,
+        "has_next": False,
+        "previous_url": None,
+        "next_url": None,
+    }
+    return templates.get_template("runs.html").render(
+        view=view, tabs=tabs, rows=rows, pagination=pagination or default_pagination, **extra
+    )
+
+
+def _history_fixtures(job_status="success", step_status="success", console_status="success"):
     job_run = SimpleNamespace(
         id=3,
         job_name="backup",
         trigger="manual",
-        status="canceled",
-        started_at=datetime(2026, 4, 26, 17, 59, tzinfo=UTC),
-        ended_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
+        status=job_status,
+        started_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
+        ended_at=datetime(2026, 4, 26, 18, 1, tzinfo=UTC),
     )
     step_run = SimpleNamespace(
-        id=1,
+        id=4,
         step_name="Music",
-        status="canceled",
-        exit_code=None,
+        status=step_status,
+        exit_code=0 if step_status == "success" else None,
         started_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
-        job_run=SimpleNamespace(trigger="manual"),
+        job_run=SimpleNamespace(job_name="backup", trigger="manual"),
     )
     console_run = SimpleNamespace(
-        id=2,
+        id=5,
         command="lsd remote:",
-        status="success",
+        status=console_status,
         exit_code=0,
-        started_at=datetime(2026, 4, 26, 18, 1, tzinfo=UTC),
+        started_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
     )
+    return job_run, step_run, console_run
 
-    history_html = templates.get_template("runs.html").render(
-        job_runs=[job_run],
-        step_runs=[step_run],
-        console_runs=[console_run],
-    )
+
+def test_history_tables_use_styled_status_labels():
+    job_run, step_run, console_run = _history_fixtures("canceled", "canceled", "success")
+
     job_html = templates.get_template("job_detail.html").render(
         job=SimpleNamespace(id=1, name="backup", cron="", enabled=True),
         schedule_summary="Never",
@@ -365,26 +391,17 @@ def test_history_tables_use_styled_status_labels():
         runs=[step_run],
     )
 
-    assert '<span class="run-status canceled">Canceled</span>' in history_html
-    assert '<span class="run-status success">Success</span>' in history_html
+    assert '<span class="run-status canceled">Canceled</span>' in _history_html("jobs", [job_run])
+    assert '<span class="run-status canceled">Canceled</span>' in _history_html("steps", [step_run])
+    assert '<span class="run-status success">Success</span>' in _history_html(
+        "console", [console_run]
+    )
     assert '<span class="run-status canceled">Canceled</span>' in job_html
 
 
-def test_history_pages_link_to_whole_job_runs():
-    job_run = SimpleNamespace(
-        id=3,
-        job_name="backup",
-        trigger="manual",
-        status="success",
-        started_at=datetime(2026, 4, 26, 17, 59, tzinfo=UTC),
-        ended_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
-    )
+def test_history_rows_link_to_their_runs():
+    job_run, step_run, console_run = _history_fixtures()
 
-    history_html = templates.get_template("runs.html").render(
-        job_runs=[job_run],
-        step_runs=[],
-        console_runs=[],
-    )
     job_html = templates.get_template("job_detail.html").render(
         job=SimpleNamespace(id=1, name="backup", cron="", enabled=True),
         schedule_summary="Never",
@@ -395,154 +412,98 @@ def test_history_pages_link_to_whole_job_runs():
         runs=[],
     )
 
-    assert "<h2>Job runs</h2>" in history_html
-    assert '<a href="/job-runs/3">Open</a>' in history_html
+    assert '<a href="/job-runs/3">backup</a>' in _history_html("jobs", [job_run])
+    steps_html = _history_html("steps", [step_run])
+    assert '<a href="/runs/4">Music</a>' in steps_html
+    assert '<div class="table-subtext">backup</div>' in steps_html
+    assert (
+        '<a class="command-link" href="/console/runs/5"><code>lsd remote:</code></a>'
+        in _history_html("console", [console_run])
+    )
     assert '<h2 class="section-heading">Recent job runs</h2>' in job_html
     assert '<a href="/job-runs/3">Open</a>' in job_html
 
 
-def test_history_tables_render_pagination_controls():
-    job_run = SimpleNamespace(
-        id=3,
-        job_name="backup",
-        trigger="manual",
-        status="success",
-        started_at=datetime(2026, 4, 26, 17, 59, tzinfo=UTC),
-        ended_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
-    )
-
-    html = templates.get_template("runs.html").render(
-        job_runs=[job_run],
-        step_runs=[],
-        console_runs=[],
-        job_pagination={
+def test_history_renders_one_view_with_tabs_and_pagination():
+    html = _history_html(
+        "steps",
+        [],
+        pagination={
             "page": 2,
+            "total_pages": 4,
+            "total_items": 80,
+            "first_item": 26,
+            "last_item": 50,
             "has_previous": True,
             "has_next": True,
-            "total_pages": 4,
-            "previous_url": "/runs?job_page=1&step_page=3&console_page=4#job-runs-section",
-            "next_url": "/runs?job_page=3&step_page=3&console_page=4#job-runs-section",
-            "target": "job-runs-section",
+            "previous_url": "/runs?view=steps",
+            "next_url": "/runs?view=steps&page=3",
         },
-        step_pagination={"page": 3, "has_previous": False, "has_next": False},
-        console_pagination={"page": 4, "has_previous": False, "has_next": False},
     )
 
-    assert '<section class="history-section" id="job-runs-section">' in html
-    assert '<nav class="pagination" aria-label="Job runs pagination">' in html
-    assert 'data-history-target="job-runs-section"' in html
-    assert 'href="/runs?job_page=1&amp;step_page=3&amp;console_page=4#job-runs-section"' in html
-    assert 'href="/runs?job_page=3&amp;step_page=3&amp;console_page=4#job-runs-section"' in html
-    assert "Page 2/4" in html
-    assert "fetch(url)" in html
-    assert "history.pushState" in html
+    assert '<nav class="tabs" aria-label="History views">' in html
+    assert '<a href="/runs?view=steps" class="current" aria-current="page">Step runs' in html
+    assert '<a href="/runs">Job runs <span class="tab-count">1</span></a>' in html
+    assert "<th>Step</th>" in html
+    assert "<th>Job</th>" not in html
+    assert "<th>Command</th>" not in html
+    assert "26–50 of 80" in html
+    assert '<a class="button secondary small" href="/runs?view=steps">Newer</a>' in html
+    assert '<a class="button secondary small" href="/runs?view=steps&amp;page=3">Older</a>' in html
+
+
+def test_history_shows_duration_and_transfer_summary():
+    job_run, _, _ = _history_fixtures()
+
+    html = _history_html("jobs", [job_run], transfer={"data": "1.500 GiB", "detail": "3 files"})
+
+    assert "<th>Duration</th>" in html
+    assert "<th>Transferred</th>" in html
+    assert "1m 0s" in html
+    assert "<div>1.500 GiB</div>" in html
+    assert '<div class="table-subtext">3 files</div>' in html
 
 
 def test_history_tables_render_individual_delete_actions():
-    job_run = SimpleNamespace(
-        id=3,
-        job_name="backup",
-        trigger="manual",
-        status="success",
-        started_at=datetime(2026, 4, 26, 17, 59, tzinfo=UTC),
-        ended_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
-    )
-    step_run = SimpleNamespace(
-        id=4,
-        step_name="Music",
-        status="success",
-        exit_code=0,
-        started_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
-        job_run=SimpleNamespace(trigger="manual"),
-    )
-    console_run = SimpleNamespace(
-        id=5,
-        command="version",
-        status="success",
-        exit_code=0,
-        started_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
-    )
+    job_run, step_run, console_run = _history_fixtures()
+    pagination = {
+        "page": 2,
+        "total_pages": 2,
+        "total_items": 26,
+        "first_item": 26,
+        "last_item": 26,
+        "has_previous": True,
+        "has_next": False,
+        "previous_url": "/runs",
+        "next_url": None,
+    }
 
-    html = templates.get_template("runs.html").render(
-        job_runs=[job_run],
-        step_runs=[step_run],
-        console_runs=[console_run],
-    )
+    jobs_html = _history_html("jobs", [job_run], pagination=pagination)
 
-    assert 'action="/job-runs/3/delete"' in html
-    assert 'action="/runs/4/delete"' in html
-    assert 'action="/console/runs/5/delete"' in html
-    assert "Delete" in html
+    assert 'action="/job-runs/3/delete"' in jobs_html
+    assert '<input type="hidden" name="page" value="2">' in jobs_html
+    assert 'action="/runs/4/delete"' in _history_html("steps", [step_run])
+    assert 'action="/console/runs/5/delete"' in _history_html("console", [console_run])
 
 
 def test_history_delete_actions_use_aligned_action_cells():
     css = Path("app/static/styles.css").read_text()
-    job_run = SimpleNamespace(
-        id=3,
-        job_name="backup",
-        trigger="manual",
-        status="success",
-        started_at=datetime(2026, 4, 26, 17, 59, tzinfo=UTC),
-        ended_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
-    )
-    step_run = SimpleNamespace(
-        id=4,
-        step_name="Music",
-        status="success",
-        exit_code=0,
-        started_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
-        job_run=SimpleNamespace(trigger="manual"),
-    )
-    console_run = SimpleNamespace(
-        id=5,
-        command="version",
-        status="success",
-        exit_code=0,
-        started_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
-    )
+    job_run, step_run, console_run = _history_fixtures()
 
-    html = templates.get_template("runs.html").render(
-        job_runs=[job_run],
-        step_runs=[step_run],
-        console_runs=[console_run],
-    )
-
+    for html in (
+        _history_html("jobs", [job_run]),
+        _history_html("steps", [step_run]),
+        _history_html("console", [console_run]),
+    ):
+        assert '<th class="action-column"></th>' in html
+        assert '<td class="action-cell">' in html
     assert "vertical-align: middle" in css
     assert ".action-cell" in css
-    assert '<th class="action-column"></th>' in html
-    assert '<td class="action-cell">' in html
 
 
 def test_job_history_tables_format_times_in_configured_timezone():
-    job_run = SimpleNamespace(
-        id=3,
-        job_name="backup",
-        trigger="manual",
-        status="success",
-        started_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
-        ended_at=datetime(2026, 4, 26, 18, 1, tzinfo=UTC),
-    )
-    step_run = SimpleNamespace(
-        id=1,
-        step_name="Music",
-        status="success",
-        exit_code=0,
-        started_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
-        job_run=SimpleNamespace(trigger="manual"),
-    )
-    console_run = SimpleNamespace(
-        id=2,
-        command="lsd remote:",
-        status="success",
-        exit_code=0,
-        started_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
-    )
+    job_run, step_run, console_run = _history_fixtures()
 
-    history_html = templates.get_template("runs.html").render(
-        job_runs=[job_run],
-        step_runs=[step_run],
-        console_runs=[console_run],
-    )
     job_html = templates.get_template("job_detail.html").render(
         job=SimpleNamespace(id=1, name="backup", cron="", enabled=True),
         schedule_summary="Never",
@@ -553,10 +514,15 @@ def test_job_history_tables_format_times_in_configured_timezone():
         runs=[step_run],
     )
 
-    assert "2026-04-26 21:00:00 EEST" in history_html
-    assert "2026-04-26 21:01:00 EEST" in history_html
-    assert "2026-04-26 18:00:00+00:00" not in history_html
+    for history_html in (
+        _history_html("jobs", [job_run]),
+        _history_html("steps", [step_run]),
+        _history_html("console", [console_run]),
+    ):
+        assert "2026-04-26 21:00:00 EEST" in history_html
+        assert "2026-04-26 18:00:00+00:00" not in history_html
     assert "2026-04-26 21:00:00 EEST" in job_html
+    assert "2026-04-26 21:01:00 EEST" in job_html
     assert "2026-04-26 18:00:00+00:00" not in job_html
 
 
@@ -682,29 +648,7 @@ def test_settings_page_shows_prune_feedback_and_clear_history_action():
 def test_post_forms_include_csrf_fields_and_destructive_confirmations():
     csrf_input = '<input type="hidden" name="csrf_token" value="token">'
     job = SimpleNamespace(id=1, name="backup", cron="", enabled=True, steps=[])
-    job_run = SimpleNamespace(
-        id=3,
-        job_name="backup",
-        trigger="manual",
-        status="success",
-        started_at=datetime(2026, 4, 26, 17, 59, tzinfo=UTC),
-        ended_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
-    )
-    step_run = SimpleNamespace(
-        id=4,
-        step_name="Music",
-        status="success",
-        exit_code=0,
-        started_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
-        job_run=SimpleNamespace(trigger="manual"),
-    )
-    console_run = SimpleNamespace(
-        id=5,
-        command="version",
-        status="success",
-        exit_code=0,
-        started_at=datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
-    )
+    job_run, _, _ = _history_fixtures()
 
     jobs_html = templates.get_template("jobs.html").render(
         jobs=[{"record": job, "schedule_summary": "Never", "last_run": None, "next_run": None}],
@@ -738,16 +682,12 @@ def test_post_forms_include_csrf_fields_and_destructive_confirmations():
         email_error=None,
         csrf_field=lambda: csrf_input,
     )
-    runs_html = templates.get_template("runs.html").render(
-        job_runs=[job_run],
-        step_runs=[step_run],
-        console_runs=[console_run],
-        csrf_field=lambda: csrf_input,
-    )
+    runs_html = _history_html("jobs", [job_run], csrf_field=lambda: csrf_input)
 
     assert jobs_html.count('name="csrf_token"') == 4
     assert settings_html.count('name="csrf_token"') == 4
-    assert runs_html.count('name="csrf_token"') == 4
+    # Logout and the run's delete form.
+    assert runs_html.count('name="csrf_token"') == 2
     assert 'return confirm("Delete backup? Run history will be kept.")' in jobs_html
     assert "return confirm('Prune old log files?')" in settings_html
     assert "return confirm('Clear all run and console history?')" in settings_html

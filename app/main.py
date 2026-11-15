@@ -43,6 +43,7 @@ from app.core.rclone_stats import (
     LiveProgress,
     RcloneTransferStats,
     RunStatsDisplay,
+    format_byte_count,
     live_progress_from_log,
     pending_stats_display,
     run_stats_display,
@@ -100,9 +101,8 @@ logger = logging.getLogger(__name__)
 
 LOG_CHUNK_LINES = 200
 login_throttle = LoginThrottle()
-# Deleting a run that is still in progress would orphan the rclone process behind it.
-DELETE_BLOCKED_URL = "/runs?delete_blocked=1"
 HISTORY_PAGE_SIZE = 25
+HISTORY_VIEWS = ("jobs", "steps", "console")
 
 
 @asynccontextmanager
@@ -478,42 +478,41 @@ async def runs(
     request: Request,
     _: AuthRequired,
     db: DbSession,
-    job_page: int = 1,
-    step_page: int = 1,
-    console_page: int = 1,
+    view: str = "jobs",
+    page: int = 1,
     delete_blocked: bool = False,
 ) -> Response:
-    job_query = db.query(JobRunRecord).order_by(JobRunRecord.started_at.desc())
-    step_query = db.query(JobStepRunRecord).order_by(JobStepRunRecord.started_at.desc())
-    console_query = db.query(ConsoleRunRecord).order_by(ConsoleRunRecord.started_at.desc())
-    job_runs, job_pagination = _paginated_history(
-        job_query,
-        page=job_page,
-        page_param="job_page",
-        other_pages={"step_page": step_page, "console_page": console_page},
-    )
-    recent, step_pagination = _paginated_history(
-        step_query,
-        page=step_page,
-        page_param="step_page",
-        other_pages={"job_page": job_page, "console_page": console_page},
-    )
-    console_runs, console_pagination = _paginated_history(
-        console_query,
-        page=console_page,
-        page_param="console_page",
-        other_pages={"job_page": job_page, "step_page": step_page},
-    )
+    if view not in HISTORY_VIEWS:
+        view = "jobs"
+    queries = {
+        "jobs": db.query(JobRunRecord).order_by(JobRunRecord.started_at.desc()),
+        "steps": db.query(JobStepRunRecord).order_by(JobStepRunRecord.started_at.desc()),
+        "console": db.query(ConsoleRunRecord).order_by(ConsoleRunRecord.started_at.desc()),
+    }
+    items, pagination = _paginated_history(queries[view], view=view, page=page)
+    rows = [_history_row(view, item) for item in items]
+    tabs = [
+        {
+            "view": name,
+            "label": label,
+            "count": query.count() if name != view else pagination["total_items"],
+            "url": _history_url(name),
+            "current": name == view,
+        }
+        for name, (label, query) in (
+            ("jobs", ("Job runs", queries["jobs"])),
+            ("steps", ("Step runs", queries["steps"])),
+            ("console", ("Console", queries["console"])),
+        )
+    ]
     return templates.TemplateResponse(
         request,
         "runs.html",
         {
-            "job_runs": job_runs,
-            "step_runs": recent,
-            "console_runs": console_runs,
-            "job_pagination": job_pagination,
-            "step_pagination": step_pagination,
-            "console_pagination": console_pagination,
+            "view": view,
+            "tabs": tabs,
+            "rows": rows,
+            "pagination": pagination,
             "delete_blocked": delete_blocked,
         },
     )
@@ -578,13 +577,14 @@ async def delete_job_run(
     _: AuthRequired,
     _csrf: Annotated[None, Depends(require_csrf)],
     db: DbSession,
+    page: Annotated[int, Form()] = 1,
 ) -> Response:
     job_run = db.get(JobRunRecord, job_run_id)
     if job_run is not None and job_run.status == "running":
-        return RedirectResponse(DELETE_BLOCKED_URL, status_code=303)
+        return RedirectResponse(_history_url("jobs", page, delete_blocked=True), status_code=303)
     if job_run is not None:
         _delete_job_run(db, job_run)
-    return RedirectResponse("/runs", status_code=303)
+    return RedirectResponse(_history_url("jobs", page), status_code=303)
 
 
 @app.get("/runs/{run_id}", response_class=HTMLResponse)
@@ -659,13 +659,14 @@ async def delete_run(
     _: AuthRequired,
     _csrf: Annotated[None, Depends(require_csrf)],
     db: DbSession,
+    page: Annotated[int, Form()] = 1,
 ) -> Response:
     run = db.get(JobStepRunRecord, run_id)
     if run is not None and "running" in {run.status, run.job_run.status}:
-        return RedirectResponse(DELETE_BLOCKED_URL, status_code=303)
+        return RedirectResponse(_history_url("steps", page, delete_blocked=True), status_code=303)
     if run is not None:
         _delete_step_run(db, run)
-    return RedirectResponse("/runs", status_code=303)
+    return RedirectResponse(_history_url("steps", page), status_code=303)
 
 
 @app.get("/runs/{run_id}/log/raw")
@@ -737,13 +738,14 @@ async def delete_console_run(
     _: AuthRequired,
     _csrf: Annotated[None, Depends(require_csrf)],
     db: DbSession,
+    page: Annotated[int, Form()] = 1,
 ) -> Response:
     run = db.get(ConsoleRunRecord, run_id)
     if run is not None and run.status == "running":
-        return RedirectResponse(DELETE_BLOCKED_URL, status_code=303)
+        return RedirectResponse(_history_url("console", page, delete_blocked=True), status_code=303)
     if run is not None:
         _delete_console_run(db, run)
-    return RedirectResponse("/runs", status_code=303)
+    return RedirectResponse(_history_url("console", page), status_code=303)
 
 
 @app.websocket("/console/terminal")
@@ -1235,51 +1237,82 @@ def _console_history_rows(records: list[ConsoleRunRecord]) -> list[dict[str, obj
     return [_console_history_row(record) for record in records]
 
 
-def _paginated_history(query, page: int, page_param: str, other_pages: dict[str, int]):
-    current_page = max(1, page)
+def _paginated_history(query, view: str, page: int):
     total_items = query.count()
     total_pages = max(1, ceil(total_items / HISTORY_PAGE_SIZE))
+    current_page = min(max(1, page), total_pages)
     offset = (current_page - 1) * HISTORY_PAGE_SIZE
     items = query.offset(offset).limit(HISTORY_PAGE_SIZE).all()
+    has_previous = current_page > 1
     has_next = current_page < total_pages
     pagination = {
         "page": current_page,
         "total_pages": total_pages,
-        "has_previous": current_page > 1,
+        "total_items": total_items,
+        "first_item": offset + 1 if items else 0,
+        "last_item": offset + len(items),
+        "has_previous": has_previous,
         "has_next": has_next,
-        "previous_url": _history_page_url(
-            page_param, current_page - 1, other_pages, _history_section_id(page_param)
-        )
-        if current_page > 1
-        else None,
-        "next_url": _history_page_url(
-            page_param, current_page + 1, other_pages, _history_section_id(page_param)
-        )
-        if has_next
-        else None,
-        "target": _history_section_id(page_param),
+        "previous_url": _history_url(view, current_page - 1) if has_previous else None,
+        "next_url": _history_url(view, current_page + 1) if has_next else None,
     }
     return items, pagination
 
 
-def _history_page_url(
-    page_param: str, page: int, other_pages: dict[str, int], section_id: str | None = None
-) -> str:
-    params = {page_param: max(1, page)}
-    for name, value in other_pages.items():
-        params[name] = max(1, value)
-    url = "/runs?" + urlencode(params)
-    if section_id is not None:
-        url += f"#{section_id}"
-    return url
+def _history_url(view: str, page: int = 1, *, delete_blocked: bool = False) -> str:
+    params: dict[str, object] = {}
+    if view != "jobs":
+        params["view"] = view
+    if page > 1:
+        params["page"] = page
+    if delete_blocked:
+        # Deleting a run that is still in progress would orphan the rclone process behind it.
+        params["delete_blocked"] = 1
+    return "/runs" + (f"?{urlencode(params)}" if params else "")
 
 
-def _history_section_id(page_param: str) -> str:
-    return {
-        "job_page": "job-runs-section",
-        "step_page": "step-runs-section",
-        "console_page": "console-runs-section",
-    }[page_param]
+def _history_row(view: str, record) -> dict[str, object]:
+    finished = record.ended_at is not None
+    row: dict[str, object] = {
+        "run": record,
+        "duration": _format_duration(record.started_at, record.ended_at) if finished else "-",
+        "transfer": None,
+    }
+    if not finished:
+        return row
+    if view == "jobs":
+        stats = _job_run_stats(record)
+        row["transfer"] = _transfer_summary(
+            stats.transferred_bytes,
+            stats.transferred_files,
+            stats.deleted_files,
+            record.status,
+        )
+    elif view == "steps":
+        stats = _step_transfer_stats(record)
+        row["transfer"] = (
+            _transfer_summary(
+                stats.transferred_bytes,
+                stats.transferred_files,
+                stats.deleted_files,
+                record.status,
+            )
+            if stats is not None
+            else _transfer_summary(0, 0, 0, record.status)
+        )
+    return row
+
+
+def _transfer_summary(
+    transferred_bytes: int, transferred_files: int, deleted_files: int, status: str
+) -> dict[str, str | None]:
+    if not (transferred_bytes or transferred_files or deleted_files):
+        # Nothing recorded: a finished successful run had nothing to do, but a failed or
+        # canceled one may have stopped before rclone printed its totals.
+        return {"data": "No changes" if status == "success" else "-", "detail": None}
+    files = f"{transferred_files} file{'' if transferred_files == 1 else 's'}"
+    detail = f"{files}, {deleted_files} deleted" if deleted_files else files
+    return {"data": format_byte_count(transferred_bytes), "detail": detail}
 
 
 def _start_console_run_record(
