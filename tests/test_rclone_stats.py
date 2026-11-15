@@ -173,3 +173,40 @@ def test_live_progress_is_none_without_reports(tmp_path: Path):
 
     assert live_progress_from_log(log_path) is None
     assert live_progress_from_log(tmp_path / "missing.log") is None
+
+
+def test_live_progress_reads_bit_units(tmp_path: Path):
+    # Captured from rclone v1.75.2 with --stats-unit bits.
+    log_path = tmp_path / "step.log"
+    log_path.write_text(
+        "Transferred:   \t    2.027 MiB / 5.722 MiB, 35%, 16.217 Mibit/s, ETA 1s\n",
+        encoding="utf-8",
+    )
+
+    assert live_progress_from_log(log_path).label == (
+        "2.027 MiB / 5.722 MiB (35%) · 16.217 Mibit/s · ETA 1s"
+    )
+
+
+def test_live_progress_keeps_last_report_when_lots_is_logged_after_it(tmp_path: Path):
+    log_path = tmp_path / "step.log"
+    log_path.write_text(LIVE_BLOCK_LOG, encoding="utf-8")
+    assert live_progress_from_log(log_path) is not None
+
+    copied = "2026/11/15 03:15:00 INFO  : NES/game.nes: Copied (new)\n"
+    with log_path.open("a", encoding="utf-8") as log_file:
+        log_file.write(copied * (2 * 1024 * 1024 // len(copied)))
+
+    progress = live_progress_from_log(log_path)
+    assert progress is not None
+    assert progress.label == "4.028 MiB / 5.723 MiB (70%) · 2.028 MiB/s · ETA 0s"
+
+
+def test_live_progress_waits_for_a_complete_line(tmp_path: Path):
+    log_path = tmp_path / "step.log"
+    line = "Transferred:   \t    2.028 MiB / 5.723 MiB, 35%, 2.028 MiB/s, ETA 1s"
+    log_path.write_text(line[:30], encoding="utf-8")
+    assert live_progress_from_log(log_path) is None
+
+    log_path.write_text(line + "\n", encoding="utf-8")
+    assert live_progress_from_log(log_path).percent == "35%"
