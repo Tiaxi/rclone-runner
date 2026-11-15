@@ -30,6 +30,10 @@
     let live = output.dataset.live === "true";
     let appendOffset = Number.parseInt(output.dataset.appendOffset || "0", 10);
     let rawLogText = output.textContent;
+    // While following a live run, keep only the newest output on screen; re-rendering the
+    // whole log every second makes the tab crawl during long runs. Trimmed lines can be
+    // loaded again by scrolling up, and the raw log has everything.
+    const MAX_LIVE_LOG_CHARS = 200000;
 
     function renderLog() {
       output.innerHTML = rcloneRunnerAnsi.render(rawLogText);
@@ -102,11 +106,31 @@
       output.dataset.appendOffset = appendOffset;
       if (chunk.text) {
         rawLogText = `${rawLogText}${chunk.text}`;
+        if (pinned) {
+          trimLiveLog();
+        }
         renderLog();
         if (pinned) {
           output.scrollTop = output.scrollHeight;
         }
       }
+    }
+
+    function trimLiveLog() {
+      if (rawLogText.length <= MAX_LIVE_LOG_CHARS) {
+        return;
+      }
+      const cut = rawLogText.indexOf("\n", rawLogText.length - MAX_LIVE_LOG_CHARS);
+      if (cut === -1) {
+        return;
+      }
+      rawLogText = rawLogText.slice(cut + 1);
+      // appendOffset is the byte offset of the end of rawLogText, so the kept text starts
+      // this many bytes before it. Older lines are loaded from there when scrolling up.
+      const keptBytes = new TextEncoder().encode(rawLogText).length;
+      output.dataset.nextBefore = String(Math.max(0, appendOffset - keptBytes));
+      output.dataset.hasMore = "true";
+      updateStatus();
     }
 
     async function pollLiveRun() {
