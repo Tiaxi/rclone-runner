@@ -17,6 +17,7 @@ from fastapi import Depends, FastAPI, Form, Request, WebSocket
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.websockets import WebSocketDisconnect
 
@@ -91,6 +92,7 @@ def run_mode_label(trigger: str) -> str:
 
 templates.env.globals["run_mode_label"] = run_mode_label
 templates.env.globals["format_local_time"] = lambda value: _format_local_time(value)
+templates.env.globals["local_time"] = lambda value: _local_time_html(value)
 templates.env.globals["format_duration"] = lambda start, end: _format_duration(start, end)
 templates.env.globals["format_seconds"] = lambda seconds: _format_seconds(seconds)
 templates.env.globals["utc_now"] = utc_now
@@ -323,7 +325,7 @@ def _job_detail_context(job: JobRecord, db) -> dict[str, object]:
         "env_lines": env_to_lines(job.env_json),
         "steps_text": _steps_to_text(job.steps),
         "command_previews": _command_previews(job),
-        "job_runs": job_runs,
+        "job_run_rows": [_history_row("jobs", job_run) for job_run in job_runs],
         "runs": runs,
         "delete_blocked": False,
     }
@@ -1601,6 +1603,18 @@ def _format_local_time(value: datetime) -> str:
         value = value.replace(tzinfo=UTC)
     local_time = value.astimezone(ZoneInfo(settings.timezone))
     return local_time.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def _local_time_html(value: datetime) -> Markup:
+    """A table-friendly timestamp: minutes in the cell, the full time on hover."""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    local_time = value.astimezone(ZoneInfo(settings.timezone))
+    return Markup('<time datetime="{}" title="{}">{}</time>').format(
+        local_time.isoformat(timespec="seconds"),
+        local_time.strftime("%Y-%m-%d %H:%M:%S %Z"),
+        local_time.strftime("%Y-%m-%d %H:%M"),
+    )
 
 
 def _format_duration(started_at: datetime, ended_at: datetime) -> str:

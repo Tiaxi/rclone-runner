@@ -18,7 +18,7 @@
         <span id="run-exit-code">{{ run_exit_label(run) }}</span>
       </div>
       {% if run.status == "running" %}
-      <div class="run-summary-item" id="run-progress-item">
+      <div class="run-summary-item wide" id="run-progress-item">
         <span class="run-summary-label">Progress</span>
         <span id="run-progress" data-waiting="Not reported yet. rclone reports progress every minute with --verbose (-v).">{{ progress.label if progress else "Not reported yet. rclone reports progress every minute with --verbose (-v)." }}</span>
       </div>
@@ -56,7 +56,7 @@
       <button class="danger" type="submit">Stop</button>
     </form>
     {% endif %}
-    <form method="post" action="/runs/{{ run.id }}/delete" onsubmit="return confirm('Delete this run and its log file?')">
+    <form id="delete-run-form" method="post" action="/runs/{{ run.id }}/delete"{% if "running" in (run.status, run.job_run.status) %} hidden{% endif %} onsubmit="return confirm('Delete this run and its log file?')">
       {{ csrf_field()|safe }}
       <button class="danger" type="submit">Delete</button>
     </form>

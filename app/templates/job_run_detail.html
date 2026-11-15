@@ -23,7 +23,7 @@
         <span id="job-run-current-step">{{ active_step_run.step_name if active_step_run else "None" }}</span>
       </div>
       {% if job_run.status == "running" %}
-      <div class="run-summary-item" id="job-run-progress-item">
+      <div class="run-summary-item wide" id="job-run-progress-item">
         <span class="run-summary-label">Progress</span>
         <span id="job-run-progress" data-waiting="Not reported yet. rclone reports progress every minute with --verbose (-v).">{{ progress.label if progress else "Not reported yet. rclone reports progress every minute with --verbose (-v)." }}</span>
       </div>
@@ -61,7 +61,7 @@
       <button class="danger" type="submit">Stop</button>
     </form>
     {% endif %}
-    <form method="post" action="/job-runs/{{ job_run.id }}/delete" onsubmit="return confirm('Delete this run and its log file?')">
+    <form id="delete-job-run-form" method="post" action="/job-runs/{{ job_run.id }}/delete"{% if job_run.status == "running" %} hidden{% endif %} onsubmit="return confirm('Delete this run and its log file?')">
       {{ csrf_field()|safe }}
       <button class="danger" type="submit">Delete</button>
     </form>
@@ -121,6 +121,7 @@
     const progress = document.querySelector("#job-run-progress");
     const progressItem = document.querySelector("#job-run-progress-item");
     const cancelForm = document.querySelector("#cancel-job-run-form");
+    const deleteForm = document.querySelector("#delete-job-run-form");
     let live = statusText && statusText.classList.contains("running");
 
     async function pollJobRun() {
@@ -208,6 +209,9 @@
         cancelForm.remove();
       }
       live = state.status === "running";
+      if (!live && deleteForm) {
+        deleteForm.hidden = false;
+      }
       if (live) {
         window.setTimeout(pollJobRun, 1000);
       }

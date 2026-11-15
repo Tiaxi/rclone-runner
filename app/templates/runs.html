@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}History - Rclone Runner{% endblock %}
 {% block content %}
+{% from "_macros.html" import transfer_cell %}
 <h1>History</h1>
 {% if delete_blocked %}
 <p class="notice">That run is still in progress. Cancel it or let it finish before deleting it.</p>
@@ -16,17 +17,8 @@
 <form method="post" action="{{ action }}" onsubmit="return confirm('Delete this run and its log file?')">
   {{ csrf_field()|safe }}
   <input type="hidden" name="page" value="{{ pagination.page }}">
-  <button class="danger small" type="submit">Delete</button>
+  <button class="danger quiet small" type="submit">Delete</button>
 </form>
-{% endmacro %}
-
-{% macro transfer_cell(transfer) %}
-<td class="numeric">
-  {% if transfer %}
-  <div>{{ transfer.data }}</div>
-  {% if transfer.detail %}<div class="table-subtext">{{ transfer.detail }}</div>{% endif %}
-  {% else %}-{% endif %}
-</td>
 {% endmacro %}
 
 <section class="table-wrap">
@@ -39,7 +31,7 @@
       <tr>
         <td><a href="/job-runs/{{ run.id }}">{{ run.job_name }}</a></td>
         <td><span class="badge {{ 'dry-run' if 'dry-run' in run.trigger else '' }}">{{ run_mode_label(run.trigger) }}</span></td>
-        <td class="numeric">{{ format_local_time(run.started_at) }}</td>
+        <td>{{ local_time(run.started_at) }}</td>
         <td class="numeric">{{ row.duration }}</td>
         {{ transfer_cell(row.transfer) }}
         <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
@@ -60,7 +52,7 @@
           <div class="table-subtext">{{ run.job_run.job_name }}</div>
         </td>
         <td><span class="badge {{ 'dry-run' if 'dry-run' in run.job_run.trigger else '' }}">{{ run_mode_label(run.job_run.trigger) }}</span></td>
-        <td class="numeric">{{ format_local_time(run.started_at) }}</td>
+        <td>{{ local_time(run.started_at) }}</td>
         <td class="numeric">{{ row.duration }}</td>
         {{ transfer_cell(row.transfer) }}
         <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
@@ -78,7 +70,7 @@
       {% set run = row.run %}
       <tr>
         <td><a class="command-link" href="/console/runs/{{ run.id }}"><code>{{ run.command }}</code></a></td>
-        <td class="numeric">{{ format_local_time(run.started_at) }}</td>
+        <td>{{ local_time(run.started_at) }}</td>
         <td class="numeric">{{ row.duration }}</td>
         <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
         <td class="numeric">{{ run.exit_code if run.exit_code is not none else "-" }}</td>

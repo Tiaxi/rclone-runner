@@ -160,7 +160,7 @@ def test_job_detail_history_heading_has_explicit_section_spacing():
         env_lines="",
         steps_text="",
         command_previews=[],
-        job_runs=[],
+        job_run_rows=[],
         runs=[],
     )
 
@@ -387,7 +387,7 @@ def test_history_tables_use_styled_status_labels():
         env_lines="",
         steps_text="",
         command_previews=[],
-        job_runs=[job_run],
+        job_run_rows=[{"run": job_run, "duration": "1m 0s", "transfer": None}],
         runs=[step_run],
     )
 
@@ -408,7 +408,7 @@ def test_history_rows_link_to_their_runs():
         env_lines="",
         steps_text="",
         command_previews=[],
-        job_runs=[job_run],
+        job_run_rows=[{"run": job_run, "duration": "1m 0s", "transfer": None}],
         runs=[],
     )
 
@@ -421,7 +421,7 @@ def test_history_rows_link_to_their_runs():
         in _history_html("console", [console_run])
     )
     assert '<h2 class="section-heading">Recent job runs</h2>' in job_html
-    assert '<a href="/job-runs/3">Open</a>' in job_html
+    assert '<a href="/job-runs/3"><time datetime="2026-04-26T21:00:00+03:00"' in job_html
 
 
 def test_history_renders_one_view_with_tabs_and_pagination():
@@ -482,6 +482,7 @@ def test_history_tables_render_individual_delete_actions():
 
     assert 'action="/job-runs/3/delete"' in jobs_html
     assert '<input type="hidden" name="page" value="2">' in jobs_html
+    assert '<button class="danger quiet small" type="submit">Delete</button>' in jobs_html
     assert 'action="/runs/4/delete"' in _history_html("steps", [step_run])
     assert 'action="/console/runs/5/delete"' in _history_html("console", [console_run])
 
@@ -510,7 +511,7 @@ def test_job_history_tables_format_times_in_configured_timezone():
         env_lines="",
         steps_text="",
         command_previews=[],
-        job_runs=[job_run],
+        job_run_rows=[{"run": job_run, "duration": "1m 0s", "transfer": None}],
         runs=[step_run],
     )
 
@@ -521,8 +522,8 @@ def test_job_history_tables_format_times_in_configured_timezone():
     ):
         assert "2026-04-26 21:00:00 EEST" in history_html
         assert "2026-04-26 18:00:00+00:00" not in history_html
-    assert "2026-04-26 21:00:00 EEST" in job_html
-    assert "2026-04-26 21:01:00 EEST" in job_html
+    # Tables show minutes and keep the full local time in a tooltip.
+    assert 'title="2026-04-26 21:00:00 EEST">2026-04-26 21:00</time>' in job_html
     assert "2026-04-26 18:00:00+00:00" not in job_html
 
 
@@ -538,7 +539,7 @@ def test_job_summaries_show_human_schedule_without_raw_cron():
         env_lines="",
         steps_text="",
         command_previews=[],
-        job_runs=[],
+        job_run_rows=[],
         runs=[],
     )
 
@@ -710,7 +711,7 @@ def test_job_delete_actions_render_in_list_and_detail():
         env_lines="",
         steps_text="",
         command_previews=[],
-        job_runs=[],
+        job_run_rows=[],
         runs=[],
         delete_blocked=True,
         csrf_field=lambda: csrf_input,
@@ -758,7 +759,7 @@ def test_real_runs_ask_for_confirmation_but_dry_runs_do_not():
         env_lines="",
         steps_text="",
         command_previews=[{"id": 7, "name": "Music", "command": "rclone sync a b", "tokens": []}],
-        job_runs=[],
+        job_run_rows=[],
         runs=[],
         delete_blocked=False,
         csrf_field=lambda: csrf_input,
