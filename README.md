@@ -14,6 +14,7 @@ then define scheduled jobs from raw rclone subcommands, shared arguments, and en
 - Sequential job steps written as raw rclone subcommands.
 - Job-level common rclone arguments and environment variables.
 - Manual full-job, dry-run, step-run, and step dry-run actions.
+- Live bandwidth limit and pause for running jobs.
 - Run history for jobs and console commands.
 - Lazy-loaded log viewer with raw log access.
 - SQLite persistence under `/data`.
@@ -190,6 +191,27 @@ Environment variables are configured as `KEY=value` lines:
 ```text
 BW_LIMIT=8M
 ```
+
+## Live Bandwidth Control
+
+A running job's page has a bandwidth limit selector and a Pause button. They take effect
+immediately and stay in force for the rest of that run, including its later steps. The next
+run starts with the job's own arguments again.
+
+- **Pause** throttles rclone instead of stopping it, to 16 KiB/s per parallel transfer: 64 KiB/s
+  (about 0.5 Mbit/s) with rclone's default `--transfers=4`. Connections stay open and progress
+  keeps reporting, and Resume takes about two seconds. A lower rate would make resuming slow:
+  rclone applies a new limit only once each transfer's current read has passed the old one. To
+  stop for hours, use Stop instead: running the job again skips the files already copied.
+- **Job setting** goes back to the `--bwlimit` in the job's arguments, or no limit.
+- Limits use rclone's units: `8M` is 8 MiB/s (about 67 Mbit/s), `750K` is 750 KiB/s, and
+  `3M:off` limits uploads only.
+- A `--bwlimit` timetable in the job's arguments takes over again at its next change.
+
+To do this, each step's rclone runs with its remote control API on a Unix socket in a private
+temporary directory, without a password. Only the app's own user can open it, and that user can
+already run any rclone command from the console. Steps whose arguments set their own `--rc`
+options are left alone and can't be adjusted while they run.
 
 ## Security Notes
 
