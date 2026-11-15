@@ -1,127 +1,51 @@
 # Rclone Runner
 
-Dockerized rclone scheduler and web UI for TrueNAS SCALE.
+Schedule rclone backups from a web UI. Built for TrueNAS SCALE, runs in Docker.
 
-Rclone Runner is intentionally CLI-native. It does not try to wrap every rclone feature in a GUI.
-Use the web console for direct `rclone` access, configure remotes with `rclone config`,
-then define scheduled jobs from raw rclone subcommands, shared arguments, and environment variables.
+Jobs are plain rclone commands. Rclone Runner runs them on a schedule, keeps the logs, and
+emails you when something goes wrong. A built-in terminal runs rclone directly, so you set up
+remotes with `rclone config` as usual.
 
 ## Features
 
-- Single admin login.
-- Web terminal for `rclone` commands.
-- Jobs with cron schedules or `Never` schedules.
-- Sequential job steps written as raw rclone subcommands.
-- Job-level common rclone arguments and environment variables.
-- Manual full-job, dry-run, step-run, and step dry-run actions.
-- Live bandwidth limit and pause for running jobs.
-- Source sizes and upload time estimates per step.
-- Run history for jobs and console commands.
-- Lazy-loaded log viewer with raw log access.
-- SQLite persistence under `/data`.
-- Docker Compose deployment suitable for TrueNAS SCALE custom apps.
+- Jobs with a cron schedule, or run by hand only
+- Each job is a list of rclone commands run in order, with shared flags and variables
+- Dry runs, and running a single step
+- Change the bandwidth limit or pause a job while it runs
+- Source sizes and upload time estimates for each step
+- Run history and logs
+- Email on success, failure or cancel, over any SMTP server (Gmail works with an app password)
 
-## Development
-
-This project targets Python 3.14 and uses uv.
+## Quick start
 
 ```bash
-uv sync --dev
-uv run pytest
-uv run ruff check .
-uv run ruff format --check .
-uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
-```
-
-Default development login is `admin` / `admin` when no password hash is configured.
-
-## Configuration
-
-Copy the example environment file and edit it for your machine:
-
-```bash
+git clone https://github.com/Tiaxi/rclone-runner.git
+cd rclone-runner
 cp .env.example .env
 ```
 
-The `.env` file is required for normal Docker Compose use. Compose reads it for the `${...}`
-substitutions in `docker-compose.yml`.
-The Compose service also uses `env_file: ${ENV_FILE:-.env}` so the same values are available
-inside the container.
+In `.env`, set:
 
-To use a non-default env file, pass it to both Compose interpolation and the container env file:
+- `RCLONE_RUNNER_ADMIN_PASSWORD_HASH` to the output of
+  `uv run python -c "from app.auth import hash_password; print(hash_password('your-password'))"`
+- `RCLONE_RUNNER_SECRET_KEY` to a long random string, such as the output of `openssl rand -hex 32`
+- `RCLONE_RUNNER_MEDIA_PATH` to the folder you want to back up
 
-```bash
-ENV_FILE=.env.production docker compose --env-file .env.production up -d
-```
-
-Generate an admin password hash before exposing the app:
+Then start it and open <http://localhost:8000>:
 
 ```bash
-uv run python -c "from app.auth import hash_password; print(hash_password('your-password'))"
+docker compose up -d --build
 ```
 
-Set the result as `RCLONE_RUNNER_ADMIN_PASSWORD_HASH` in `.env`, and replace
-`RCLONE_RUNNER_SECRET_KEY` with a long random value.
+Without a password hash the login is `admin` / `admin`. That's fine for a quick try, not for
+anything else.
 
-Important variables:
+### TrueNAS SCALE
 
-| Variable | Purpose |
-| --- | --- |
-| `RCLONE_RUNNER_HOST_PORT` | Host port mapped to the web UI. |
-| `RCLONE_RUNNER_UID`, `RCLONE_RUNNER_GID` | User and group the container runs as (default `1000:1000`). |
-| `RCLONE_RUNNER_ADMIN_USER` | Login username. |
-| `RCLONE_RUNNER_ADMIN_PASSWORD_HASH` | Password hash generated with `app.auth.hash_password`. |
-| `RCLONE_RUNNER_SECRET_KEY` | Session signing secret. |
-| `RCLONE_RUNNER_TIMEZONE` | Timezone used for displayed timestamps. |
-| `RCLONE_RUNNER_RETENTION_DAYS` | Log retention setting used by the prune action. |
-| `RCLONE_CONFIG` | Path to `rclone.conf` inside the container. |
-| `RCLONE_RUNNER_DATA_PATH` | Host path mounted to `/data`. |
-| `RCLONE_RUNNER_RCLONE_CONFIG_PATH` | Host path mounted to `/config/rclone`. |
-| `RCLONE_RUNNER_MEDIA_PATH` | Host path mounted read-only to `/media`. |
-
-`.env` is ignored by Git. Keep real secrets, dataset paths, and deployment-specific values there.
-
-## Email Notifications
-
-Email notifications are configured from the Settings page. The app supports generic SMTP settings,
-including Gmail with `smtp.gmail.com`, port `587`, STARTTLS, your Gmail address as the username,
-and a Gmail app password as the SMTP password. Servers that need implicit TLS (usually port `465`)
-are supported with the "Use implicit TLS" option. Server certificates are verified in both modes.
-
-The SMTP password is stored in the SQLite database and is write-only in the UI: leaving the password
-field blank keeps the saved value. You can choose which job outcomes send mail: success, failure,
-and canceled runs. Failed and canceled job emails include the configured tail of the job log so the
-problem is visible without opening the app.
-
-## Docker Compose
-
-For local development, run Compose from the repository root:
-
-```bash
-docker compose up --build
-```
-
-For TrueNAS SCALE, clone this repository into a pool dataset and use the custom app
-"Install via YAML" flow in the web UI. The YAML field can be a small wrapper that includes
-this repository's Compose file:
-
-```yaml
-include:
-  - /mnt/pool/services/rclone-runner/docker-compose.yml
-```
-
-Adjust the path to wherever the repository is stored on your TrueNAS system. TrueNAS will
-build the image from the referenced Compose file and start the container.
-
-The important container mounts are:
-
-- `/data`: SQLite database and run logs.
-- `/config/rclone`: persistent `rclone.conf`.
-- `/media`: read-only source datasets for backups.
-
-For TrueNAS SCALE, set these in `.env` or adapt the Compose YAML before deployment:
+Clone the repository into a dataset, for example `/mnt/tank/apps/rclone-runner`, and add to `.env`:
 
 ```dotenv
+# 568 is TrueNAS's built-in "apps" user
 RCLONE_RUNNER_UID=568
 RCLONE_RUNNER_GID=568
 RCLONE_RUNNER_DATA_PATH=/mnt/tank/apps/rclone-runner/data
@@ -129,143 +53,91 @@ RCLONE_RUNNER_RCLONE_CONFIG_PATH=/mnt/tank/apps/rclone-runner/rclone-config
 RCLONE_RUNNER_MEDIA_PATH=/mnt/tank/media
 ```
 
-### Container user
+The `apps` user must be able to write to the data and rclone-config folders and read the media
+folder. Then install a custom app with **Install via YAML** and paste:
 
-The container runs as an unprivileged user, `RCLONE_RUNNER_UID:RCLONE_RUNNER_GID` (default
-`1000:1000`). On TrueNAS SCALE, `568:568` is the built-in `apps` user. That user needs:
+```yaml
+include:
+  - /mnt/tank/apps/rclone-runner/docker-compose.yml
+```
 
-- Write access to the host folders mounted at `/data` and `/config/rclone`, including the folders
-  themselves. rclone saves renewed OAuth tokens by writing a new `rclone.conf` next to the old one.
-- Read access to the source datasets mounted at `/media`.
-
-If `/data` is not writable, the app stops at startup with a message naming the folder and the
-user. Commands run with `docker exec` (for example `docker exec -it rclone-runner rclone config`)
-run as the same user, so files they create keep the right owner.
-
-### Upgrading from a version that ran as root
-
-Earlier versions ran the container as root, so the existing data and rclone config on the host are
-owned by root. Before redeploying, give them to the new user, using your host paths and user:
+**Upgrading from an older version that ran as root?** Hand the files to the new user first,
+while no job is running:
 
 ```bash
 sudo chown -R 568:568 /mnt/tank/apps/rclone-runner/data /mnt/tank/apps/rclone-runner/rclone-config
 ```
 
-Do this right before the redeploy, while no job is running, so the old container does not create
-new root-owned files in between.
+## Configuration
 
-## Deployment Checklist
+The settings you're most likely to change. [`.env.example`](.env.example) has the rest.
 
-- Generate and set `RCLONE_RUNNER_ADMIN_PASSWORD_HASH` before exposing the app.
-- Replace `RCLONE_RUNNER_SECRET_KEY` with a long random value unique to the deployment.
-- Confirm `/data`, `/config/rclone`, and any source dataset mounts point at persistent host paths.
-- Set `RCLONE_RUNNER_UID`/`RCLONE_RUNNER_GID`, and make `/data` and `/config/rclone` on the host
-  owned by that user (see [Container user](#container-user)).
-- Set `RCLONE_RUNNER_TIMEZONE`, `TZ`, and `RCLONE_RUNNER_RETENTION_DAYS` for the deployment.
-- Verify the service health endpoint with `curl http://127.0.0.1:${RCLONE_RUNNER_HOST_PORT:-8000}/health`, using the configured host port if `RCLONE_RUNNER_HOST_PORT` is changed.
-- Put the app behind HTTPS or a trusted reverse proxy before remote access.
-- Back up `/data` and `rclone.conf`; they contain the database, run logs, schedules, and rclone remote configuration.
-- Run Rclone Runner only in a single-admin trusted environment.
+| Variable | What it's for |
+| --- | --- |
+| `RCLONE_RUNNER_HOST_PORT` | Port for the web UI (default `8000`) |
+| `RCLONE_RUNNER_UID`, `RCLONE_RUNNER_GID` | User the container runs as (default `1000:1000`) |
+| `RCLONE_RUNNER_ADMIN_USER` | Login name |
+| `RCLONE_RUNNER_ADMIN_PASSWORD_HASH` | Login password hash |
+| `RCLONE_RUNNER_SECRET_KEY` | Signs login sessions |
+| `TZ`, `RCLONE_RUNNER_TIMEZONE` | Time zone for schedules and timestamps |
+| `RCLONE_RUNNER_RETENTION_DAYS` | Logs older than this are removed when you prune them in Settings (default `30`) |
+| `RCLONE_RUNNER_DATA_PATH` | Host folder for the database and logs, mounted at `/data` |
+| `RCLONE_RUNNER_RCLONE_CONFIG_PATH` | Host folder for `rclone.conf`, mounted at `/config/rclone` |
+| `RCLONE_RUNNER_MEDIA_PATH` | Host folder to back up, mounted read-only at `/media` |
 
-## Job Step Format
+Back up the data and rclone-config folders. Together they hold your jobs, history and remotes.
 
-Each step is one line:
+## Writing jobs
 
-```text
-Sync Musiikki|sync /media/Musiikki secret:/Musiikki
-Sync Musa|sync /media/Musa secret:/Musa
-```
-
-Common args are inserted after the rclone subcommand:
+Each step is a name and an rclone command, separated by `|`:
 
 ```text
---transfers=4 --checkers=8 --verbose --bwlimit ${BW_LIMIT}
+Music|sync /media/Music crypt:/Music
+Photos|sync /media/Photos crypt:/Photos
 ```
 
-Tune them for the remote. For example, Google Drive benefits from Drive-specific flags such as
-`--fast-list` and `--drive-chunk-size=32M`, while an SFTP server may limit simultaneous connections,
-so keep `--transfers` plus `--checkers` below that limit. Add `--verbose` to see live progress on
-run pages.
+**Common arguments** are added to every step. Add `--verbose` to see live progress:
 
-Environment variables are configured as `KEY=value` lines:
+```text
+--transfers=4 --verbose --bwlimit ${BW_LIMIT}
+```
+
+**Environment variables** go one per line:
 
 ```text
 BW_LIMIT=8M
 ```
 
-Two variables are always available, set when the run starts and the same for all its steps, in
-`RCLONE_RUNNER_TIMEZONE`:
+`${RUN_DATE}` (`2026-11-15`) and `${RUN_TIME}` (`05-00-00`) are set when a run starts. For
+example, `--backup-dir crypt:versions/${RUN_DATE}/Music` keeps each day's replaced and deleted
+files in their own folder.
 
-| Variable | Example |
-|---|---|
-| `${RUN_DATE}` | `2026-11-15` |
-| `${RUN_TIME}` | `05-00-00` |
+Pausing a running job slows rclone right down instead of stopping it, so it resumes in a couple
+of seconds. To stop for longer, use Stop: the next run skips files already copied.
 
-For example, `--backup-dir crypt:versions/${RUN_DATE}/Music` keeps each day's replaced and
-deleted files in a folder of their own. A job's own environment line with the same name takes
-precedence.
+## Security
 
-## Live Bandwidth Control
+Anyone who can log in has full control of the container and every configured remote. The
+terminal and job steps only accept rclone commands, but rclone can run other programs and print
+its stored credentials, so this is not a sandbox.
 
-A running job's page has a bandwidth limit selector and a Pause button. They take effect
-immediately and stay in force for the rest of that run, including its later steps. The next
-run starts with the job's own arguments again.
+- Set a strong password and your own secret key.
+- Don't expose it to the internet. For remote access, put it behind HTTPS or a trusted reverse
+  proxy that passes the original `Host` header (or sets `X-Forwarded-Host`).
+- Never commit `.env`, `data/` or `rclone.conf`.
 
-- **Pause** throttles rclone instead of stopping it, to 16 KiB/s per parallel transfer: 64 KiB/s
-  (about 0.5 Mbit/s) with rclone's default `--transfers=4`. Connections stay open and progress
-  keeps reporting, and Resume takes about two seconds. A lower rate would make resuming slow:
-  rclone applies a new limit only once each transfer's current read has passed the old one. To
-  stop for hours, use Stop instead: running the job again skips the files already copied.
-- **Job setting** goes back to the `--bwlimit` in the job's arguments, or no limit.
-- Limits use rclone's units: `8M` is 8 MiB/s (about 67 Mbit/s), `750K` is 750 KiB/s, and
-  `3M:off` limits uploads only.
-- A `--bwlimit` timetable in the job's arguments takes over again at its next change.
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
-To do this, each step's rclone runs with its remote control API on a Unix socket in a private
-temporary directory, without a password. Only the app's own user can open it, and that user can
-already run any rclone command from the console. Steps whose arguments set their own `--rc`
-options are left alone and can't be adjusted while they run.
+## Development
 
-## Source Sizes and Time Estimates
+Needs Python 3.14 and [uv](https://docs.astral.sh/uv/).
 
-A job's page lists each step's source with its size and file count. Click **Measure sources** to
-run `rclone size` on them, one at a time in the background. Measuring counts what the step would
-look at: it applies the job's filter flags (`--exclude`, `--max-age` and similar) and its symlink
-and local backend options. Steps that share a source and filters share a measurement.
-
-Each step also shows two time estimates:
-
-- **Full upload**: the measured size at the expected speed, for an initial sync to an empty
-  destination.
-- **Next sync**: what the step's latest dry run said it would upload, at the same speed.
-
-The speed comes from the job's own recent runs: the median of up to 10 runs that each uploaded
-at least 256 MiB over at least a minute. Until a job has such runs, it uses the **expected upload
-speed** from Settings (100 Mbit/s is about 12 MiB/s). A `--bwlimit` in the job's arguments caps
-the speed. Estimates go by size alone, so folders of many small files take longer than shown.
-
-## Security Notes
-
-Treat access to the app as root-equivalent access to the container and to every configured remote:
-
-- **The console and job steps are not a sandbox.** They only accept commands that start with
-  `rclone`, but rclone itself can run other programs (for example `--password-command` or
-  `--sftp-ssh`), start network services (`serve`, `rcd`), and print every credential
-  (`rclone config show`).
-- **Whoever can log in can read your remotes' credentials**: OAuth tokens, crypt passwords and SSH
-  keys in `rclone.conf` and `/config/rclone`. The container runs as an unprivileged user (see
-  [Container user](#container-user)), which limits damage to the host, not to the remotes.
-- **Use a strong admin password** and don't expose the app publicly. Put it behind HTTPS or a
-  trusted reverse proxy before any remote access. After 10 failed logins from one address within
-  15 minutes, further attempts are refused until the window passes. Behind a proxy that does not
-  forward client addresses, all clients share that limit.
-- **The console only accepts connections from its own pages.** If you use a reverse proxy, it must
-  pass the original `Host`, or set `X-Forwarded-Host`.
-- **The app's own settings stay out of commands.** `${VAR}` in steps and common args expands job
-  environment variables and container variables, but not the app's `RCLONE_RUNNER_*` settings, and
-  rclone does not inherit them.
-- Do not commit `.env`, `data/`, logs, `rclone.conf`, or generated database files.
-- Be careful with `rclone config show`; it can display tokens and secrets in logs.
+```bash
+uv sync --dev
+uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+uv run pytest
+uv run ruff check . && uv run ruff format --check .
+```
 
 ## License
 

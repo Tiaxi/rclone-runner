@@ -1,7 +1,7 @@
 [project]
 name = "rclone-runner"
 version = "0.1.0"
-description = "Dockerized rclone scheduler and web UI for TrueNAS SCALE"
+description = "Schedule rclone backups from a web UI. Built for TrueNAS SCALE, runs in Docker."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
