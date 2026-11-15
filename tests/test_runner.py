@@ -1,5 +1,6 @@
 import asyncio
 import os
+import signal
 import sys
 import tempfile
 from pathlib import Path
@@ -8,6 +9,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import app.core.runner as runner_module
 from app.core.models import Job, JobStep, utc_now
 from app.core.runner import JobRunner, LiveJobRunner, subprocess_executor
 from app.db import Base, ConsoleRunRecord, JobRunRecord, JobStepRunRecord
@@ -709,6 +711,83 @@ async def test_subprocess_executor_hides_app_settings_from_rclone(tmp_path: Path
     await subprocess_executor([sys.executable, "-c", script], {"BW_LIMIT": "8M"}, log_path)
 
     assert log_path.read_text().strip() == "['BW_LIMIT']"
+
+
+SIGTERM_IGNORING_CHILD = (
+    "import os, signal, sys, time\n"
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+    "while True:\n"
+    "    time.sleep(0.05)\n"
+)
+
+
+async def _wait_for_pid(pid_path: Path) -> int:
+    for _ in range(200):
+        if pid_path.exists() and pid_path.read_text():
+            return int(pid_path.read_text())
+        await asyncio.sleep(0.02)
+    raise AssertionError("child did not start")
+
+
+def _assert_reaped(pid: int) -> None:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return
+    os.kill(pid, signal.SIGKILL)
+    raise AssertionError(f"process {pid} was still running")
+
+
+@pytest.mark.asyncio
+async def test_subprocess_executor_finishes_shutdown_when_cancelled_twice(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setattr(runner_module, "TERMINATE_TIMEOUT_SECONDS", 0.5)
+    pid_path = tmp_path / "child.pid"
+    task = asyncio.create_task(
+        subprocess_executor(
+            [sys.executable, "-c", SIGTERM_IGNORING_CHILD, str(pid_path)], {}, tmp_path / "log"
+        )
+    )
+    pid = await _wait_for_pid(pid_path)
+
+    task.cancel()
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=10)
+
+    _assert_reaped(pid)
+
+
+@pytest.mark.asyncio
+async def test_cancel_job_run_cancels_the_task_only_once():
+    release = asyncio.Event()
+
+    async def executor(argv, env, log_path):
+        await release.wait()
+        return 0
+
+    job = Job(
+        id=42,
+        name="backup",
+        common_args="",
+        env={},
+        steps=[JobStep(id=1, name="one", command="lsd secret:")],
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        runner = LiveJobRunner(Path(tmpdir), session_factory=session_factory, executor=executor)
+        first_step = runner.start_job(job, trigger="manual")
+        task = runner._tasks[first_step.job_run_id]
+
+        assert runner.cancel_job_run(first_step.job_run_id) is True
+        assert runner.cancel_job_run(first_step.job_run_id) is True
+        assert task.cancelling() == 1
+
+        await runner.wait_for_job_run(first_step.job_run_id)
 
 
 def _session_factory(database_path: Path, expire_on_commit: bool = False):
