@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol
@@ -132,23 +133,63 @@ class LiveProgress:
 
 # rclone prints progress every minute at INFO level, so only with --verbose (-v). It matches
 # both the multi-line block ("Transferred: 1.2 GiB / 2 TiB, 5%, 50 MiB/s, ETA 9h") and
-# --stats-one-line output.
-_SIZE = r"\d+(?:\.\d+)?\s*[KMGTPE]?i?B"
+# --stats-one-line output, in bytes or, with --stats-unit bits, bits ("16.2 Mibit/s").
+_SIZE = r"\d+(?:\.\d+)?\s*(?:[KMGTPE]i?)?(?:B|bit)"
 _PROGRESS_RE = re.compile(
     rf"(?P<transferred>{_SIZE})\s*/\s*(?P<total>{_SIZE}),\s*(?P<percent>\d+%|-),\s*"
     rf"(?P<speed>{_SIZE}/s),\s*ETA\s*(?P<eta>[^\s,]+)"
 )
-PROGRESS_TAIL_BYTES = 64 * 1024
+# How much of a log to scan the first time a step is looked at; after that only new output is
+# read, so a report is never lost however much is logged between reports.
+PROGRESS_INITIAL_SCAN_BYTES = 1024 * 1024
 
 
-def live_progress_from_log(path: Path) -> LiveProgress | None:
-    text = _read_log_tail(path, PROGRESS_TAIL_BYTES)
-    if text is None:
-        return None
-    matches = list(_PROGRESS_RE.finditer(text))
-    if not matches:
-        return None
-    match = matches[-1]
+class _ProgressTracker:
+    """Follows running step logs and remembers the latest progress report in each.
+
+    Status pages poll every second; reading only what was appended since the last poll keeps
+    that cheap however large the log gets.
+    """
+
+    def __init__(self, max_logs: int = 64) -> None:
+        self._max_logs = max_logs
+        # log path -> (offset scanned up to, at a line start; latest report)
+        self._logs: OrderedDict[str, tuple[int, LiveProgress | None]] = OrderedDict()
+
+    def latest(self, path: Path) -> LiveProgress | None:
+        key = str(path)
+        offset, progress = self._logs.pop(key, (0, None))
+        try:
+            with path.open("rb") as log_file:
+                size = log_file.seek(0, 2)
+                if size < offset:  # rewritten from the start
+                    offset, progress = 0, None
+                start = max(offset, size - PROGRESS_INITIAL_SCAN_BYTES)
+                log_file.seek(start)
+                data = log_file.read(size - start)
+        except OSError:
+            return None
+        skipped = 0
+        if start > offset:
+            # Started inside a line; skip to the next line start.
+            newline = data.find(b"\n")
+            skipped = newline + 1 if newline != -1 else len(data)
+        complete_end = data.rfind(b"\n") + 1
+        if complete_end > skipped:
+            text = data[skipped:complete_end].decode("utf-8", errors="replace")
+            matches = list(_PROGRESS_RE.finditer(text))
+            if matches:
+                progress = _progress_from_match(matches[-1])
+            offset = start + complete_end
+        else:
+            offset = start + skipped
+        self._logs[key] = (offset, progress)
+        while len(self._logs) > self._max_logs:
+            self._logs.popitem(last=False)
+        return progress
+
+
+def _progress_from_match(match: re.Match[str]) -> LiveProgress:
     return LiveProgress(
         transferred=match["transferred"],
         total=match["total"],
@@ -156,6 +197,13 @@ def live_progress_from_log(path: Path) -> LiveProgress | None:
         speed=match["speed"],
         eta=None if match["eta"] == "-" else match["eta"],
     )
+
+
+_progress_tracker = _ProgressTracker()
+
+
+def live_progress_from_log(path: Path) -> LiveProgress | None:
+    return _progress_tracker.latest(path)
 
 
 def _read_log_tail(path: Path, max_bytes: int) -> str | None:
