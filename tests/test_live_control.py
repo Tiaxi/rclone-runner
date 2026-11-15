@@ -41,7 +41,17 @@ def test_normalize_rate_accepts_what_rclone_accepts():
     assert normalize_rate("OFF") == "off"
     assert normalize_rate("3m:off") == "3M:off"
     assert normalize_rate("512") == "512"
-    for bad in ("fast", "8 Mbit", "", "1M:2M:3M", "08:00,512k 23:00,off", "-1M"):
+    # The last two: a Kelvin sign for K, and Arabic-Indic digits, which rclone rejects.
+    for bad in (
+        "fast",
+        "8 Mbit",
+        "",
+        "1M:2M:3M",
+        "08:00,512k 23:00,off",
+        "-1M",
+        "1\u212a",
+        "\u0661K",
+    ):
         with pytest.raises(RateError):
             normalize_rate(bad)
 
@@ -147,6 +157,17 @@ def _session_factory(database_path: Path):
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
 
+class _Both:
+    """Record each call in two lists."""
+
+    def __init__(self, *lists):
+        self.lists = lists
+
+    def append(self, item):
+        for target in self.lists:
+            target.append(item)
+
+
 class FakeRclone:
     """An executor that serves the remote control socket from its arguments, like rclone."""
 
@@ -155,6 +176,7 @@ class FakeRclone:
         self.delay = delay
         self.calls: list[list[str]] = []
         self.received: list[tuple[str, dict]] = []
+        self.received_by_socket: dict[str, list] = {}
         self.started = asyncio.Event()
         self.release = asyncio.Event()
 
@@ -166,7 +188,10 @@ class FakeRclone:
         if self.serve and "--rc-addr" in argv:
             socket_path = Path(argv[argv.index("--rc-addr") + 1].removeprefix("unix://"))
             assert not socket_path.exists(), "a stale socket would stop rclone from starting"
-            server = await _fake_rc_server(socket_path, self.received, delay=self.delay)
+            calls = self.received_by_socket.setdefault(socket_path.name, [])
+            server = await _fake_rc_server(
+                socket_path, _Both(self.received, calls), delay=self.delay
+            )
         self.started.set()
         await self.release.wait()
         self.release.clear()
@@ -206,6 +231,7 @@ async def test_runner_adds_control_flags_without_storing_them(control_dir, tmp_p
     assert runner.control_state(first.job_run_id) == {
         "available": True,
         "paused": False,
+        "paused_now": False,
         "limit": None,
         "limit_label": None,
         "label": "Not limited",
@@ -340,6 +366,75 @@ async def test_slow_rclone_replies_do_not_fail_and_the_last_change_wins(
     await asyncio.sleep(0.3)
 
     assert [params["rate"] for _, params in rclone.received] == ["32K", "off"]
+    rclone.release.set()
+    await runner.wait_for_job_run(first.job_run_id)
+
+
+async def test_a_change_after_a_step_ends_reaches_the_next_steps_rclone(
+    control_dir, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(runner_module, "APPLY_WAIT_SECONDS", 0.01)
+    rclone = FakeRclone(delay=0.3)
+    runner = LiveJobRunner(
+        tmp_path / "logs",
+        _session_factory(tmp_path / "runs.db"),
+        executor=rclone,
+        control_dir=control_dir,
+    )
+    first = runner.start_job(_job(commands=("sync /a r:a", "sync /b r:b")), trigger="manual")
+    await rclone.started.wait()
+    await runner.pause(first.job_run_id)  # still waiting for step 1's slow reply
+
+    rclone.release.set()
+    while len(rclone.calls) < 2:
+        await asyncio.sleep(0.01)
+    await rclone.started.wait()
+    await runner.set_bandwidth(first.job_run_id, "8M")
+    await runner.resume(first.job_run_id)
+    await asyncio.sleep(0.8)
+
+    step_two = rclone.received_by_socket[f"step-{first.id + 1}.sock"]
+    assert step_two[-1][1]["rate"] == "8M"
+    rclone.release.set()
+    await runner.wait_for_job_run(first.job_run_id)
+
+
+async def test_control_flags_go_before_an_option_terminator(control_dir, tmp_path):
+    rclone = FakeRclone()
+    runner = LiveJobRunner(
+        tmp_path / "logs",
+        _session_factory(tmp_path / "runs.db"),
+        executor=rclone,
+        control_dir=control_dir,
+    )
+    first = runner.start_job(_job(commands=("copy -- /source remote:dest",)), trigger="manual")
+    await rclone.started.wait()
+
+    argv = rclone.calls[0]
+    assert argv[0:2] == ["rclone", "copy"]
+    assert argv[-3:] == ["--", "/source", "remote:dest"]
+    assert "--rc-no-auth" in argv[: argv.index("--")]
+    rclone.release.set()
+    await runner.wait_for_job_run(first.job_run_id)
+
+
+async def test_a_pause_on_an_uncontrolled_step_is_shown_as_pending(control_dir, tmp_path):
+    rclone = FakeRclone()
+    runner = LiveJobRunner(
+        tmp_path / "logs",
+        _session_factory(tmp_path / "runs.db"),
+        executor=rclone,
+        control_dir=control_dir,
+    )
+    first = runner.start_job(_job("--rc --bwlimit 2M"), trigger="manual")
+    await rclone.started.wait()
+
+    await runner.pause(first.job_run_id)
+    state = runner.control_state(first.job_run_id)
+    assert state["paused"] is True
+    assert state["paused_now"] is False
+    assert state["label"] == "2 MiB/s (pause pending)"
+
     rclone.release.set()
     await runner.wait_for_job_run(first.job_run_id)
 

@@ -1592,7 +1592,7 @@ def _progress_text(step_run: JobStepRunRecord | None) -> str | None:
     if step_run is None or step_run.status != "running":
         return _progress_label(progress)
     control = runner.control_state(step_run.job_run_id)
-    if control is None or not control["paused"]:
+    if control is None or not control["paused_now"]:
         return _progress_label(progress)
     # rclone's speed is an average and its ETA assumes it continues, so both mislead while
     # paused; show only how far the transfer got.

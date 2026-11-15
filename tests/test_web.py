@@ -1656,6 +1656,7 @@ class FakeControlRunner:
         return {
             "available": True,
             "paused": self.paused,
+            "paused_now": self.paused,
             "limit": "8M",
             "limit_label": "8 MiB/s",
             "label": "Paused" if self.paused else "8 MiB/s",

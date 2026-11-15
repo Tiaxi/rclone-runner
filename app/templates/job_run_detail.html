@@ -78,7 +78,7 @@
     <div class="run-control-state">
       <span class="run-summary-label">Bandwidth</span>
       <strong id="run-control-label">{{ control.label }}</strong>
-      <span class="table-subtext" id="run-control-source">{% if control.paused %}Throttled to {{ control.pause_label }}; connections stay open{% elif control.source == "run" %}Set for this run{% else %}From the job's arguments{% endif %}</span>
+      <span class="table-subtext" id="run-control-source">{% if control.paused_now %}Throttled to {{ control.pause_label }}; connections stay open{% elif control.paused %}Takes effect when the next step starts{% elif control.source == "run" %}Set for this run{% else %}From the job's arguments{% endif %}</span>
     </div>
     <form class="bandwidth-form" method="post" action="/job-runs/{{ job_run.id }}/bandwidth">
       {{ csrf_field()|safe }}
