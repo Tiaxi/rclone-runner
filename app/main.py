@@ -291,12 +291,20 @@ async def create_job(
 
 @app.get("/jobs/{job_id}", response_class=HTMLResponse)
 async def job_detail(
-    request: Request, job_id: int, _: AuthRequired, db: DbSession, delete_blocked: bool = False
+    request: Request,
+    job_id: int,
+    _: AuthRequired,
+    db: DbSession,
+    delete_blocked: bool = False,
+    duplicated: bool = False,
 ) -> Response:
     job = db.get(JobRecord, job_id)
     if job is None:
         return RedirectResponse("/jobs", status_code=303)
-    context = _job_detail_context(job, db) | {"delete_blocked": delete_blocked}
+    context = _job_detail_context(job, db) | {
+        "delete_blocked": delete_blocked,
+        "duplicated": duplicated,
+    }
     return templates.TemplateResponse(request, "job_detail.html", context)
 
 
@@ -365,6 +373,34 @@ async def update_job(
     db.commit()
     sync_schedules(db)
     return RedirectResponse(f"/jobs/{job.id}", status_code=303)
+
+
+@app.post("/jobs/{job_id}/duplicate")
+async def duplicate_job(
+    job_id: int,
+    _: AuthRequired,
+    _csrf: Annotated[None, Depends(require_csrf)],
+    db: DbSession,
+) -> Response:
+    job = db.get(JobRecord, job_id)
+    if job is None:
+        return RedirectResponse("/jobs", status_code=303)
+    # The copy starts disabled so it cannot run on the original's schedule, usually against
+    # the same destination, before it has been edited.
+    copy = JobRecord(
+        name=f"{job.name} (copy)",
+        cron=job.cron,
+        enabled=False,
+        common_args=job.common_args,
+        env_json=job.env_json,
+    )
+    for step in job.steps:
+        copy.steps.append(
+            JobStepRecord(position=step.position, name=step.name, command=step.command)
+        )
+    db.add(copy)
+    db.commit()
+    return RedirectResponse(f"/jobs/{copy.id}?duplicated=1", status_code=303)
 
 
 @app.post("/jobs/{job_id}/delete")

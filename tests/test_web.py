@@ -1491,6 +1491,34 @@ async def test_running_step_page_explains_missing_progress():
             assert "rclone reports progress every minute with --verbose" in page.body.decode()
 
 
+async def test_duplicate_job_copies_configuration_disabled():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = _create_job(db, step_names=["Akkeli", "Musa"])
+            job.cron = "0 5 * * *"
+            job.common_args = "--transfers=4 --verbose"
+            job.env_json = '{"BW_LIMIT": "8M"}'
+            db.commit()
+
+            response = await main.duplicate_job(job.id, None, None, db)
+
+            copy = db.query(JobRecord).filter(JobRecord.id != job.id).one()
+            assert response.headers["location"] == f"/jobs/{copy.id}?duplicated=1"
+            assert copy.name == "backup (copy)"
+            assert copy.enabled is False
+            assert copy.cron == "0 5 * * *"
+            assert copy.common_args == "--transfers=4 --verbose"
+            assert copy.env_json == '{"BW_LIMIT": "8M"}'
+            assert [(step.position, step.name, step.command) for step in copy.steps] == [
+                (step.position, step.name, step.command) for step in job.steps
+            ]
+            assert {step.id for step in copy.steps}.isdisjoint({step.id for step in job.steps})
+
+            page = await main.job_detail(_request("/jobs/2"), copy.id, None, db, duplicated=True)
+            assert "This is a copy, and it is disabled." in page.body.decode()
+
+
 def _session_factory(database_path: Path):
     engine = create_engine(f"sqlite:///{database_path}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
