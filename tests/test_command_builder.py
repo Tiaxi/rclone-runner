@@ -82,3 +82,28 @@ def test_child_environment_drops_app_settings_and_adds_job_values(monkeypatch):
     assert "RCLONE_RUNNER_ADMIN_PASSWORD_HASH" not in env
     assert env["RCLONE_CONFIG"] == "/config/rclone/rclone.conf"
     assert env["BW_LIMIT"] == "8M"
+
+
+def test_run_variables_use_the_app_time_zone():
+    from datetime import UTC, datetime
+
+    from app.core.commands import run_variables
+
+    # 22:30 UTC is already the next day in Helsinki.
+    late = datetime(2026, 11, 14, 22, 30, 5, tzinfo=UTC)
+    assert run_variables(late, "Europe/Helsinki") == {
+        "RUN_DATE": "2026-11-15",
+        "RUN_TIME": "00-30-05",
+    }
+    # Database times are naive UTC.
+    assert run_variables(late.replace(tzinfo=None), "UTC")["RUN_DATE"] == "2026-11-14"
+
+
+def test_run_date_expands_in_steps_and_common_args():
+    argv = build_rclone_argv(
+        "sync /media/Musa crypt:current/Musa",
+        "--backup-dir crypt:versions/${RUN_DATE}/Musa",
+        {"RUN_DATE": "2026-11-15", "RUN_TIME": "05-00-00"},
+    )
+
+    assert "crypt:versions/2026-11-15/Musa" in argv

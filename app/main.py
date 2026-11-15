@@ -30,7 +30,12 @@ from app.auth import (
     verify_password,
 )
 from app.config import runtime_warnings, settings, startup_permission_error
-from app.core.commands import CommandPolicyError, build_rclone_argv, parse_console_command
+from app.core.commands import (
+    CommandPolicyError,
+    build_rclone_argv,
+    parse_console_command,
+    run_variables,
+)
 from app.core.live_control import RateError, RcError, rate_label
 from app.core.logs import read_log_append, read_log_chunk
 from app.core.models import utc_now
@@ -1190,7 +1195,8 @@ def _latest_job_runs_by_job_id(records: list[JobRecord], db) -> dict[int, JobRun
 
 
 def _command_previews(job: JobRecord) -> list[dict[str, str]]:
-    env = parse_env_lines(env_to_lines(job.env_json))
+    # Previews show what a run started now would use.
+    env = run_variables(utc_now(), settings.timezone) | parse_env_lines(env_to_lines(job.env_json))
     previews = []
     for step in job.steps:
         try:

@@ -3,6 +3,7 @@ import os
 import signal
 import sys
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -796,3 +797,44 @@ def _session_factory(database_path: Path, expire_on_commit: bool = False):
     return sessionmaker(
         bind=engine, autoflush=False, autocommit=False, expire_on_commit=expire_on_commit
     )
+
+
+@pytest.mark.asyncio
+async def test_live_runner_gives_every_step_the_run_start_date(monkeypatch):
+    calls = []
+
+    async def executor(argv, env, log_path):
+        calls.append(argv)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.touch()
+        return 0
+
+    started = datetime(2026, 11, 14, 21, 59, 59, tzinfo=UTC)
+    monkeypatch.setattr(runner_module, "utc_now", lambda: started)
+    monkeypatch.setattr(runner_module.settings, "timezone", "Europe/Helsinki")
+    job = Job(
+        id=7,
+        name="backup",
+        common_args="--backup-dir crypt:versions/${RUN_DATE}",
+        env={"RUN_TIME": "custom"},
+        steps=[
+            JobStep(id=1, name="one", command="sync /a crypt:current/a"),
+            JobStep(id=2, name="two", command="sync /b crypt:current/b-${RUN_TIME}"),
+        ],
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        runner = LiveJobRunner(
+            Path(tmpdir),
+            session_factory=_session_factory(Path(tmpdir) / "runs.db"),
+            executor=executor,
+        )
+        first = runner.start_job(job, trigger="manual")
+        await runner.wait_for_job_run(first.job_run_id)
+
+    assert [argv[argv.index("--backup-dir") + 1] for argv in calls] == [
+        "crypt:versions/2026-11-14",
+        "crypt:versions/2026-11-14",
+    ]
+    # A job's own variable with the same name wins.
+    assert calls[1][-1] == "crypt:current/b-custom"

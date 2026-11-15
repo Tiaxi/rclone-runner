@@ -192,6 +192,18 @@ Environment variables are configured as `KEY=value` lines:
 BW_LIMIT=8M
 ```
 
+Two variables are always available, set when the run starts and the same for all its steps, in
+`RCLONE_RUNNER_TIMEZONE`:
+
+| Variable | Example |
+|---|---|
+| `${RUN_DATE}` | `2026-11-15` |
+| `${RUN_TIME}` | `05-00-00` |
+
+For example, `--backup-dir crypt:versions/${RUN_DATE}/Music` keeps each day's replaced and
+deleted files in a folder of their own. A job's own environment line with the same name takes
+precedence.
+
 ## Live Bandwidth Control
 
 A running job's page has a bandwidth limit selector and a Pause button. They take effect
