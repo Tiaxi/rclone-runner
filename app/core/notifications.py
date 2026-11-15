@@ -250,7 +250,7 @@ def _plain_text_body(value: EmailNotificationSettings, run: JobRunRecord, log_ta
 def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: str) -> str:
     run_stats = _job_run_stats(run)
     status = html.escape(run.status.upper())
-    status_bg, status_text = _status_colors(run.status)
+    status_bg = _status_color(run.status)
     job_name = html.escape(run.job_name)
     duration = html.escape(_format_duration(run.started_at, run.ended_at))
     body_style = (
@@ -261,11 +261,14 @@ def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: st
         "background: #ffffff; border: 1px solid #dbe3d7; border-radius: 12px; overflow: hidden;"
     )
     eyebrow_style = "font-size: 13px; font-weight: 700; letter-spacing: 0;"
+    # Dark backgrounds with light text, like the banner. Mail apps in dark mode leave dark
+    # backgrounds alone but may darken light ones, so light backgrounds with pinned dark text
+    # (the previous design) ended up dark-on-dark.
     badge_style = (
         f"background: {status_bg}; background-color: {status_bg}; "
         f"background-image: linear-gradient({status_bg}, {status_bg}); "
-        f"border: 1px solid {status_text}; border-radius: 999px; color: {status_text} !important; "
-        f"-webkit-text-fill-color: {status_text}; display: inline-block; font-size: 12px; "
+        f"border: 1px solid {status_bg}; border-radius: 999px; color: #ffffff !important; "
+        "-webkit-text-fill-color: #ffffff; display: inline-block; font-size: 12px; "
         "font-weight: 800; padding: 6px 10px;"
     )
     brand_mark_style = (
@@ -284,9 +287,9 @@ def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: st
         "border-radius: 8px; overflow: hidden; width: 100%;"
     )
     steps_header_style = (
-        "background: #eef3eb; background-color: #eef3eb; "
-        "background-image: linear-gradient(#eef3eb, #eef3eb); color: #20231f !important; "
-        "-webkit-text-fill-color: #20231f;"
+        "background: #2b3328; background-color: #2b3328; "
+        "background-image: linear-gradient(#2b3328, #2b3328); color: #eef3eb !important; "
+        "-webkit-text-fill-color: #eef3eb;"
     )
     rows = "\n".join(
         _step_row_html(step) for step in sorted(run.step_runs, key=lambda item: item.started_at)
@@ -413,14 +416,15 @@ def _step_transfer_stats(step) -> RcloneTransferStats | None:
     return step_transfer_stats(step)
 
 
-def _status_colors(status: str) -> tuple[str, str]:
+def _status_color(status: str) -> str:
+    """Badge background; dark enough for white text (contrast at least 4.5:1)."""
     if status == "success":
-        return "#dff4e6", "#1f6f3d"
+        return "#1f6f3d"
     if status == "failed":
-        return "#fde2df", "#9f2f28"
+        return "#9f2f28"
     if status == "canceled":
-        return "#fff1cc", "#755200"
-    return "#edf0ea", "#20231f"
+        return "#755200"
+    return "#3d443a"
 
 
 def _summary_row(

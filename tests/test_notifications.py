@@ -148,15 +148,17 @@ def test_job_notification_message_contains_html_summary_and_failure_log(tmp_path
     assert "FAILED</span>" in html
     assert "Backup</h1>" in html
     assert "margin: 0 0 12px;" not in html
-    assert "background-image: linear-gradient(#fde2df, #fde2df)" in html
+    assert "background-image: linear-gradient(#9f2f28, #9f2f28)" in html
     assert "border: 1px solid #9f2f28" in html
-    assert "-webkit-text-fill-color: #9f2f28" in html
+    assert "-webkit-text-fill-color: #ffffff" in html
     assert "background-image: linear-gradient(#2f6f4e, #2f6f4e)" in html
     assert "border: 1px solid #6fbd8f" in html
     assert "background-color: #2f6f4e" in html
     assert "background-image: linear-gradient(#2f6f4e, #2f6f4e)" in html
-    assert "background-color: #eef3eb" in html
-    assert "-webkit-text-fill-color: #20231f" in html
+    # Dark header with light text, so mail apps' dark mode cannot make it dark-on-dark.
+    assert "background-color: #2b3328" in html
+    assert "-webkit-text-fill-color: #eef3eb" in html
+    assert "-webkit-text-fill-color: #20231f" not in html
     assert "Summary" in html
     assert "Data transferred" in html
     assert "1.000 MiB" in html
@@ -166,7 +168,7 @@ def test_job_notification_message_contains_html_summary_and_failure_log(tmp_path
     assert "Stats" in html
     assert "Duration" in html
     assert "5m 0s" in html
-    assert "background: #fde2df" in html
+    assert "background: #9f2f28" in html
     assert "border-radius: 12px" in html
     assert 'role="presentation"' in html
     assert "Sync" in html
