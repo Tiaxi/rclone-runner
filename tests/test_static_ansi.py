@@ -189,3 +189,60 @@ def test_live_log_trimming_and_scrollback_reproduce_the_log_exactly(tmp_path):
     assert state["hasMore"] == "true"
     older = read_log_chunk(log_path, before=int(state["nextBefore"]), limit=1_000_000)
     assert older.text + state["kept"] == content
+
+
+def test_jobs_page_refresh_drops_responses_superseded_by_a_newer_refresh():
+    from app.main import templates
+
+    html = templates.get_template("jobs.html").render(jobs=[], running_now=[])
+    scripts = [part.split("</script>", 1)[0] for part in html.split("<script>")[1:]]
+    (page_script,) = [script for script in scripts if "jobs-live" in script]
+    harness = textwrap.dedent(
+        """
+        const makeLive = (label) => ({
+          label,
+          dataset: { refreshSeconds: "5" },
+          replaceWith(next) { current = next; },
+        });
+        let current = makeLive("initial");
+        const listeners = {};
+        const pending = [];
+        global.document = {
+          hidden: false,
+          getElementById: () => current,
+          querySelectorAll: () => [],
+          addEventListener: (type, listener) => { listeners[type] = listener; },
+        };
+        global.window = {
+          location: { pathname: "/jobs" },
+          setTimeout: () => 0,
+          clearTimeout: () => {},
+          setInterval: () => 0,
+        };
+        global.performance = { now: () => 0 };
+        global.DOMParser = class {
+          parseFromString(text) { return { getElementById: () => makeLive(text) }; }
+        };
+        global.fetch = () => new Promise((resolve) => pending.push(resolve));
+        const respond = (index, text) => pending[index]({ ok: true, text: async () => text });
+        const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+        PAGE_SCRIPT
+
+        (async () => {
+          listeners.visibilitychange();  // older refresh
+          listeners.visibilitychange();  // newer refresh, started while the first is pending
+          respond(1, "newer");
+          await settle();
+          respond(0, "older");
+          await settle();
+          console.log(current.label);
+        })();
+        """
+    ).replace("PAGE_SCRIPT", page_script)
+
+    result = subprocess.run(
+        ["node", "-e", harness], check=True, capture_output=True, cwd=Path.cwd(), text=True
+    )
+
+    assert result.stdout.strip() == "newer"

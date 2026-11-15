@@ -147,14 +147,23 @@
       refreshTimer = window.setTimeout(refresh, refreshDelay());
     };
 
+    // Each refresh gets a number; a response that arrives after a newer refresh started is
+    // dropped, so an old table never replaces a newer one.
+    let latestRefresh = 0;
+
     const refresh = async () => {
       if (document.hidden) {
         return;
       }
+      window.clearTimeout(refreshTimer);
+      const thisRefresh = ++latestRefresh;
       try {
         const response = await fetch(window.location.pathname, { headers: { Accept: "text/html" } });
-        if (response.ok) {
-          const html = await response.text();
+        const html = response.ok ? await response.text() : null;
+        if (thisRefresh !== latestRefresh) {
+          return;
+        }
+        if (html !== null) {
           const next = new DOMParser().parseFromString(html, "text/html").getElementById("jobs-live");
           const current = document.getElementById("jobs-live");
           if (!next || !current) {
@@ -166,6 +175,9 @@
         }
       } catch {
         // The server is restarting or the network dropped; try again on the next round.
+        if (thisRefresh !== latestRefresh) {
+          return;
+        }
       }
       scheduleRefresh();
     };
