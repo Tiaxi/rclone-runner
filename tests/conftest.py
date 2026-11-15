@@ -1,5 +1,8 @@
 """Shared test setup."""
 
+import os
+import shutil
+
 import pytest
 
 import app.core.sources as sources
@@ -57,6 +60,13 @@ LOCAL_FLAGS = {
     "sync": FlagSet(frozenset({"--combined"}), frozenset({"--combined"})),
     "bisync": FlagSet(frozenset({"--filters-file"}), frozenset({"--filters-file"})),
 }
+
+
+def pytest_sessionstart(session):
+    # CI sets this so the tests that run real rclone can't be skipped without anyone noticing.
+    # (Not named RCLONE_*: rclone reads those as flags.)
+    if os.environ.get("REQUIRE_RCLONE_TESTS") and shutil.which("rclone") is None:
+        pytest.exit("REQUIRE_RCLONE_TESTS is set but rclone is not on PATH", returncode=1)
 
 
 @pytest.fixture(autouse=True)

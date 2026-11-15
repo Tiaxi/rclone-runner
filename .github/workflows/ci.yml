@@ -28,7 +28,30 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev --locked
 
+      # The version the Docker image bundles, checked against rclone's signed checksums the
+      # same way, so the tests that run real rclone test what ships.
+      - name: Install rclone
+        run: |
+          set -eux
+          version="$(sed -n 's/^ARG BUNDLED_RCLONE_VERSION=//p' Dockerfile)"
+          arch="$(dpkg --print-architecture)"
+          zip="rclone-v${version}-linux-${arch}.zip"
+          base="https://downloads.rclone.org/v${version}"
+          key="$PWD/docker/rclone-release-key.asc"
+          cd "$(mktemp -d)"
+          curl -fsSLO "$base/$zip"
+          curl -fsSLO "$base/SHA256SUMS"
+          sed -e '1,/^$/d' -e '/^=/,$d' "$key" | base64 -d > rclone.gpg
+          gpgv --keyring ./rclone.gpg --output SHA256SUMS.verified SHA256SUMS
+          grep " ${zip}\$" SHA256SUMS.verified | sha256sum -c -
+          unzip -q "$zip"
+          sudo install -m 0755 "${zip%.zip}/rclone" /usr/local/bin/rclone
+          rclone version
+
       - name: Run tests
+        env:
+          # Fail instead of skipping the tests that need rclone.
+          REQUIRE_RCLONE_TESTS: "1"
         run: uv run pytest
 
       - name: Run ruff lint
