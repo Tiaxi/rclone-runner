@@ -83,6 +83,39 @@ def test_sync_schedules_skips_never_schedule(tmp_path: Path, monkeypatch):
     assert fake_scheduler.jobs == []
 
 
+def test_cron_error_reports_invalid_schedules():
+    assert scheduler_module.cron_error("") is None
+    assert scheduler_module.cron_error("never") is None
+    assert scheduler_module.cron_error("0 5 * * *") is None
+    assert "higher than the maximum" in scheduler_module.cron_error("0 25 * * *")
+    assert "5 fields" in scheduler_module.cron_error("0 0 5 * * *")
+
+
+def test_sync_schedules_skips_invalid_cron_and_keeps_other_jobs(tmp_path: Path, monkeypatch):
+    class FakeScheduler:
+        def __init__(self) -> None:
+            self.jobs = []
+
+        def remove_all_jobs(self) -> None:
+            self.jobs.clear()
+
+        def add_job(self, func, trigger, **kwargs) -> None:
+            self.jobs.append({"func": func, "trigger": trigger, "kwargs": kwargs})
+
+    fake_scheduler = FakeScheduler()
+    monkeypatch.setattr(scheduler_module, "scheduler", fake_scheduler)
+    session_factory = _session_factory(tmp_path / "runs.db")
+    with session_factory() as session:
+        session.add(JobRecord(name="broken", cron="0 25 * * *", enabled=True))
+        session.add(JobRecord(name="nightly", cron="0 5 * * *", enabled=True))
+        session.commit()
+
+        scheduler_module.sync_schedules(session)
+
+    assert [job["kwargs"]["id"] for job in fake_scheduler.jobs] == ["job-2"]
+    assert fake_scheduler.jobs[0]["kwargs"]["misfire_grace_time"] == 3600
+
+
 def _session_factory(database_path: Path):
     engine = create_engine(f"sqlite:///{database_path}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)

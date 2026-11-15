@@ -1092,6 +1092,69 @@ async def test_cancel_run_requests_parent_job_cancellation(monkeypatch):
             assert called == [step_run.job_run_id]
 
 
+def _job_form(**overrides):
+    values = {
+        "name": "backup",
+        "cron": "0 5 * * *",
+        "common_args": "--verbose",
+        "env_lines": "",
+        "steps_text": "one|lsd secret:",
+        "enabled": "on",
+    }
+    return values | overrides
+
+
+async def test_create_job_rejects_invalid_cron_and_keeps_submitted_values(monkeypatch):
+    synced = []
+    monkeypatch.setattr(main, "sync_schedules", lambda db: synced.append(db))
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            response = await main.create_job(
+                _request("/jobs", "POST"),
+                None,
+                None,
+                db,
+                **_job_form(cron="0 25 * * *", common_args="--transfers=4"),
+            )
+            html = response.body.decode()
+
+            assert response.status_code == 400
+            assert "Invalid cron schedule" in html
+            assert 'name="cron" value="0 25 * * *"' in html
+            assert "--transfers=4</textarea>" in html
+            assert db.query(JobRecord).count() == 0
+    assert synced == []
+
+
+async def test_update_job_rejects_invalid_cron_without_saving(monkeypatch):
+    monkeypatch.setattr(main, "sync_schedules", lambda db: None)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = _create_job(db)
+            job.cron = "0 5 * * *"
+            db.commit()
+
+            response = await main.update_job(
+                _request(f"/jobs/{job.id}", "POST"),
+                job.id,
+                None,
+                None,
+                db,
+                **_job_form(name="renamed", cron="0 0 5 * * *"),
+            )
+            html = response.body.decode()
+
+            assert response.status_code == 400
+            assert "5 fields" in html
+            assert 'name="name" value="renamed"' in html
+            db.expire_all()
+            saved = db.get(JobRecord, job.id)
+            assert saved.name == "backup"
+            assert saved.cron == "0 5 * * *"
+
+
 def _session_factory(database_path: Path):
     engine = create_engine(f"sqlite:///{database_path}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)

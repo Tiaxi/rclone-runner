@@ -4,6 +4,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from math import ceil
 from pathlib import Path
@@ -55,7 +56,7 @@ from app.db import (
     record_to_job,
 )
 from app.runner_service import runner
-from app.scheduler import next_run_time, scheduler, sync_schedules
+from app.scheduler import cron_error, next_run_time, scheduler, sync_schedules
 
 
 def inject_runtime_warnings(request: Request) -> dict[str, object]:
@@ -203,8 +204,19 @@ async def new_job(request: Request, _: AuthRequired) -> Response:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class JobFormValues:
+    """Submitted job editor values, re-rendered when the form is rejected."""
+
+    name: str
+    cron: str
+    common_args: str
+    enabled: bool
+
+
 @app.post("/jobs")
 async def create_job(
+    request: Request,
     _: AuthRequired,
     _csrf: Annotated[None, Depends(require_csrf)],
     db: DbSession,
@@ -215,6 +227,22 @@ async def create_job(
     steps_text: str = Form(""),
     enabled: str | None = Form(None),
 ) -> Response:
+    form_error = cron_error(cron)
+    if form_error is not None:
+        return templates.TemplateResponse(
+            request,
+            "job_form.html",
+            {
+                "job": None,
+                "form_values": JobFormValues(name, cron, common_args, enabled == "on"),
+                "form_error": form_error,
+                "schedule_summary": cron_summary(cron),
+                "env_lines": env_lines,
+                "steps_text": steps_text,
+                "command_previews": [],
+            },
+            status_code=400,
+        )
     job = JobRecord(
         name=name,
         cron=normalize_cron(cron),
@@ -237,9 +265,14 @@ async def job_detail(
     job = db.get(JobRecord, job_id)
     if job is None:
         return RedirectResponse("/jobs", status_code=303)
+    context = _job_detail_context(job, db) | {"delete_blocked": delete_blocked}
+    return templates.TemplateResponse(request, "job_detail.html", context)
+
+
+def _job_detail_context(job: JobRecord, db) -> dict[str, object]:
     job_runs = (
         db.query(JobRunRecord)
-        .filter_by(job_id=job_id)
+        .filter_by(job_id=job.id)
         .order_by(JobRunRecord.started_at.desc())
         .limit(20)
         .all()
@@ -247,29 +280,26 @@ async def job_detail(
     runs = (
         db.query(JobStepRunRecord)
         .join(JobStepRunRecord.job_run)
-        .filter_by(job_id=job_id)
+        .filter_by(job_id=job.id)
         .order_by(JobStepRunRecord.started_at.desc())
         .limit(20)
         .all()
     )
-    return templates.TemplateResponse(
-        request,
-        "job_detail.html",
-        {
-            "job": job,
-            "schedule_summary": cron_summary(job.cron),
-            "env_lines": env_to_lines(job.env_json),
-            "steps_text": _steps_to_text(job.steps),
-            "command_previews": _command_previews(job),
-            "job_runs": job_runs,
-            "runs": runs,
-            "delete_blocked": delete_blocked,
-        },
-    )
+    return {
+        "job": job,
+        "schedule_summary": cron_summary(job.cron),
+        "env_lines": env_to_lines(job.env_json),
+        "steps_text": _steps_to_text(job.steps),
+        "command_previews": _command_previews(job),
+        "job_runs": job_runs,
+        "runs": runs,
+        "delete_blocked": False,
+    }
 
 
 @app.post("/jobs/{job_id}")
 async def update_job(
+    request: Request,
     job_id: int,
     _: AuthRequired,
     _csrf: Annotated[None, Depends(require_csrf)],
@@ -284,6 +314,16 @@ async def update_job(
     job = db.get(JobRecord, job_id)
     if job is None:
         return RedirectResponse("/jobs", status_code=303)
+    form_error = cron_error(cron)
+    if form_error is not None:
+        context = _job_detail_context(job, db) | {
+            "form_values": JobFormValues(name, cron, common_args, enabled == "on"),
+            "form_error": form_error,
+            "schedule_summary": cron_summary(cron),
+            "env_lines": env_lines,
+            "steps_text": steps_text,
+        }
+        return templates.TemplateResponse(request, "job_detail.html", context, status_code=400)
     job.name = name
     job.cron = normalize_cron(cron)
     job.common_args = common_args
