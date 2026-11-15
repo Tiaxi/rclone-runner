@@ -1626,3 +1626,21 @@ def test_exit_label_marks_runs_that_ended_without_an_exit_code():
     assert main._exit_label("failed", None) == "-"
     assert main._exit_label("canceled", None) == "Canceled"
     assert main._exit_label("failed", 1) == "1"
+
+
+async def test_step_status_allows_delete_only_after_the_whole_job_finishes():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            step_run = _create_running_step_run(db, log_path=Path(tmpdir) / "run.log")
+            assert (await main.run_status(step_run.id, None, db))["can_delete"] is False
+
+            # The step is done but a later step of the same job is still running.
+            step_run.status = "success"
+            step_run.exit_code = 0
+            step_run.ended_at = main.utc_now()
+            db.commit()
+            assert (await main.run_status(step_run.id, None, db))["can_delete"] is False
+
+            _finish(db, step_run)
+            assert (await main.run_status(step_run.id, None, db))["can_delete"] is True
