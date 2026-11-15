@@ -801,3 +801,37 @@ class NestedFormParser(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         if tag == "form":
             self.form_depth -= 1
+
+
+def test_real_runs_ask_for_confirmation_but_dry_runs_do_not():
+    csrf_input = '<input type="hidden" name="csrf_token" value="token">'
+    job = SimpleNamespace(id=1, name="Bob's backup", cron="", enabled=True, steps=[])
+    jobs_html = templates.get_template("jobs.html").render(
+        jobs=[{"record": job, "schedule_summary": "Never", "last_run": None, "next_run": None}],
+        ongoing_job_runs=[],
+        ongoing_step_runs=[],
+        ongoing_console_runs=[],
+        csrf_field=lambda: csrf_input,
+    )
+    detail_html = templates.get_template("job_detail.html").render(
+        job=job,
+        schedule_summary="Never",
+        env_lines="",
+        steps_text="",
+        command_previews=[{"id": 7, "name": "Music", "command": "rclone sync a b", "tokens": []}],
+        job_runs=[],
+        runs=[],
+        delete_blocked=False,
+        csrf_field=lambda: csrf_input,
+    )
+
+    for html in (jobs_html, detail_html):
+        run_form = html.split('action="/jobs/1/run"', 1)[1].split(">", 1)[0]
+        dry_run_form = html.split('action="/jobs/1/dry-run"', 1)[1].split(">", 1)[0]
+        assert "return confirm(" in run_form
+        assert "Bob\\u0027s backup now? This is a real run" in run_form
+        assert "confirm(" not in dry_run_form
+    step_form = detail_html.split('action="/jobs/1/steps/7/run"', 1)[1].split(">", 1)[0]
+    step_dry_run_form = detail_html.split('action="/jobs/1/steps/7/dry-run"', 1)[1].split(">", 1)[0]
+    assert "Run step Music now?" in step_form
+    assert "confirm(" not in step_dry_run_form
