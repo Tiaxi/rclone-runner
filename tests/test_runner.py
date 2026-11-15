@@ -675,6 +675,30 @@ async def test_subprocess_executor_stops_process_when_log_write_fails(tmp_path: 
         os.kill(pid, 0)
 
 
+@pytest.mark.asyncio
+async def test_live_runner_stores_marker_when_step_log_has_no_stats():
+    async def executor(argv, env, log_path):
+        log_path.write_text("ERROR : nothing useful\n", encoding="utf-8")
+        return 1
+
+    job = Job(
+        id=42,
+        name="backup",
+        common_args="",
+        env={},
+        steps=[JobStep(id=1, name="one", command="lsd secret:")],
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        runner = LiveJobRunner(Path(tmpdir), session_factory=session_factory, executor=executor)
+        first_step = runner.start_job(job, trigger="manual")
+        await runner.wait_for_job_run(first_step.job_run_id)
+
+        with session_factory() as db:
+            assert db.get(JobStepRunRecord, first_step.id).transfer_stats_json == "null"
+
+
 def _session_factory(database_path: Path, expire_on_commit: bool = False):
     engine = create_engine(f"sqlite:///{database_path}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)

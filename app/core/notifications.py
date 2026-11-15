@@ -15,13 +15,13 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.core.logs import read_log_chunk
 from app.core.rclone_stats import (
     RcloneTransferStats,
     RunStatsDisplay,
     run_stats_display,
-    stats_from_json,
-    stats_from_log,
     step_stats_display,
+    step_transfer_stats,
 )
 from app.db import JobRunRecord, SettingRecord
 
@@ -106,8 +106,8 @@ def notification_enabled_for_status(value: EmailNotificationSettings, status: st
 def read_log_tail(path: Path, line_count: int) -> str:
     if line_count <= 0 or not path.exists():
         return ""
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
-    return "".join(lines[-line_count:])
+    # Reads backwards from the end, so large logs are not loaded whole.
+    return read_log_chunk(path, limit=line_count).text
 
 
 def build_job_notification_message(
@@ -224,7 +224,7 @@ def _plain_text_body(value: EmailNotificationSettings, run: JobRunRecord, log_ta
     lines.append("")
     lines.append("Steps:")
     for step in sorted(run.step_runs, key=lambda item: item.started_at):
-        stats = step_stats_display(_step_transfer_stats(step))
+        stats = step_stats_display(_step_transfer_stats(step), step.status)
         step_duration = _format_duration(step.started_at, step.ended_at)
         lines.append(
             f"- {step.step_name}: {step.status.upper()} "
@@ -366,7 +366,7 @@ def _html_body(value: EmailNotificationSettings, run: JobRunRecord, log_tail: st
 
 
 def _step_row_html(step) -> str:
-    stats = step_stats_display(_step_transfer_stats(step))
+    stats = step_stats_display(_step_transfer_stats(step), step.status)
     duration = _format_duration(step.started_at, step.ended_at)
     return (
         "<tr>"
@@ -398,12 +398,7 @@ def _job_run_stats(run: JobRunRecord) -> RunStatsDisplay:
 
 
 def _step_transfer_stats(step) -> RcloneTransferStats | None:
-    stored = stats_from_json(step.transfer_stats_json)
-    if stored is not None:
-        return stored
-    if step.ended_at is None:
-        return None
-    return stats_from_log(Path(step.log_path))
+    return step_transfer_stats(step)
 
 
 def _status_colors(status: str) -> tuple[str, str]:

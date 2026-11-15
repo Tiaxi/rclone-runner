@@ -11,7 +11,7 @@ from pathlib import Path
 
 from app.core.commands import CommandPolicyError, build_rclone_argv
 from app.core.models import Job, JobRunResult, JobStep, StepRunResult, utc_now
-from app.core.rclone_stats import stats_from_log, stats_to_json
+from app.core.rclone_stats import STATS_UNAVAILABLE_JSON, stats_from_log, stats_to_json
 from app.db import ConsoleRunRecord, JobRunRecord, JobStepRunRecord
 
 logger = logging.getLogger(__name__)
@@ -414,7 +414,9 @@ class LiveJobRunner:
             step_run.exit_code = exit_code
             step_run.ended_at = utc_now()
             stats = stats_from_log(Path(step_run.log_path))
-            step_run.transfer_stats_json = stats_to_json(stats) if stats is not None else None
+            step_run.transfer_stats_json = (
+                stats_to_json(stats) if stats is not None else STATS_UNAVAILABLE_JSON
+            )
             db.commit()
 
     def _cancel_running_step(self, job_run_id: int) -> None:

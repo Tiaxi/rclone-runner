@@ -4,6 +4,13 @@ import json
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Protocol
+
+# rclone prints its final stats block last, so the end of the log is enough. Reading only the
+# tail keeps page views and notifications cheap for multi-gigabyte -vv logs.
+STATS_TAIL_BYTES = 1024 * 1024
+# Stored for a finished step whose log had no stats, so the log is not parsed again.
+STATS_UNAVAILABLE_JSON = "null"
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,20 +105,50 @@ def stats_from_json(value: str | None) -> RcloneTransferStats | None:
 
 
 def stats_from_log(path: Path) -> RcloneTransferStats | None:
-    if not path.exists():
+    try:
+        with path.open("rb") as log_file:
+            size = log_file.seek(0, 2)
+            start = max(0, size - STATS_TAIL_BYTES)
+            log_file.seek(start)
+            data = log_file.read()
+    except OSError:
         return None
-    return parse_rclone_transfer_stats(path.read_text(encoding="utf-8", errors="replace"))
+    if start > 0:
+        # Drop the partial first line.
+        data = data.partition(b"\n")[2]
+    return parse_rclone_transfer_stats(data.decode("utf-8", errors="replace"))
 
 
-def step_stats_display(stats: RcloneTransferStats | None) -> StepStatsDisplay:
+class _StepRunStats(Protocol):
+    transfer_stats_json: str | None
+    ended_at: object
+    log_path: str
+
+
+def step_transfer_stats(step_run: _StepRunStats) -> RcloneTransferStats | None:
+    """Stats for a step run: stored when it finished, or parsed from older runs' logs."""
+    if step_run.transfer_stats_json is not None:
+        return stats_from_json(step_run.transfer_stats_json)
+    if step_run.ended_at is None:
+        return None
+    return stats_from_log(Path(step_run.log_path))
+
+
+def step_stats_display(
+    stats: RcloneTransferStats | None, status: str | None = None
+) -> StepStatsDisplay:
     if stats is None:
+        # rclone prints no transfer line when there was nothing to do, so missing stats on a
+        # successful step mean no changes. A failed or canceled step may simply have stopped
+        # before printing them.
+        label = "Not available" if status in {"failed", "canceled"} else "No changes"
         return StepStatsDisplay(
             stats=None,
-            label="No changes",
+            label=label,
             available=False,
-            transferred_data_label="No changes",
-            transferred_files_label="No changes",
-            deleted_files_label="No changes",
+            transferred_data_label=label,
+            transferred_files_label=label,
+            deleted_files_label=label,
         )
     return StepStatsDisplay(
         stats=stats,
