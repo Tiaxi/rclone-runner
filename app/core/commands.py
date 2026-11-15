@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import re
 import shlex
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 
 class CommandPolicyError(ValueError):
@@ -64,6 +66,18 @@ _ALLOWED_RCLONE_SUBCOMMANDS = {
     "tree",
     "version",
 }
+
+
+def run_variables(started_at: datetime, timezone: str) -> dict[str, str]:
+    """Variables for ${...} in job steps, fixed for the whole run, in the app's time zone.
+
+    For example ``--backup-dir remote:versions/${RUN_DATE}`` keeps each day's replaced and
+    deleted files apart. A job's own environment line with the same name wins.
+    """
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=UTC)
+    local = started_at.astimezone(ZoneInfo(timezone))
+    return {"RUN_DATE": local.strftime("%Y-%m-%d"), "RUN_TIME": local.strftime("%H-%M-%S")}
 
 
 def child_environment(extra: dict[str, str] | None = None) -> dict[str, str]:

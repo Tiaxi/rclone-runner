@@ -8,8 +8,14 @@ from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 
+from app.config import settings
 from app.core.aio import run_to_completion
-from app.core.commands import CommandPolicyError, build_rclone_argv, child_environment
+from app.core.commands import (
+    CommandPolicyError,
+    build_rclone_argv,
+    child_environment,
+    run_variables,
+)
 from app.core.live_control import (
     RcError,
     RunControl,
@@ -109,7 +115,9 @@ class JobRunner:
         try:
             run_stamp = _stamp(started_at)
             for step in _selected_steps(job, step_id):
-                argv = build_rclone_argv(step.command, _common_args(job, dry_run), job.env)
+                argv = build_rclone_argv(
+                    step.command, _common_args(job, dry_run), _expansion_env(job, started_at)
+                )
                 step_started_at = utc_now()
                 log_path = self._log_root / f"job-{job.id}" / f"{run_stamp}-step-{step.id}.log"
                 exit_code = await self._executor(argv, job.env, log_path)
@@ -188,10 +196,12 @@ class LiveJobRunner:
 
         run_stamp = _stamp(now)
         common_args = _common_args(job, dry_run)
+        # Every step of the run sees the same ${RUN_DATE}, even across midnight.
+        env = _expansion_env(job, now)
         planned_steps: list[tuple[JobStep, list[str]]] = []
         for step in selected_steps:
             try:
-                planned_steps.append((step, build_rclone_argv(step.command, common_args, job.env)))
+                planned_steps.append((step, build_rclone_argv(step.command, common_args, env)))
             except CommandPolicyError as exc:
                 return self._record_invalid_run(job, trigger, step, run_stamp, exc)
 
@@ -604,6 +614,10 @@ def _append_log(path: Path, text: str) -> None:
 
 def _stamp(value: datetime) -> str:
     return value.strftime("%Y%m%dT%H%M%SZ")
+
+
+def _expansion_env(job: Job, started_at: datetime) -> dict[str, str]:
+    return run_variables(started_at, settings.timezone) | job.env
 
 
 def _common_args(job: Job, dry_run: bool) -> str:

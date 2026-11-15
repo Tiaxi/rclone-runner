@@ -800,3 +800,19 @@ def test_step_log_reveals_delete_from_the_servers_can_delete_flag():
 
     assert "revealDeleteWhenAllowed();" in viewer
     assert ".can_delete" in viewer
+
+
+def test_command_preview_fills_in_run_variables():
+    import re
+
+    job = JobRecord(
+        name="backup",
+        cron="",
+        common_args="--backup-dir crypt:versions/${RUN_DATE}",
+        env_json="{}",
+    )
+    job.steps = [JobStepRecord(position=1, name="Musa", command="sync /media/Musa crypt:Musa")]
+
+    (preview,) = _command_previews(job)
+
+    assert re.search(r"crypt:versions/\d{4}-\d{2}-\d{2}( |$)", preview["command"])
