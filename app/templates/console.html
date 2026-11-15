@@ -39,19 +39,32 @@
     const socket = new WebSocket(`${protocol}://${window.location.host}/console/terminal`);
     const historyBody = document.querySelector("#history-body");
     let running = false;
+    // Keep the terminal responsive with long output: only the newest output is kept, and it is
+    // rendered once per change instead of on every keystroke.
+    const MAX_SCROLLBACK_CHARS = 300000;
     let committedText = "";
+    let committedHtml = "";
     let commandBuffer = "";
     let cursorIndex = 0;
     let runningInputBuffer = "";
     let runningCursorIndex = 0;
-    let terminalFontSize = Number(localStorage.getItem("terminalFontSize") || 14);
+    let terminalFontSize = 14;
+    try {
+      terminalFontSize = Number(localStorage.getItem("terminalFontSize") || 14);
+    } catch {
+      // Storage can be unavailable (private windows, blocked site data); use the default.
+    }
     const commandHistory = {{ recent_commands | tojson }};
     let historyIndex = commandHistory.length;
 
     function applyTerminalFontSize() {
       terminalFontSize = Math.min(22, Math.max(10, terminalFontSize));
       terminal.style.setProperty("--terminal-font-size", `${terminalFontSize}px`);
-      localStorage.setItem("terminalFontSize", String(terminalFontSize));
+      try {
+        localStorage.setItem("terminalFontSize", String(terminalFontSize));
+      } catch {
+        // Ignore storage failures; the size still changes for this page.
+      }
     }
 
     function renderTerminal() {
@@ -60,12 +73,21 @@
       const beforeCaret = activeBuffer.slice(0, activeCursorIndex);
       const caretCharacter = activeBuffer[activeCursorIndex] || " ";
       const afterCaret = activeBuffer.slice(activeCursorIndex + 1);
-      terminal.innerHTML = `${rcloneRunnerAnsi.render(committedText)}${rcloneRunnerAnsi.render(beforeCaret)}<span class="terminal-caret">${rcloneRunnerAnsi.render(caretCharacter)}</span>${rcloneRunnerAnsi.render(afterCaret)}`;
+      terminal.innerHTML = `${committedHtml}${rcloneRunnerAnsi.render(beforeCaret)}<span class="terminal-caret">${rcloneRunnerAnsi.render(caretCharacter)}</span>${rcloneRunnerAnsi.render(afterCaret)}`;
       terminal.scrollTop = terminal.scrollHeight;
     }
 
-    function append(text) {
+    function commitText(text) {
       committedText += text;
+      if (committedText.length > MAX_SCROLLBACK_CHARS) {
+        const cut = committedText.indexOf("\n", committedText.length - MAX_SCROLLBACK_CHARS);
+        committedText = committedText.slice(cut === -1 ? -MAX_SCROLLBACK_CHARS : cut + 1);
+      }
+      committedHtml = rcloneRunnerAnsi.render(committedText);
+    }
+
+    function append(text) {
+      commitText(text);
       renderTerminal();
     }
 
@@ -238,7 +260,7 @@
           if (running) {
             sendInput("\x03");
           } else {
-            committedText += `${commandBuffer}^C\r\nrclone> `;
+            commitText(`${commandBuffer}^C\r\nrclone> `);
             commandBuffer = "";
             cursorIndex = 0;
             renderTerminal();
@@ -264,7 +286,7 @@
           sendRunningInputLine();
         } else {
           const command = commandBuffer.trim();
-          committedText += `${commandBuffer}\r\n`;
+          commitText(`${commandBuffer}\r\n`);
           commandBuffer = "";
           cursorIndex = 0;
           renderTerminal();

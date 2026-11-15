@@ -277,6 +277,16 @@ def test_console_running_command_uses_local_line_editor():
     assert "sendInput(arrows[event.key]);" not in html
 
 
+def test_console_caches_rendered_output_and_limits_scrollback():
+    html = templates.get_template("console.html").render(recent=[], recent_commands=[])
+
+    assert "const MAX_SCROLLBACK_CHARS = 300000;" in html
+    assert "committedHtml = rcloneRunnerAnsi.render(committedText);" in html
+    assert "rcloneRunnerAnsi.render(committedText)}" not in html
+    assert html.count("committedText +=") == 1
+    assert 'localStorage.getItem("terminalFontSize")' in html.split("try {", 1)[1]
+
+
 def test_console_terminal_renders_ansi_sequences():
     html = templates.get_template("console.html").render(recent=[], recent_commands=[])
     js = Path("app/static/ansi.js").read_text()
