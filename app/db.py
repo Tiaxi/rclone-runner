@@ -97,6 +97,24 @@ class ConsoleRunRecord(Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class SourceMeasurementRecord(Base):
+    """The size of a step's source, from ``rclone size``. Steps with the same source and
+    filters share one record, found by ``key``."""
+
+    __tablename__ = "source_measurements"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False)
+    bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    files: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # When the last successful measurement finished; kept while a new one runs or fails.
+    measured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class SettingRecord(Base):
     __tablename__ = "settings"
 
