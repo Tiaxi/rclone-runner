@@ -1155,6 +1155,97 @@ async def test_update_job_rejects_invalid_cron_without_saving(monkeypatch):
             assert saved.cron == "0 5 * * *"
 
 
+async def test_update_job_keeps_step_ids_so_history_stays_attached(monkeypatch):
+    monkeypatch.setattr(main, "sync_schedules", lambda db: None)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = _create_job(db, step_names=["first", "second", "third"])
+            first_id, second_id, third_id = (step.id for step in job.steps)
+            job_run = JobRunRecord(
+                job_id=job.id,
+                job_name=job.name,
+                trigger="schedule",
+                status="success",
+                started_at=main.utc_now(),
+                ended_at=main.utc_now(),
+            )
+            db.add(job_run)
+            db.flush()
+            for step in job.steps:
+                db.add(
+                    JobStepRunRecord(
+                        job_run_id=job_run.id,
+                        step_id=step.id,
+                        step_name=step.name,
+                        argv_json="[]",
+                        status="success",
+                        exit_code=0,
+                        log_path=str(Path(tmpdir) / f"{step.name}.log"),
+                        started_at=job_run.started_at,
+                        ended_at=job_run.ended_at,
+                    )
+                )
+            db.commit()
+
+            await main.update_job(
+                _request(f"/jobs/{job.id}", "POST"),
+                job.id,
+                None,
+                None,
+                db,
+                **_job_form(steps_text="second|lsd holvi:\nfirst|lsd holvi:\nnew|lsd holvi:"),
+            )
+
+            db.expire_all()
+            steps = db.get(JobRecord, job.id).steps
+            assert [(step.name, step.position, step.command) for step in steps] == [
+                ("second", 1, "lsd holvi:"),
+                ("first", 2, "lsd holvi:"),
+                ("new", 3, "lsd holvi:"),
+            ]
+            assert steps[0].id == second_id
+            assert steps[1].id == first_id
+            assert steps[2].id not in {first_id, second_id, third_id}
+            removed_run = db.query(JobStepRunRecord).filter_by(step_name="third").one()
+            assert removed_run.step_id is None
+
+
+async def test_job_run_rows_show_recorded_steps_when_steps_no_longer_exist():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = _create_job(db, step_names=["current"])
+            job_run = JobRunRecord(
+                job_id=job.id,
+                job_name=job.name,
+                trigger="schedule",
+                status="success",
+                started_at=main.utc_now(),
+                ended_at=main.utc_now(),
+            )
+            db.add(job_run)
+            db.flush()
+            db.add(
+                JobStepRunRecord(
+                    job_run_id=job_run.id,
+                    step_id=999,
+                    step_name="old step",
+                    argv_json="[]",
+                    status="success",
+                    exit_code=0,
+                    log_path=str(Path(tmpdir) / "old.log"),
+                    started_at=job_run.started_at,
+                    ended_at=job_run.ended_at,
+                )
+            )
+            db.commit()
+
+            rows = main._job_run_step_rows(job_run, db)
+
+            assert [(row["name"], row["status"]) for row in rows] == [("old step", "success")]
+
+
 def _session_factory(database_path: Path):
     engine = create_engine(f"sqlite:///{database_path}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
