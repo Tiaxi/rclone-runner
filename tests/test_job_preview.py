@@ -836,3 +836,9 @@ def test_real_runs_ask_for_confirmation_but_dry_runs_do_not():
     step_dry_run_form = detail_html.split('action="/jobs/1/steps/7/dry-run"', 1)[1].split(">", 1)[0]
     assert "Run step Music now?" in step_form
     assert "confirm(" not in step_dry_run_form
+
+
+def test_hidden_attribute_wins_over_component_display_rules():
+    css = Path("app/static/styles.css").read_text()
+
+    assert "[hidden] {\n  display: none !important;\n}" in css
