@@ -87,64 +87,70 @@ def test_readme_includes_deployment_checklist_and_backup_guidance():
     assert "rclone.conf" in readme
 
 
-def test_jobs_page_renders_ongoing_activity_sections():
-    started_at = datetime(2026, 4, 26, 18, 0, tzinfo=UTC)
-    job_run = SimpleNamespace(
-        id=3,
-        job_name="backup",
-        trigger="manual",
-        status="running",
-        started_at=started_at,
-        ended_at=None,
-    )
-    step_run = SimpleNamespace(
-        id=4,
-        step_name="Music",
-        status="running",
-        started_at=started_at,
-        ended_at=None,
-        job_run=SimpleNamespace(job_name="backup", trigger="manual"),
-    )
-    console_run = SimpleNamespace(
-        id=5,
-        command="lsd remote:",
-        status="running",
-        started_at=started_at,
-        ended_at=None,
-    )
+def _running_row(**overrides):
+    row = {
+        "kind": "job",
+        "name": "backup",
+        "detail": "Step: Music",
+        "mode": "Manual",
+        "dry_run": False,
+        "started_at": datetime(2026, 4, 26, 18, 0, tzinfo=UTC),
+        "elapsed_seconds": 75.0,
+        "progress": "1.2 GiB / 4 GiB, 30%, 12 MiB/s, ETA 4m",
+        "url": "/job-runs/3",
+    }
+    row.update(overrides)
+    return row
 
+
+def test_jobs_page_lists_running_jobs_and_console_commands_together():
     html = templates.get_template("jobs.html").render(
         jobs=[],
-        ongoing_job_runs=[{"run": job_run, "current_step": "Music"}],
-        ongoing_step_runs=[step_run],
-        ongoing_console_runs=[console_run],
+        running_now=[
+            _running_row(),
+            _running_row(
+                kind="console",
+                name="lsd remote:",
+                detail="Console command",
+                mode="Console",
+                elapsed_seconds=4.25,
+                progress=None,
+                url="/console/runs/5",
+            ),
+        ],
     )
 
-    assert "<h2>Ongoing activity</h2>" in html
-    assert "<h3>Job runs</h3>" in html
-    assert '<a href="/job-runs/3">Open</a>' in html
-    assert "<h3>Step runs</h3>" in html
-    assert '<a href="/runs/4">Log</a>' in html
-    assert "<h3>Console commands</h3>" in html
+    assert '<h2 id="running-now-heading">Running now</h2>' in html
+    assert '<a href="/job-runs/3">backup</a>' in html
+    assert "Step: Music" in html
+    assert "1.2 GiB / 4 GiB, 30%, 12 MiB/s, ETA 4m" in html
     assert '<a href="/console/runs/5">Log</a>' in html
+    assert "<code>lsd remote:</code>" in html
+    assert 'data-elapsed-seconds="75.0">1m 15s</td>' in html
+    assert 'data-elapsed-seconds="4.2">4.2s</td>' in html
     assert "2026-04-26 21:00:00 EEST" in html
+    assert 'data-refresh-seconds="5"' in html
+    assert html.index("Running now") < html.index("Configured jobs")
 
 
-def test_jobs_page_renders_empty_ongoing_activity_tables():
-    html = templates.get_template("jobs.html").render(
-        jobs=[],
-        ongoing_job_runs=[],
-        ongoing_step_runs=[],
-        ongoing_console_runs=[],
-    )
+def test_jobs_page_hides_running_now_when_idle():
+    html = templates.get_template("jobs.html").render(jobs=[], running_now=[])
 
-    assert "<h2>Ongoing activity</h2>" in html
-    assert "<h3>Job runs</h3>" in html
-    assert "No job runs are currently active." in html
-    assert "<h3>Step runs</h3>" in html
-    assert "No step runs are currently active." in html
-    assert "<h3>Console commands</h3>" in html
-    assert "No console commands are currently active." in html
+    assert "Running now" not in html
+    assert "currently active" not in html
+    assert '<h2 id="configured-jobs-heading" class="visually-hidden">Configured jobs</h2>' in html
+    assert 'data-refresh-seconds="30"' in html
+    assert '<a href="/jobs/new">Create one</a>' in html
+
+
+def test_jobs_page_refreshes_live_region_and_ticks_elapsed_times():
+    html = templates.get_template("jobs.html").render(jobs=[], running_now=[])
+
+    assert '<div id="jobs-live"' in html
+    assert 'getElementById("jobs-live")' in html
+    assert "replaceWith(next)" in html
+    assert "visibilitychange" in html
+    assert "[data-elapsed-seconds]" in html
 
 
 def test_job_detail_history_heading_has_explicit_section_spacing():
@@ -610,9 +616,7 @@ def test_jobs_page_renders_compact_run_context_column():
                 "next_run": None,
             },
         ],
-        ongoing_job_runs=[],
-        ongoing_step_runs=[],
-        ongoing_console_runs=[],
+        running_now=[],
     )
 
     assert "<th>Runs</th>" in html
@@ -704,9 +708,7 @@ def test_post_forms_include_csrf_fields_and_destructive_confirmations():
 
     jobs_html = templates.get_template("jobs.html").render(
         jobs=[{"record": job, "schedule_summary": "Never", "last_run": None, "next_run": None}],
-        ongoing_job_runs=[],
-        ongoing_step_runs=[],
-        ongoing_console_runs=[],
+        running_now=[],
         csrf_field=lambda: csrf_input,
     )
     settings_html = templates.get_template("settings.html").render(
@@ -758,9 +760,7 @@ def test_job_delete_actions_render_in_list_and_detail():
 
     jobs_html = templates.get_template("jobs.html").render(
         jobs=[{"record": job, "schedule_summary": "Never", "last_run": None, "next_run": None}],
-        ongoing_job_runs=[],
-        ongoing_step_runs=[],
-        ongoing_console_runs=[],
+        running_now=[],
         deleted=True,
         csrf_field=lambda: csrf_input,
     )
@@ -809,9 +809,7 @@ def test_real_runs_ask_for_confirmation_but_dry_runs_do_not():
     job = SimpleNamespace(id=1, name="Bob's backup", cron="", enabled=True, steps=[])
     jobs_html = templates.get_template("jobs.html").render(
         jobs=[{"record": job, "schedule_summary": "Never", "last_run": None, "next_run": None}],
-        ongoing_job_runs=[],
-        ongoing_step_runs=[],
-        ongoing_console_runs=[],
+        running_now=[],
         csrf_field=lambda: csrf_input,
     )
     detail_html = templates.get_template("job_detail.html").render(
