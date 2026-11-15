@@ -55,7 +55,7 @@
 
 {% if job %}
   {% for preview in command_previews %}
-    <form id="run-step-{{ preview.id }}" method="post" action="/jobs/{{ job.id }}/steps/{{ preview.id }}/run">
+    <form id="run-step-{{ preview.id }}" method="post" action="/jobs/{{ job.id }}/steps/{{ preview.id }}/run" onsubmit='return confirm({{ ("Run step " ~ preview.name ~ " now? This is a real run, not a dry run.")|tojson }})'>
       {{ csrf_field()|safe }}
     </form>
     <form id="dry-run-step-{{ preview.id }}" method="post" action="/jobs/{{ job.id }}/steps/{{ preview.id }}/dry-run">
