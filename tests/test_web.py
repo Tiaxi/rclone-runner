@@ -2035,3 +2035,60 @@ def test_dry_run_detection_reads_the_command():
     assert not main._is_dry_run(run("schedule", ["rclone", "sync", "a", "b"]))
     # After "--", "-n" is a path.
     assert not main._is_dry_run(run("schedule", ["rclone", "copy", "--", "-n", "b"]))
+    # rclone uses the last value, and -n combines with other short flags.
+    assert main._is_dry_run(run("schedule", ["rclone", "sync", "--dry-run=false", "-n", "a", "b"]))
+    assert not main._is_dry_run(
+        run("schedule", ["rclone", "sync", "--dry-run", "--dry-run=false", "a", "b"])
+    )
+    assert main._is_dry_run(run("schedule", ["rclone", "sync", "-vn", "a", "b"]))
+    assert not main._is_dry_run(run("schedule", ["rclone", "sync", "-vv", "a", "b"]))
+
+
+async def test_a_dry_run_stays_found_behind_many_ordinary_runs():
+    from datetime import timedelta
+
+    from app.core.rclone_stats import RcloneTransferStats, stats_to_json
+
+    gib = 1024**3
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = _create_job_with_sources(db)
+            step_id = job.steps[0].id
+            start = main.utc_now() - timedelta(days=300)
+            for index in range(251):
+                trigger = "manual-dry-run" if index == 0 else "schedule"
+                run = JobRunRecord(
+                    job_id=job.id,
+                    job_name=job.name,
+                    trigger=trigger,
+                    status="success",
+                    started_at=start + timedelta(hours=index),
+                    ended_at=start + timedelta(hours=index, minutes=10),
+                )
+                db.add(run)
+                db.flush()
+                db.add(
+                    JobStepRunRecord(
+                        job_run_id=run.id,
+                        step_id=step_id,
+                        step_name="Music",
+                        argv_json="[]",
+                        status="success",
+                        exit_code=0,
+                        log_path=str(Path(tmpdir) / f"{index}.log"),
+                        started_at=run.started_at,
+                        ended_at=run.ended_at,
+                        transfer_stats_json=stats_to_json(
+                            RcloneTransferStats(2 * gib if index else 7 * gib, 1, 0)
+                        ),
+                    )
+                )
+            db.commit()
+
+            dry_runs = main._latest_dry_run_stats(job, db)
+            samples = main._upload_samples(job, db)
+
+    assert dry_runs[step_id]["bytes"] == 7 * gib
+    # The search stops once it has enough sizeable real runs.
+    assert len(samples) == 10

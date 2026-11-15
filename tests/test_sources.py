@@ -37,6 +37,9 @@ GLOBAL_FLAGS = FlagSet(
             "--rc-addr",
             "-v",
             "--verbose",
+            "--error-on-no-transfer",
+            "--cpuprofile",
+            "--memprofile",
             "--dry-run",
             "-n",
         }
@@ -55,6 +58,8 @@ GLOBAL_FLAGS = FlagSet(
             "--cutoff-mode",
             "--sftp-host",
             "--rc-addr",
+            "--cpuprofile",
+            "--memprofile",
         }
     ),
 )
@@ -287,3 +292,11 @@ async def test_measurer_reports_unreadable_output_and_recovers_after_restart(tmp
 def test_key_holds_the_argv_and_environment_digest():
     command = SizeCommand(source="/a", argv=["rclone", "size", "--json", "/a"], env_digest="ab")
     assert json.loads(command.key) == {"argv": command.argv, "env": "ab"}
+
+
+def test_size_command_drops_flags_that_fail_size_or_write_files(known_flags):
+    command = _size(
+        "copy /src remote:dst --error-on-no-transfer",
+        "--cpuprofile /logs/backup.cpu --memprofile /logs/backup.mem",
+    )
+    assert command.argv == ["rclone", "size", "--json", "--", "/src"]
