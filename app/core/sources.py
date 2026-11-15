@@ -1,15 +1,19 @@
 """Measure the size of what a job step backs up, with ``rclone size``.
 
 A step's source is the first path in its command. Finding it needs to know which flags take a
-value (``--backup-dir X`` does, ``--fast-list`` does not), which rclone's own flag list tells.
-The measurement keeps the flags that decide which files count (filters, symlink handling, local
-backend options), so the totals match what the step would look at, and drops everything else,
-since ``rclone size`` rejects flags that belong to other subcommands.
+value (``--backup-dir X`` does, ``--fast-list`` does not), which rclone's own flag lists tell.
+
+The measurement keeps the step's global flags, so filters, ``--config`` and backend options
+apply as they do in the step, minus the ones that only matter for transfers or output (and would
+needlessly change the measurement's identity, like a dated ``--backup-dir``) or that start
+services. Flags of the step's own subcommand are dropped, since ``rclone size`` rejects them;
+bisync's ``--filters-file`` becomes the equivalent ``--filter-from``.
 """
 
 from __future__ import annotations
 
-import functools
+import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -19,45 +23,62 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 
 # Subcommands whose first path is a source of files to back up.
-SOURCE_SUBCOMMANDS = {"sync", "copy", "move", "copyto", "moveto", "bisync"}
+SOURCE_SUBCOMMANDS = ("sync", "copy", "move", "copyto", "moveto", "bisync")
+HELP_TIMEOUT_SECONDS = 10
 
-_FILTER_FLAGS = {
-    "--exclude",
-    "--exclude-from",
-    "--exclude-if-present",
-    "--include",
-    "--include-from",
-    "--filter",
-    "--filter-from",
-    "--files-from",
-    "--files-from-raw",
-    "--min-size",
-    "--max-size",
-    "--min-age",
-    "--max-age",
-    "--max-depth",
-    "--ignore-case",
-    "--hash-filter",
-    "--copy-links",
-    "--links",
-    "--skip-links",
-    "--one-file-system",
-    "--fast-list",
+# Global flags that don't change which files rclone size counts.
+_DROPPED_FLAGS = {
+    "--backup-dir",
+    "--suffix",
+    "--suffix-keep-extension",
+    "--compare-dest",
+    "--copy-dest",
+    "--bwlimit",
+    "--bwlimit-file",
+    "--max-delete",
+    "--max-delete-size",
+    "--max-transfer",
+    "--cutoff-mode",
+    "--transfers",
+    "--dry-run",
+    "-n",
+    "--interactive",
+    "-i",
+    "--progress",
+    "-P",
+    "--verbose",
+    "-v",
+    "--quiet",
+    "-q",
 }
-_FILTER_SHORT_FLAGS = {"-L", "-l", "-x"}
-_KEPT_PREFIXES = ("--metadata-include", "--metadata-exclude", "--metadata-filter", "--local-")
-_FLAG_LINE = re.compile(r"^\s+(?:-(?P<short>\w), )?--(?P<long>[\w.-]+)(?: (?P<type>\w+))?\s{2,}")
+_DROPPED_PREFIXES = ("--rc", "--log-", "--stats", "--use-json-log", "--dump", "-vv")
+# Local flags with a global equivalent.
+_TRANSLATED_FLAGS = {("bisync", "--filters-file"): "--filter-from"}
+# The type may be an enum such as HARD|SOFT|CAUTIOUS.
+_FLAG_LINE = re.compile(r"^\s+(?:-(?P<short>\w), )?--(?P<long>[\w.-]+)(?: (?P<type>\S+))?\s{2,}")
+
+
+@dataclass(frozen=True)
+class FlagSet:
+    names: frozenset[str]
+    with_values: frozenset[str]
+
+
+_flag_sets: dict[str, FlagSet] = {}
 
 
 @dataclass(frozen=True)
 class SizeCommand:
     source: str
     argv: list[str]
+    # rclone reads remotes and options from RCLONE_* variables too, so two jobs with the same
+    # command can still measure different things. A digest keeps secrets out of the key.
+    env_digest: str = ""
 
     @property
     def key(self) -> str:
-        """Identifies a measurement: the same source with the same filters."""
-        return json.dumps(self.argv)
+        """Identifies a measurement: the same command in the same rclone environment."""
+        return json.dumps({"argv": self.argv, "env": self.env_digest})
 
 
 @dataclass(frozen=True)
@@ -66,27 +87,53 @@ class SourceSize:
     files: int
 
 
-@functools.cache
-def _flags_with_values(subcommand: str) -> frozenset[str]:
-    """Flag names (``--long`` and ``-s``) that take a value: rclone's global flags and the
-    subcommand's own, from its help."""
-    output = ""
-    for command in (["rclone", "help", "flags"], ["rclone", subcommand, "--help"]):
-        try:
-            output += subprocess.run(
-                command, capture_output=True, text=True, timeout=30, check=True
-            ).stdout
-        except OSError, subprocess.SubprocessError:
-            logger.warning("Could not read rclone's flags from %s", " ".join(command))
-    names = set()
+def _read_flags(command: list[str]) -> FlagSet:
+    try:
+        output = subprocess.run(
+            command, capture_output=True, text=True, timeout=HELP_TIMEOUT_SECONDS, check=True
+        ).stdout
+    except OSError, subprocess.SubprocessError:
+        logger.warning("Could not read rclone's flags from %s", " ".join(command))
+        return FlagSet(frozenset(), frozenset())
+    names: set[str] = set()
+    with_values: set[str] = set()
     for line in output.splitlines():
         match = _FLAG_LINE.match(line)
+        if not match:
+            continue
+        flag_names = [f"--{match['long']}"] + ([f"-{match['short']}"] if match["short"] else [])
+        names.update(flag_names)
         # Typed flags take a value, except counters such as -v.
-        if match and match["type"] and match["type"] != "count":
-            names.add(f"--{match['long']}")
-            if match["short"]:
-                names.add(f"-{match['short']}")
-    return frozenset(names)
+        if match["type"] and match["type"] != "count":
+            with_values.update(flag_names)
+    return FlagSet(frozenset(names), frozenset(with_values))
+
+
+def _flags(name: str) -> FlagSet:
+    """rclone's global flags ("global") or a subcommand's own, read once."""
+    if name not in _flag_sets:
+        command = ["rclone", "help", "flags"] if name == "global" else ["rclone", name, "--help"]
+        _flag_sets[name] = _read_flags(command)
+    return _flag_sets[name]
+
+
+def load_flags() -> None:
+    for name in ("global", *SOURCE_SUBCOMMANDS):
+        _flags(name)
+
+
+async def ensure_flags() -> None:
+    """Read rclone's flag lists in a thread, so request handlers never wait on rclone."""
+    if any(name not in _flag_sets for name in ("global", *SOURCE_SUBCOMMANDS)):
+        await asyncio.to_thread(load_flags)
+
+
+def _flags_with_values(subcommand: str) -> frozenset[str]:
+    return _flags("global").with_values | _flags(subcommand).with_values
+
+
+def _global_flags() -> frozenset[str]:
+    return _flags("global").names
 
 
 def split_command(argv: list[str]) -> tuple[list[list[str]], list[str]]:
@@ -111,20 +158,40 @@ def split_command(argv: list[str]) -> tuple[list[list[str]], list[str]]:
     return flags, paths
 
 
-def size_command(argv: list[str]) -> SizeCommand | None:
+def size_command(argv: list[str], env: dict[str, str] | None = None) -> SizeCommand | None:
     """The ``rclone size`` command for a step's source, or None if it has no source."""
     if len(argv) < 3 or argv[1] not in SOURCE_SUBCOMMANDS:
         return None
     flags, paths = split_command(argv)
     if not paths:
         return None
-    kept = [part for flag in flags if _keeps(flag[0]) for part in flag]
-    return SizeCommand(source=paths[0], argv=["rclone", "size", "--json", *kept, paths[0]])
+    global_flags = _global_flags()
+    kept: list[str] = []
+    for flag in flags:
+        name, has_value, inline_value = flag[0].partition("=")
+        translated = _TRANSLATED_FLAGS.get((argv[1], name))
+        if translated is not None:
+            flag = [f"{translated}={inline_value}"] if has_value else [translated, *flag[1:]]
+            name = translated
+        if _keeps(name, global_flags):
+            kept.extend(flag)
+    # "--" keeps a source that starts with "-" from being read as a flag.
+    size_argv = ["rclone", "size", "--json", *kept, "--", paths[0]]
+    return SizeCommand(source=paths[0], argv=size_argv, env_digest=_env_digest(env or {}))
 
 
-def _keeps(flag: str) -> bool:
-    name = flag.split("=", 1)[0]
-    return name in _FILTER_FLAGS or name in _FILTER_SHORT_FLAGS or name.startswith(_KEPT_PREFIXES)
+def _keeps(name: str, global_flags: frozenset[str]) -> bool:
+    if name in _DROPPED_FLAGS or name.startswith(_DROPPED_PREFIXES):
+        return False
+    # Without rclone's flag list, keep everything rather than measure the wrong files.
+    return not global_flags or name in global_flags
+
+
+def _env_digest(env: dict[str, str]) -> str:
+    rclone_env = sorted((key, value) for key, value in env.items() if key.startswith("RCLONE_"))
+    if not rclone_env:
+        return ""
+    return hashlib.sha256(json.dumps(rclone_env).encode()).hexdigest()[:16]
 
 
 def parse_size_output(output: str) -> SourceSize:

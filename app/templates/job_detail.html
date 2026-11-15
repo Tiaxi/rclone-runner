@@ -79,7 +79,10 @@
           <div class="table-subtext alert-text">Failed: {{ measurement.error }}</div>
           {% endif %}
         </td>
-        <td class="numeric">{{ row.full_estimate or "-" }}</td>
+        <td class="numeric">
+          <div>{{ row.full_estimate or "-" }}</div>
+          {% if row.speed_note %}<div class="table-subtext">at {{ row.speed_note }}</div>{% endif %}
+        </td>
         <td>
           {% if row.dry_run %}
           <div class="numeric">{{ row.next_estimate or "-" }}</div>

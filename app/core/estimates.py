@@ -81,8 +81,11 @@ def bwlimit_bytes_per_second(rate: str | None) -> float | None:
         return None
     unit = upload[-1].upper()
     if unit.isdigit():
-        return float(upload) * _UNIT_BYTES["K"]  # rclone reads a bare number as KiB/s
-    return float(upload[:-1]) * _UNIT_BYTES[unit]
+        value = float(upload) * _UNIT_BYTES["K"]  # rclone reads a bare number as KiB/s
+    else:
+        value = float(upload[:-1]) * _UNIT_BYTES[unit]
+    # rclone reads a limit of 0 as no limit.
+    return value if value > 0 else None
 
 
 def choose_speed(
@@ -110,7 +113,7 @@ def choose_speed(
 
 
 def estimate_seconds(size_bytes: int, speed: Speed) -> float:
-    return size_bytes / speed.bytes_per_second
+    return size_bytes / max(speed.bytes_per_second, 1.0)
 
 
 def format_estimate(seconds: float) -> str:

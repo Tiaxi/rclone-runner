@@ -68,7 +68,7 @@ from app.core.rclone_stats import (
 )
 from app.core.retention import prune_logs
 from app.core.schedule import cron_summary, normalize_cron
-from app.core.sources import SizeCommand, size_command
+from app.core.sources import SizeCommand, ensure_flags, size_command
 from app.db import (
     ConsoleRunRecord,
     DbSession,
@@ -327,6 +327,7 @@ async def job_detail(
     job = db.get(JobRecord, job_id)
     if job is None:
         return RedirectResponse("/jobs", status_code=303)
+    await ensure_flags()
     context = _job_detail_context(job, db) | {
         "delete_blocked": delete_blocked,
         "duplicated": duplicated,
@@ -372,6 +373,7 @@ async def measure_job_sources(
     job = db.get(JobRecord, job_id)
     if job is None:
         return RedirectResponse("/jobs", status_code=303)
+    await ensure_flags()
     commands = [command for _step, command in _step_size_commands(job) if command is not None]
     measurer.start(commands, parse_env_lines(env_to_lines(job.env_json)))
     return RedirectResponse(f"/jobs/{job_id}#step-sources", status_code=303)
@@ -385,7 +387,8 @@ def _step_size_commands(job: JobRecord) -> list[tuple[JobStepRecord, SizeCommand
 def _step_commands(job: JobRecord):
     """Each step with its rclone command (None if invalid) and the size command for its
     source (None without one)."""
-    env = run_variables(utc_now(), settings.timezone) | parse_env_lines(env_to_lines(job.env_json))
+    job_env = parse_env_lines(env_to_lines(job.env_json))
+    env = run_variables(utc_now(), settings.timezone) | job_env
     rows = []
     for step in sorted(job.steps, key=lambda item: item.position):
         try:
@@ -393,7 +396,7 @@ def _step_commands(job: JobRecord):
         except CommandPolicyError:
             rows.append((step, None, None))
             continue
-        rows.append((step, argv, size_command(argv)))
+        rows.append((step, argv, size_command(argv, job_env)))
     return rows
 
 
@@ -406,35 +409,49 @@ def _sources_context(job: JobRecord, db) -> dict[str, object]:
         .filter(SourceMeasurementRecord.key.in_(keys))
         .all()
     }
-    bwlimit = next(
-        (bwlimit_bytes_per_second(configured_rate(argv)) for _s, argv, _c in steps if argv),
-        None,
-    )
-    speed = choose_speed(observed_speed(_upload_samples(job, db)), load_expected_speed(db), bwlimit)
+    observed = observed_speed(_upload_samples(job, db))
+    expected = load_expected_speed(db)
+    base_speed = choose_speed(observed, expected, None)
     dry_runs = _latest_dry_run_stats(job, db)
     rows = []
     total_bytes = total_files = 0
+    total_seconds = 0.0
     all_measured = bool(keys)
-    for step, _argv, command in steps:
+    all_estimated = True
+    for step, argv, command in steps:
         measurement = records.get(command.key) if command is not None else None
         measured = measurement is not None and measurement.bytes is not None
-        if command is not None and not measured:
-            all_measured = False
-        if measured:
-            total_bytes += measurement.bytes
-            total_files += measurement.files or 0
+        # A step's own --bwlimit caps only that step.
+        speed = choose_speed(
+            observed, expected, bwlimit_bytes_per_second(configured_rate(argv or []))
+        )
+        full_seconds = None
+        if command is not None:
+            if measured:
+                total_bytes += measurement.bytes
+                total_files += measurement.files or 0
+                if speed is not None:
+                    full_seconds = estimate_seconds(measurement.bytes, speed)
+                    total_seconds += full_seconds
+                else:
+                    all_estimated = False
+            else:
+                all_measured = False
         dry_run = dry_runs.get(step.id)
         rows.append(
             {
                 "step": step,
                 "source": command.source if command is not None else None,
                 "measurement": measurement,
-                "full_estimate": format_estimate(estimate_seconds(measurement.bytes, speed))
-                if measured and speed is not None
+                "full_estimate": format_estimate(full_seconds)
+                if full_seconds is not None
                 else None,
                 "dry_run": dry_run,
                 "next_estimate": format_estimate(estimate_seconds(dry_run["bytes"], speed))
                 if dry_run is not None and speed is not None
+                else None,
+                "speed_note": speed.explanation
+                if speed is not None and speed != base_speed
                 else None,
             }
         )
@@ -443,11 +460,9 @@ def _sources_context(job: JobRecord, db) -> dict[str, object]:
         totals = {
             "bytes": total_bytes,
             "files": total_files,
-            "estimate": format_estimate(estimate_seconds(total_bytes, speed))
-            if speed is not None
-            else None,
+            "estimate": format_estimate(total_seconds) if all_estimated else None,
         }
-    return {"source_rows": rows, "source_speed": speed, "source_totals": totals}
+    return {"source_rows": rows, "source_speed": base_speed, "source_totals": totals}
 
 
 def _upload_samples(job: JobRecord, db) -> list[tuple[int, float]]:
@@ -457,7 +472,6 @@ def _upload_samples(job: JobRecord, db) -> list[tuple[int, float]]:
         .join(JobStepRunRecord.job_run)
         .filter(
             JobRunRecord.job_id == job.id,
-            ~JobRunRecord.trigger.contains("dry-run"),
             JobStepRunRecord.status == "success",
             JobStepRunRecord.ended_at.is_not(None),
         )
@@ -467,11 +481,31 @@ def _upload_samples(job: JobRecord, db) -> list[tuple[int, float]]:
     )
     samples = []
     for step_run in step_runs:
+        if _is_dry_run(step_run):
+            continue
         stats = _step_transfer_stats(step_run)
         if stats is not None:
             seconds = _duration_seconds(step_run.started_at, step_run.ended_at)
             samples.append((stats.transferred_bytes, seconds))
     return samples
+
+
+def _is_dry_run(step_run: JobStepRunRecord) -> bool:
+    """A dry run by the Dry run button, or by --dry-run or -n in the command itself."""
+    if "dry-run" in step_run.job_run.trigger:
+        return True
+    try:
+        argv = json.loads(step_run.argv_json)
+    except ValueError:
+        return False
+    for arg in argv:
+        if arg == "--":
+            break
+        if arg in {"--dry-run", "-n"}:
+            return True
+        if arg.startswith("--dry-run="):
+            return arg.split("=", 1)[1].lower() not in {"false", "0", "f"}
+    return False
 
 
 def _latest_dry_run_stats(job: JobRecord, db) -> dict[int, dict[str, object]]:
@@ -481,7 +515,6 @@ def _latest_dry_run_stats(job: JobRecord, db) -> dict[int, dict[str, object]]:
         .join(JobStepRunRecord.job_run)
         .filter(
             JobRunRecord.job_id == job.id,
-            JobRunRecord.trigger.contains("dry-run"),
             JobStepRunRecord.status == "success",
             JobStepRunRecord.step_id.is_not(None),
         )
@@ -491,7 +524,7 @@ def _latest_dry_run_stats(job: JobRecord, db) -> dict[int, dict[str, object]]:
     )
     latest: dict[int, dict[str, object]] = {}
     for step_run in step_runs:
-        if step_run.step_id in latest:
+        if step_run.step_id in latest or not _is_dry_run(step_run):
             continue
         stats = _step_transfer_stats(step_run)
         latest[step_run.step_id] = {
@@ -521,6 +554,7 @@ async def update_job(
         return RedirectResponse("/jobs", status_code=303)
     form_error = cron_error(cron)
     if form_error is not None:
+        await ensure_flags()
         context = _job_detail_context(job, db) | {
             "form_values": JobFormValues(name, cron, common_args, enabled == "on"),
             "form_error": form_error,
