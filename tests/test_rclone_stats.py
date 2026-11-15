@@ -1,4 +1,16 @@
-from app.core.rclone_stats import RcloneTransferStats, parse_rclone_transfer_stats
+from pathlib import Path
+from types import SimpleNamespace
+
+from app.core.notifications import read_log_tail
+from app.core.rclone_stats import (
+    STATS_TAIL_BYTES,
+    STATS_UNAVAILABLE_JSON,
+    RcloneTransferStats,
+    parse_rclone_transfer_stats,
+    stats_from_log,
+    step_stats_display,
+    step_transfer_stats,
+)
 
 DRY_RUN_SUMMARY = """
 Transferred:      782.816 MiB / 782.816 MiB, 100%, 12.345 MiB/s, ETA 0s
@@ -49,3 +61,52 @@ def test_parse_rclone_zero_transfer_summary_without_file_transfer_line():
 
 def test_parse_rclone_stats_returns_none_without_summary_block():
     assert parse_rclone_transfer_stats("copying file\nno final totals here\n") is None
+
+
+def test_stats_from_log_reads_final_stats_from_the_end_of_large_logs(tmp_path: Path):
+    log_path = tmp_path / "step.log"
+    filler = "INFO  : some/file.flac: Copied (new)\n" * (STATS_TAIL_BYTES // 30)
+    log_path.write_text(ZERO_SUMMARY + filler + DRY_RUN_SUMMARY, encoding="utf-8")
+
+    stats = stats_from_log(log_path)
+
+    assert stats is not None
+    assert stats.transferred_files == 134
+
+
+def test_stats_from_log_ignores_stats_before_the_tail(tmp_path: Path):
+    log_path = tmp_path / "step.log"
+    filler = "INFO  : some/file.flac: Copied (new)\n" * (STATS_TAIL_BYTES // 30)
+    log_path.write_text(DRY_RUN_SUMMARY + filler, encoding="utf-8")
+
+    assert stats_from_log(log_path) is None
+
+
+def test_stored_unavailable_marker_skips_log_parsing(tmp_path: Path):
+    log_path = tmp_path / "step.log"
+    log_path.write_text(DRY_RUN_SUMMARY, encoding="utf-8")
+    step_run = SimpleNamespace(
+        transfer_stats_json=STATS_UNAVAILABLE_JSON, ended_at=object(), log_path=str(log_path)
+    )
+    legacy_step_run = SimpleNamespace(
+        transfer_stats_json=None, ended_at=object(), log_path=str(log_path)
+    )
+
+    assert step_transfer_stats(step_run) is None
+    assert step_transfer_stats(legacy_step_run).transferred_files == 134
+
+
+def test_missing_stats_label_depends_on_step_status():
+    assert step_stats_display(None, "success").label == "No changes"
+    assert step_stats_display(None).label == "No changes"
+    assert step_stats_display(None, "failed").label == "Not available"
+    assert step_stats_display(None, "canceled").transferred_data_label == "Not available"
+
+
+def test_read_log_tail_returns_last_lines_of_large_log(tmp_path: Path):
+    log_path = tmp_path / "step.log"
+    log_path.write_text("".join(f"line {index}\n" for index in range(200_000)))
+
+    tail = read_log_tail(log_path, 3)
+
+    assert tail == "line 199997\nline 199998\nline 199999\n"

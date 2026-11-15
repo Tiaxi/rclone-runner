@@ -36,9 +36,8 @@ from app.core.rclone_stats import (
     RunStatsDisplay,
     pending_stats_display,
     run_stats_display,
-    stats_from_json,
-    stats_from_log,
     step_stats_display,
+    step_transfer_stats,
 )
 from app.core.retention import prune_logs
 from app.core.schedule import cron_summary, normalize_cron
@@ -1402,7 +1401,7 @@ def _job_run_stats(job_run: JobRunRecord) -> RunStatsDisplay:
 def _step_stats_display_for_run(step_run: JobStepRunRecord | None):
     if step_run is None or step_run.status == "running" or step_run.ended_at is None:
         return pending_stats_display("Pending")
-    return step_stats_display(_step_transfer_stats(step_run))
+    return step_stats_display(_step_transfer_stats(step_run), step_run.status)
 
 
 def _step_timing_label(step_run: JobStepRunRecord | None) -> dict[str, str]:
@@ -1422,12 +1421,7 @@ def _step_duration_label(step_run: JobStepRunRecord | None) -> str:
 
 
 def _step_transfer_stats(step_run: JobStepRunRecord) -> RcloneTransferStats | None:
-    stored = stats_from_json(step_run.transfer_stats_json)
-    if stored is not None:
-        return stored
-    if step_run.ended_at is None:
-        return None
-    return stats_from_log(Path(step_run.log_path))
+    return step_transfer_stats(step_run)
 
 
 def _exit_label(status: str, exit_code: int | None) -> str:
