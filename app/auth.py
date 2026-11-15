@@ -65,10 +65,12 @@ class LoginThrottle:
         max_failures: int = 10,
         window_seconds: float = 15 * 60,
         clock: Callable[[], float] = time.monotonic,
+        max_clients: int = 10_000,
     ) -> None:
         self._max_failures = max_failures
         self._window_seconds = window_seconds
         self._clock = clock
+        self._max_clients = max_clients
         self._failures: dict[str, deque[float]] = {}
 
     def retry_after(self, client: str) -> int | None:
@@ -80,6 +82,13 @@ class LoginThrottle:
 
     def record_failure(self, client: str) -> None:
         self._recent_failures(client).append(self._clock())
+        while len(self._failures) > self._max_clients:
+            # Forget the client whose latest failure is oldest, to bound memory.
+            oldest = min(
+                (key for key in self._failures if key != client),
+                key=lambda key: self._failures[key][-1] if self._failures[key] else -math.inf,
+            )
+            del self._failures[oldest]
 
     def reset(self, client: str) -> None:
         self._failures.pop(client, None)

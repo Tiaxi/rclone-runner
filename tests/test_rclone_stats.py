@@ -110,3 +110,16 @@ def test_read_log_tail_returns_last_lines_of_large_log(tmp_path: Path):
     tail = read_log_tail(log_path, 3)
 
     assert tail == "line 199997\nline 199998\nline 199999\n"
+
+
+def test_stats_from_log_keeps_first_tail_line_at_exact_line_boundary(tmp_path: Path):
+    log_path = tmp_path / "step.log"
+    summary = DRY_RUN_SUMMARY.lstrip("\n").encode()
+    filler = b"." * (STATS_TAIL_BYTES - len(summary) - 1) + b"\n"
+    # The last STATS_TAIL_BYTES start exactly at the "Transferred: ... MiB" line.
+    log_path.write_bytes(b"earlier output\n" + summary + filler)
+
+    stats = stats_from_log(log_path)
+
+    assert stats is not None
+    assert stats.transferred_files == 134
