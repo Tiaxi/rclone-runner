@@ -1,4 +1,7 @@
+import smtplib
+import ssl
 from datetime import UTC, datetime
+from email.message import EmailMessage
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -13,6 +16,7 @@ from app.core.notifications import (
     read_log_tail,
     save_email_notification_settings,
     send_job_notification,
+    send_smtp_message,
 )
 from app.db import Base, JobRunRecord, JobStepRunRecord
 
@@ -362,3 +366,71 @@ def _session_factory(database_path: Path):
     engine = create_engine(f"sqlite:///{database_path}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
     return sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+
+class _FakeSMTP:
+    instances: list[_FakeSMTP] = []
+
+    def __init__(self, host, port, timeout=None, context=None):
+        self.host = host
+        self.port = port
+        self.context = context
+        self.starttls_context = None
+        self.sent = []
+        _FakeSMTP.instances.append(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def starttls(self, *, context=None):
+        self.starttls_context = context
+
+    def login(self, username, password):
+        pass
+
+    def send_message(self, message):
+        self.sent.append(message)
+
+
+class _FakeSMTPSSL(_FakeSMTP):
+    pass
+
+
+def _assert_verifying(context):
+    assert context is not None
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
+
+
+def test_send_smtp_message_verifies_starttls_certificates(monkeypatch):
+    _FakeSMTP.instances = []
+    monkeypatch.setattr(smtplib, "SMTP", _FakeSMTP)
+    monkeypatch.setattr(smtplib, "SMTP_SSL", _FakeSMTPSSL)
+    value = EmailNotificationSettings(smtp_host="mail.example", smtp_port=587, use_starttls=True)
+
+    send_smtp_message(value, EmailMessage())
+
+    [connection] = _FakeSMTP.instances
+    assert type(connection) is _FakeSMTP
+    _assert_verifying(connection.starttls_context)
+    assert len(connection.sent) == 1
+
+
+def test_send_smtp_message_supports_implicit_tls(monkeypatch):
+    _FakeSMTP.instances = []
+    monkeypatch.setattr(smtplib, "SMTP", _FakeSMTP)
+    monkeypatch.setattr(smtplib, "SMTP_SSL", _FakeSMTPSSL)
+    value = EmailNotificationSettings(
+        smtp_host="mail.example", smtp_port=465, use_starttls=True, use_ssl=True
+    )
+
+    send_smtp_message(value, EmailMessage())
+
+    [connection] = _FakeSMTP.instances
+    assert type(connection) is _FakeSMTPSSL
+    _assert_verifying(connection.context)
+    assert connection.starttls_context is None
+    assert len(connection.sent) == 1

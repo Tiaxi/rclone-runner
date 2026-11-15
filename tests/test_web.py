@@ -760,6 +760,7 @@ async def test_save_email_settings_persists_values_and_preserves_blank_password(
                 sender="sender@example.com",
                 recipients="ops@example.com",
                 use_starttls=None,
+                use_ssl="on",
                 notify_success="on",
                 notify_failure="on",
                 notify_canceled=None,
@@ -768,6 +769,8 @@ async def test_save_email_settings_persists_values_and_preserves_blank_password(
             )
 
             saved = load_email_notification_settings(db)
+            assert saved.use_ssl is True
+            assert saved.use_starttls is False
 
             assert response.headers["location"] == "/settings?email_saved=1"
             assert second.headers["location"] == "/settings?email_saved=1"
