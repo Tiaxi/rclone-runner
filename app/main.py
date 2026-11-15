@@ -70,7 +70,13 @@ from app.core.rclone_stats import (
 )
 from app.core.retention import prune_logs
 from app.core.schedule import cron_summary, normalize_cron
-from app.core.sources import SizeCommand, ensure_flags, size_command, split_command
+from app.core.sources import (
+    SizeCommand,
+    ensure_flags,
+    flags_available,
+    size_command,
+    split_command,
+)
 from app.db import (
     ConsoleRunRecord,
     DbSession,
@@ -466,7 +472,12 @@ def _sources_context(job: JobRecord, db) -> dict[str, object]:
             "files": total_files,
             "estimate": format_estimate(total_seconds) if all_estimated else None,
         }
-    return {"source_rows": rows, "source_speed": base_speed, "source_totals": totals}
+    return {
+        "source_rows": rows,
+        "source_speed": base_speed,
+        "source_totals": totals,
+        "flags_unavailable": not flags_available(),
+    }
 
 
 def _recent_successful_step_runs(job: JobRecord, db):
@@ -525,7 +536,9 @@ def _is_dry_run(step_run: JobStepRunRecord) -> bool:
         if name == "--dry-run":
             dry_run = value.lower() not in {"false", "0", "f"} if has_value else True
         elif not name.startswith("--") and name[1:].isalpha() and "n" in name[1:]:
-            dry_run = True
+            # In "-vn=false" the value belongs to the last letter.
+            explicit = has_value and name.endswith("n")
+            dry_run = value.lower() not in {"false", "0", "f"} if explicit else True
     return dry_run
 
 

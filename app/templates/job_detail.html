@@ -47,6 +47,9 @@
   </form>
   {% endif %}
 </div>
+{% if flags_unavailable %}
+<p class="notice" role="alert">rclone's list of options could not be read, so step sources can't be identified right now. This page tries again in a minute.</p>
+{% endif %}
 <section class="table-wrap" id="step-sources-table" data-measuring="{{ 'true' if measuring else 'false' }}">
   <table>
     <thead><tr><th>Step</th><th>Size</th><th>Measured</th><th>Full upload</th><th>Next sync</th></tr></thead>

@@ -2041,6 +2041,11 @@ def test_dry_run_detection_reads_the_command():
         run("schedule", ["rclone", "sync", "--dry-run", "--dry-run=false", "a", "b"])
     )
     assert main._is_dry_run(run("schedule", ["rclone", "sync", "-vn", "a", "b"]))
+    # An explicit value on the short flag counts too, as in rclone.
+    assert not main._is_dry_run(run("schedule", ["rclone", "copy", "a", "b", "-n=false"]))
+    assert not main._is_dry_run(run("schedule", ["rclone", "copy", "a", "b", "-vn=false"]))
+    assert main._is_dry_run(run("schedule", ["rclone", "copy", "a", "b", "-n=true"]))
+    assert main._is_dry_run(run("schedule", ["rclone", "copy", "a", "b", "-nv=false"]))
     assert not main._is_dry_run(run("schedule", ["rclone", "sync", "-vv", "a", "b"]))
 
 
@@ -2092,3 +2097,20 @@ async def test_a_dry_run_stays_found_behind_many_ordinary_runs():
     assert dry_runs[step_id]["bytes"] == 7 * gib
     # The search stops once it has enough sizeable real runs.
     assert len(samples) == 10
+
+
+async def test_job_page_says_when_rclone_flags_are_unavailable(monkeypatch):
+    import app.core.sources as sources
+
+    async def no_load():
+        return None
+
+    monkeypatch.setattr(sources, "_flag_sets", {})
+    monkeypatch.setattr(main, "ensure_flags", no_load)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = _create_job_with_sources(db)
+            page = await main.job_detail(_request("/"), job.id, None, db)
+
+    assert "can't be identified right now" in page.body.decode()
