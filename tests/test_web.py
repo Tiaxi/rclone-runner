@@ -1,15 +1,21 @@
 import asyncio
+import base64
+import json
 import tempfile
 import warnings
 from pathlib import Path
 
 import httpx
+import itsdangerous
 import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from starlette.requests import Request
+from starlette.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 import app.main as main
+from app.config import settings
 from app.core.notifications import load_email_notification_settings
 from app.core.runner import LiveJobRunner
 from app.db import (
@@ -1244,6 +1250,47 @@ async def test_job_run_rows_show_recorded_steps_when_steps_no_longer_exist():
             rows = main._job_run_step_rows(job_run, db)
 
             assert [(row["name"], row["status"]) for row in rows] == [("old step", "success")]
+
+
+def _session_cookie(session: dict) -> str:
+    data = base64.b64encode(json.dumps(session).encode())
+    return itsdangerous.TimestampSigner(str(settings.secret_key)).sign(data).decode()
+
+
+def test_console_terminal_rejects_cross_origin_handshake():
+    client = TestClient(main.app)
+    client.cookies.set("session", _session_cookie({main.SESSION_KEY: True}))
+
+    with (
+        pytest.raises(WebSocketDisconnect) as exc_info,
+        client.websocket_connect(
+            "/console/terminal", headers={"origin": "http://192.168.1.3:9999"}
+        ),
+    ):
+        pass
+
+    assert exc_info.value.code == 1008
+
+
+def test_console_terminal_accepts_same_origin_handshake():
+    client = TestClient(main.app)
+    client.cookies.set("session", _session_cookie({main.SESSION_KEY: True}))
+
+    with client.websocket_connect(
+        "/console/terminal", headers={"origin": "http://testserver"}
+    ) as websocket:
+        assert websocket.receive_json() == {"type": "output", "data": "rclone> "}
+
+
+def test_console_terminal_accepts_origin_matching_forwarded_host():
+    client = TestClient(main.app)
+    client.cookies.set("session", _session_cookie({main.SESSION_KEY: True}))
+
+    with client.websocket_connect(
+        "/console/terminal",
+        headers={"origin": "https://backup.example", "x-forwarded-host": "backup.example"},
+    ) as websocket:
+        assert websocket.receive_json() == {"type": "output", "data": "rclone> "}
 
 
 def _session_factory(database_path: Path):
