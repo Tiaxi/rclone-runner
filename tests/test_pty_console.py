@@ -1,6 +1,12 @@
 import asyncio
+import os
+import signal
 import sys
+from pathlib import Path
 
+import pytest
+
+import app.core.pty_console as pty_module
 from app.core.pty_console import bridge_pty
 
 
@@ -111,3 +117,75 @@ async def test_bridge_pty_hides_app_settings_from_console_commands(monkeypatch):
 
     assert exit_code == 0
     assert "clean" in output
+
+
+SIGTERM_IGNORING_CHILD = (
+    "import os, signal, sys, time\n"
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+    "while True:\n"
+    "    print('tick', flush=True); time.sleep(0.05)\n"
+)
+
+
+async def _wait_for_pid(pid_path: Path) -> int:
+    for _ in range(200):
+        if pid_path.exists() and pid_path.read_text():
+            return int(pid_path.read_text())
+        await asyncio.sleep(0.02)
+    raise AssertionError("child did not start")
+
+
+def _assert_reaped(pid: int) -> None:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return
+    os.kill(pid, signal.SIGKILL)
+    raise AssertionError(f"process {pid} was still running")
+
+
+async def test_bridge_pty_finishes_shutdown_when_cancelled_twice(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(pty_module, "TERMINATE_TIMEOUT_SECONDS", 0.5)
+    pid_path = tmp_path / "child.pid"
+    queue: asyncio.Queue[str] = asyncio.Queue()
+
+    async def send_text(text: str) -> None:
+        pass
+
+    task = asyncio.create_task(
+        bridge_pty(
+            [sys.executable, "-c", SIGTERM_IGNORING_CHILD, str(pid_path)], queue.get, send_text
+        )
+    )
+    pid = await _wait_for_pid(pid_path)
+
+    task.cancel()
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=10)
+
+    _assert_reaped(pid)
+
+
+async def test_bridge_pty_stops_command_when_output_cannot_be_delivered(tmp_path: Path):
+    pid_path = tmp_path / "child.pid"
+    script = (
+        "import os, sys, time\n"
+        "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+        "while True:\n"
+        "    print('x' * 1000, flush=True); time.sleep(0.01)\n"
+    )
+    queue: asyncio.Queue[str] = asyncio.Queue()
+
+    async def send_text(text: str) -> None:
+        raise OSError(28, "No space left on device")
+
+    with pytest.raises(OSError, match="No space left"):
+        await asyncio.wait_for(
+            bridge_pty([sys.executable, "-c", script, str(pid_path)], queue.get, send_text),
+            timeout=10,
+        )
+
+    _assert_reaped(int(pid_path.read_text()))

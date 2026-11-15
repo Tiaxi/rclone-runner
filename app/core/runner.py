@@ -8,6 +8,7 @@ from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 
+from app.core.aio import run_to_completion
 from app.core.commands import CommandPolicyError, build_rclone_argv, child_environment
 from app.core.models import Job, JobRunResult, JobStep, StepRunResult, utc_now
 from app.core.rclone_stats import STATS_UNAVAILABLE_JSON, stats_from_log, stats_to_json
@@ -47,8 +48,10 @@ async def subprocess_executor(argv: list[str], env: dict[str, str], log_path: Pa
                 log_file.write(chunk)
                 log_file.flush()
             return await process.wait()
-        except BaseException:
-            await _stop_process(process)
+        except BaseException as exc:
+            cancelled = await run_to_completion(_stop_process(process))
+            if cancelled and not isinstance(exc, asyncio.CancelledError):
+                raise asyncio.CancelledError from exc
             raise
 
 
@@ -313,7 +316,9 @@ class LiveJobRunner:
         task = self._tasks.get(job_run_id)
         if task is None or task.done():
             return False
-        task.cancel()
+        # Cancel once: a repeated request would only interrupt the shutdown in progress.
+        if not task.cancelling():
+            task.cancel()
         return True
 
     async def wait_for_job_run(self, job_run_id: int) -> None:

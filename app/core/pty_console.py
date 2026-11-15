@@ -9,6 +9,7 @@ import subprocess
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 
+from app.core.aio import run_to_completion
 from app.core.commands import child_environment
 
 DRAIN_TIMEOUT_SECONDS = 5.0
@@ -44,6 +45,12 @@ async def bridge_pty(
                 signal_exit_code = writer_task.result()
                 # None means the input side went away (disconnect).
                 return 130 if signal_exit_code is None else signal_exit_code
+            if reader_task.done() and not reader_task.cancelled():
+                # Output could not be delivered (for example the console log hit a full disk).
+                # Without a reader the command would block on a full pty and never exit.
+                error = reader_task.exception()
+                if error is not None:
+                    raise error
             await asyncio.sleep(0.1)
         # The process has exited; let the reader send what is still buffered in the pty.
         with suppress(TimeoutError):
@@ -52,8 +59,12 @@ async def bridge_pty(
     finally:
         writer_task.cancel()
         reader_task.cancel()
-        await _stop_process_group(process)
-        os.close(master_fd)
+        try:
+            cancelled = await run_to_completion(_stop_process_group(process))
+        finally:
+            os.close(master_fd)
+        if cancelled:
+            raise asyncio.CancelledError
 
 
 async def _stop_process_group(process: subprocess.Popen) -> None:

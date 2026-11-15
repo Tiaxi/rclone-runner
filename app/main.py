@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
@@ -91,6 +92,8 @@ templates.env.globals["format_duration"] = lambda start, end: _format_duration(s
 templates.env.globals["utc_now"] = utc_now
 templates.env.globals["run_exit_label"] = lambda run: _exit_label(run.status, run.exit_code)
 
+
+logger = logging.getLogger(__name__)
 
 LOG_CHUNK_LINES = 200
 login_throttle = LoginThrottle()
@@ -759,8 +762,8 @@ async def console_terminal(websocket: WebSocket) -> None:
         async def run() -> None:
             nonlocal command_task, input_queue
             await send_state("running")
-            write_log(f"$ {display_argv(argv)}\r\n")
             try:
+                write_log(f"$ {display_argv(argv)}\r\n")
                 exit_code = await bridge_pty(argv, input_queue.get, send_and_log)
                 ended_at = utc_now()
                 exit_line = f"\r\n[process exited with code {exit_code}]\r\n"
@@ -776,10 +779,21 @@ async def console_terminal(websocket: WebSocket) -> None:
                 await send_state("idle")
             except asyncio.CancelledError:
                 ended_at = utc_now()
-                write_log("\r\n[process canceled]\r\n")
+                with suppress(OSError):
+                    write_log("\r\n[process canceled]\r\n")
                 with SessionLocal() as db:
                     _cancel_console_run_record(db, run_id, ended_at)
                 raise
+            except Exception as exc:
+                # For example the console log hit a full disk; bridge_pty has stopped the command.
+                logger.exception("Console command %s failed", run_id)
+                ended_at = utc_now()
+                with suppress(OSError):
+                    write_log(f"\r\n[rclone-runner] Console command failed: {exc!r}\r\n")
+                with SessionLocal() as db:
+                    _fail_console_run_record(db, run_id, ended_at)
+                await send_output(f"\r\nError: {exc}\r\nrclone> ")
+                await send_state("idle")
             finally:
                 command_task = None
                 input_queue = None
@@ -1269,10 +1283,20 @@ def _finish_console_run_record(
 
 
 def _cancel_console_run_record(db, run_id: int, ended_at: datetime) -> ConsoleRunRecord | None:
+    return _end_console_run_record(db, run_id, "canceled", ended_at)
+
+
+def _fail_console_run_record(db, run_id: int, ended_at: datetime) -> ConsoleRunRecord | None:
+    return _end_console_run_record(db, run_id, "failed", ended_at)
+
+
+def _end_console_run_record(
+    db, run_id: int, status: str, ended_at: datetime
+) -> ConsoleRunRecord | None:
     record = db.get(ConsoleRunRecord, run_id)
     if record is None:
         return None
-    record.status = "canceled"
+    record.status = status
     record.exit_code = None
     record.ended_at = ended_at
     db.commit()

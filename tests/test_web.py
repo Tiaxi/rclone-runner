@@ -1418,6 +1418,38 @@ async def test_clear_history_keeps_runs_in_progress():
             assert not finished_log.exists()
 
 
+def test_console_marks_command_failed_when_its_output_cannot_be_written(monkeypatch):
+    async def failing_bridge(argv, receive_text, send_text):
+        raise OSError(28, "No space left on device")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        monkeypatch.setattr(main, "SessionLocal", session_factory)
+        monkeypatch.setattr(main, "bridge_pty", failing_bridge)
+        monkeypatch.setattr(
+            main, "_console_log_path", lambda started_at: Path(tmpdir) / "console.log"
+        )
+        client = TestClient(main.app)
+        client.cookies.set("session", _session_cookie({main.SESSION_KEY: True}))
+
+        with client.websocket_connect(
+            "/console/terminal", headers={"origin": "http://testserver"}
+        ) as websocket:
+            assert websocket.receive_json() == {"type": "output", "data": "rclone> "}
+            assert websocket.receive_json() == {"type": "state", "state": "idle"}
+            websocket.send_json({"type": "command", "command": "version"})
+            messages = []
+            while {"type": "state", "state": "idle"} not in messages:
+                messages.append(websocket.receive_json())
+
+        with session_factory() as db:
+            record = db.query(ConsoleRunRecord).one()
+            assert record.status == "failed"
+            assert record.ended_at is not None
+        assert any("No space left" in message.get("data", "") for message in messages)
+        assert "Console command failed" in (Path(tmpdir) / "console.log").read_text()
+
+
 def _session_factory(database_path: Path):
     engine = create_engine(f"sqlite:///{database_path}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
