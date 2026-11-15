@@ -52,6 +52,20 @@
   </div>
 </form>
 
+<section class="settings-section" id="estimates">
+  <h2>Time estimates</h2>
+  {% if speed_saved %}<p class="notice">Saved the expected upload speed.</p>{% endif %}
+  {% if speed_error %}<p class="alert">Enter a speed in MiB/s greater than zero, or leave it empty.</p>{% endif %}
+  <p>Jobs estimate upload times from the speed of their own earlier runs. Until a job has some, it uses this speed. 100 Mbit/s is about 12 MiB/s.</p>
+  <form method="post" action="/settings/estimates" class="inline-form">
+    {{ csrf_field()|safe }}
+    <label>Expected upload speed (MiB/s)
+      <input name="expected_speed" inputmode="decimal" value="{{ '%g'|format(expected_speed) if expected_speed else '' }}" placeholder="for example 50">
+    </label>
+    <button type="submit">Save</button>
+  </form>
+</section>
+
 <section class="settings-section">
   <h2>Maintenance</h2>
   <p>Remove old log files according to the configured retention window.</p>

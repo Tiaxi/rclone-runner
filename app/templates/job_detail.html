@@ -49,18 +49,24 @@
 </div>
 <section class="table-wrap" id="step-sources-table" data-measuring="{{ 'true' if measuring else 'false' }}">
   <table>
-    <thead><tr><th>Step</th><th>Source</th><th>Size</th><th>Files</th><th>Measured</th></tr></thead>
+    <thead><tr><th>Step</th><th>Size</th><th>Measured</th><th>Full upload</th><th>Next sync</th></tr></thead>
     <tbody>
       {% for row in source_rows %}
       {% set measurement = row.measurement %}
       <tr>
-        <td>{{ row.step.name }}</td>
+        <td>
+          <div>{{ row.step.name }}</div>
+          {% if row.source %}<div class="table-subtext source-path"><code>{{ row.source }}</code></div>{% endif %}
+        </td>
         {% if not row.source %}
         <td colspan="4" class="muted">No source to measure for this command.</td>
         {% else %}
-        <td><code>{{ row.source }}</code></td>
-        <td class="numeric">{{ format_bytes(measurement.bytes) if measurement and measurement.bytes is not none else "-" }}</td>
-        <td class="numeric">{{ "{:,}".format(measurement.files) if measurement and measurement.files is not none else "-" }}</td>
+        <td class="numeric">
+          {% if measurement and measurement.bytes is not none %}
+          <div>{{ format_bytes(measurement.bytes) }}</div>
+          <div class="table-subtext">{{ "{:,}".format(measurement.files) }} {{ "file" if measurement.files == 1 else "files" }}</div>
+          {% else %}-{% endif %}
+        </td>
         <td>
           {% if measurement and measurement.status == "running" %}
           <span class="run-status running">Measuring</span>
@@ -73,15 +79,45 @@
           <div class="table-subtext alert-text">Failed: {{ measurement.error }}</div>
           {% endif %}
         </td>
+        <td class="numeric">{{ row.full_estimate or "-" }}</td>
+        <td>
+          {% if row.dry_run %}
+          <div class="numeric">{{ row.next_estimate or "-" }}</div>
+          <div class="table-subtext">{{ "No changes" if not row.dry_run.bytes else format_bytes(row.dry_run.bytes) ~ " to upload" }} in the dry run of {{ local_time(row.dry_run.at) }}</div>
+          {% else %}
+          <span class="muted">Needs a dry run</span>
+          {% endif %}
+        </td>
         {% endif %}
       </tr>
       {% else %}
       <tr><td colspan="5">No steps yet.</td></tr>
       {% endfor %}
     </tbody>
+    {% if source_totals %}
+    <tfoot>
+      <tr>
+        <th>Total</th>
+        <td class="numeric">
+          <div>{{ format_bytes(source_totals.bytes) }}</div>
+          <div class="table-subtext">{{ "{:,}".format(source_totals.files) }} files</div>
+        </td>
+        <td></td>
+        <td class="numeric">{{ source_totals.estimate or "-" }}</td>
+        <td></td>
+      </tr>
+    </tfoot>
+    {% endif %}
   </table>
 </section>
-<p class="field-note">Counts the files each step looks at, with the job's filters, using <code>rclone size</code>. A large folder can take a few minutes.</p>
+<p class="field-note">
+  Sizes count the files each step looks at, with the job's filters, using <code>rclone size</code>; a large folder can take a few minutes.
+  {% if source_speed %}
+  Estimates assume {{ source_speed.label }}, {{ source_speed.explanation }}. Many small files take longer than their size suggests.
+  {% else %}
+  For time estimates, set an expected upload speed in <a href="/settings#estimates">Settings</a>, or run the job a few times.
+  {% endif %}
+</p>
 
 <h2 class="section-heading">Recent job runs</h2>
 <section class="table-wrap">

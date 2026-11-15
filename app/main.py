@@ -36,7 +36,16 @@ from app.core.commands import (
     parse_console_command,
     run_variables,
 )
-from app.core.live_control import RateError, RcError, rate_label
+from app.core.estimates import (
+    bwlimit_bytes_per_second,
+    choose_speed,
+    estimate_seconds,
+    format_estimate,
+    load_expected_speed,
+    observed_speed,
+    save_expected_speed,
+)
+from app.core.live_control import RateError, RcError, configured_rate, rate_label
 from app.core.logs import read_log_append, read_log_chunk
 from app.core.models import utc_now
 from app.core.notifications import (
@@ -341,13 +350,12 @@ def _job_detail_context(job: JobRecord, db) -> dict[str, object]:
         .limit(20)
         .all()
     )
-    return {
+    return _sources_context(job, db) | {
         "job": job,
         "schedule_summary": cron_summary(job.cron),
         "env_lines": env_to_lines(job.env_json),
         "steps_text": _steps_to_text(job.steps),
         "command_previews": _command_previews(job),
-        "source_rows": _source_rows(job, db),
         "job_run_rows": [_history_row("jobs", job_run) for job_run in job_runs],
         "runs": runs,
         "delete_blocked": False,
@@ -371,35 +379,127 @@ async def measure_job_sources(
 
 def _step_size_commands(job: JobRecord) -> list[tuple[JobStepRecord, SizeCommand | None]]:
     """Each step with the rclone size command for its source, or None without one."""
+    return [(step, command) for step, _argv, command in _step_commands(job)]
+
+
+def _step_commands(job: JobRecord):
+    """Each step with its rclone command (None if invalid) and the size command for its
+    source (None without one)."""
     env = run_variables(utc_now(), settings.timezone) | parse_env_lines(env_to_lines(job.env_json))
-    pairs = []
+    rows = []
     for step in sorted(job.steps, key=lambda item: item.position):
         try:
             argv = build_rclone_argv(step.command, job.common_args or "", env)
         except CommandPolicyError:
-            pairs.append((step, None))
+            rows.append((step, None, None))
             continue
-        pairs.append((step, size_command(argv)))
-    return pairs
+        rows.append((step, argv, size_command(argv)))
+    return rows
 
 
-def _source_rows(job: JobRecord, db) -> list[dict[str, object]]:
-    pairs = _step_size_commands(job)
-    keys = [command.key for _step, command in pairs if command is not None]
+def _sources_context(job: JobRecord, db) -> dict[str, object]:
+    steps = _step_commands(job)
+    keys = [command.key for _step, _argv, command in steps if command is not None]
     records = {
         record.key: record
         for record in db.query(SourceMeasurementRecord)
         .filter(SourceMeasurementRecord.key.in_(keys))
         .all()
     }
-    return [
-        {
-            "step": step,
-            "source": command.source if command is not None else None,
-            "measurement": records.get(command.key) if command is not None else None,
+    bwlimit = next(
+        (bwlimit_bytes_per_second(configured_rate(argv)) for _s, argv, _c in steps if argv),
+        None,
+    )
+    speed = choose_speed(observed_speed(_upload_samples(job, db)), load_expected_speed(db), bwlimit)
+    dry_runs = _latest_dry_run_stats(job, db)
+    rows = []
+    total_bytes = total_files = 0
+    all_measured = bool(keys)
+    for step, _argv, command in steps:
+        measurement = records.get(command.key) if command is not None else None
+        measured = measurement is not None and measurement.bytes is not None
+        if command is not None and not measured:
+            all_measured = False
+        if measured:
+            total_bytes += measurement.bytes
+            total_files += measurement.files or 0
+        dry_run = dry_runs.get(step.id)
+        rows.append(
+            {
+                "step": step,
+                "source": command.source if command is not None else None,
+                "measurement": measurement,
+                "full_estimate": format_estimate(estimate_seconds(measurement.bytes, speed))
+                if measured and speed is not None
+                else None,
+                "dry_run": dry_run,
+                "next_estimate": format_estimate(estimate_seconds(dry_run["bytes"], speed))
+                if dry_run is not None and speed is not None
+                else None,
+            }
+        )
+    totals = None
+    if all_measured and len(keys) > 1:
+        totals = {
+            "bytes": total_bytes,
+            "files": total_files,
+            "estimate": format_estimate(estimate_seconds(total_bytes, speed))
+            if speed is not None
+            else None,
         }
-        for step, command in pairs
-    ]
+    return {"source_rows": rows, "source_speed": speed, "source_totals": totals}
+
+
+def _upload_samples(job: JobRecord, db) -> list[tuple[int, float]]:
+    """(bytes, seconds) of the job's recent real step runs, newest first."""
+    step_runs = (
+        db.query(JobStepRunRecord)
+        .join(JobStepRunRecord.job_run)
+        .filter(
+            JobRunRecord.job_id == job.id,
+            ~JobRunRecord.trigger.contains("dry-run"),
+            JobStepRunRecord.status == "success",
+            JobStepRunRecord.ended_at.is_not(None),
+        )
+        .order_by(JobStepRunRecord.started_at.desc())
+        .limit(50)
+        .all()
+    )
+    samples = []
+    for step_run in step_runs:
+        stats = _step_transfer_stats(step_run)
+        if stats is not None:
+            seconds = _duration_seconds(step_run.started_at, step_run.ended_at)
+            samples.append((stats.transferred_bytes, seconds))
+    return samples
+
+
+def _latest_dry_run_stats(job: JobRecord, db) -> dict[int, dict[str, object]]:
+    """What each step's latest successful dry run said it would transfer."""
+    step_runs = (
+        db.query(JobStepRunRecord)
+        .join(JobStepRunRecord.job_run)
+        .filter(
+            JobRunRecord.job_id == job.id,
+            JobRunRecord.trigger.contains("dry-run"),
+            JobStepRunRecord.status == "success",
+            JobStepRunRecord.step_id.is_not(None),
+        )
+        .order_by(JobStepRunRecord.started_at.desc())
+        .limit(200)
+        .all()
+    )
+    latest: dict[int, dict[str, object]] = {}
+    for step_run in step_runs:
+        if step_run.step_id in latest:
+            continue
+        stats = _step_transfer_stats(step_run)
+        latest[step_run.step_id] = {
+            "bytes": stats.transferred_bytes if stats is not None else 0,
+            "files": stats.transferred_files if stats is not None else 0,
+            "at": step_run.started_at,
+        }
+    return latest
 
 
 @app.post("/jobs/{job_id}")
@@ -1007,6 +1107,8 @@ async def settings_page(
     email_saved: int | None = None,
     email_test: str | None = None,
     email_error: str | None = None,
+    speed_saved: int | None = None,
+    speed_error: int | None = None,
 ) -> Response:
     count = _prunable_logs(db)
     return templates.TemplateResponse(
@@ -1022,8 +1124,32 @@ async def settings_page(
             "email_saved": email_saved,
             "email_test": email_test,
             "email_error": email_error,
+            "expected_speed": load_expected_speed(db),
+            "speed_saved": speed_saved,
+            "speed_error": speed_error,
         },
     )
+
+
+@app.post("/settings/estimates")
+async def save_estimate_settings(
+    _: AuthRequired,
+    _csrf: Annotated[None, Depends(require_csrf)],
+    db: DbSession,
+    expected_speed: Annotated[str, Form()] = "",
+) -> Response:
+    value = expected_speed.strip().replace(",", ".")
+    if not value:
+        save_expected_speed(db, None)
+        return RedirectResponse("/settings?speed_saved=1#estimates", status_code=303)
+    try:
+        speed = float(value)
+    except ValueError:
+        speed = -1.0
+    if not (0 < speed < 1_000_000):
+        return RedirectResponse("/settings?speed_error=1#estimates", status_code=303)
+    save_expected_speed(db, speed)
+    return RedirectResponse("/settings?speed_saved=1#estimates", status_code=303)
 
 
 @app.post("/settings/email")
