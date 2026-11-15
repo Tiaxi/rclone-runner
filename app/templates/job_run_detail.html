@@ -25,7 +25,7 @@
       {% if job_run.status == "running" %}
       <div class="run-summary-item wide" id="job-run-progress-item">
         <span class="run-summary-label">Progress</span>
-        <span id="job-run-progress" data-waiting="Not reported yet. rclone reports progress every minute with --verbose (-v).">{{ progress.label if progress else "Not reported yet. rclone reports progress every minute with --verbose (-v)." }}</span>
+        <span id="job-run-progress" data-waiting="Not reported yet. rclone reports progress every minute with --verbose (-v).">{{ progress or "Not reported yet. rclone reports progress every minute with --verbose (-v)." }}</span>
       </div>
       {% endif %}
       <div class="run-summary-item">
@@ -68,6 +68,43 @@
     <a class="button secondary" href="/runs">History</a>
   </div>
 </div>
+
+{% if control %}
+<section class="run-control" id="run-control" aria-label="Bandwidth control">
+  {% if control_error %}
+  <p class="notice" role="alert">{{ control_error }}</p>
+  {% endif %}
+  <div class="run-control-row">
+    <div class="run-control-state">
+      <span class="run-summary-label">Bandwidth</span>
+      <strong id="run-control-label">{{ control.label }}</strong>
+      <span class="table-subtext" id="run-control-source">{% if control.paused %}Throttled to {{ control.pause_label }}; connections stay open{% elif control.source == "run" %}Set for this run{% else %}From the job's arguments{% endif %}</span>
+    </div>
+    <form class="bandwidth-form" method="post" action="/job-runs/{{ job_run.id }}/bandwidth">
+      {{ csrf_field()|safe }}
+      <select name="rate" aria-label="Bandwidth limit">
+        <option value="job"{% if control.limit is none %} selected{% endif %}>Job setting</option>
+        {% set preset_values = bandwidth_presets|map(attribute=0)|list %}
+        {% if control.limit and control.limit not in preset_values %}
+        <option value="{{ control.limit }}" selected>{{ control.limit_label }}</option>
+        {% endif %}
+        {% for value, label in bandwidth_presets %}
+        <option value="{{ value }}"{% if control.limit == value %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+      <input name="custom" placeholder="or custom, e.g. 8M" aria-label="Custom bandwidth limit" autocomplete="off">
+      <button class="secondary" type="submit">Apply</button>
+    </form>
+    <form method="post" action="/job-runs/{{ job_run.id }}/{{ 'resume' if control.paused else 'pause' }}">
+      {{ csrf_field()|safe }}
+      <button type="submit"{% if not control.paused %} class="secondary"{% endif %}>{{ "Resume" if control.paused else "Pause" }}</button>
+    </form>
+  </div>
+  {% if not control.available %}
+  <p class="field-note">This step can't be adjusted while it runs (it sets its own --rc options, or the next step is starting). Changes apply from the next step.</p>
+  {% endif %}
+</section>
+{% endif %}
 
 <h2>Steps</h2>
 <section class="table-wrap">
@@ -211,6 +248,14 @@
       live = state.status === "running";
       if (!live && deleteForm) {
         deleteForm.hidden = false;
+      }
+      if (!live) {
+        document.querySelector("#run-control")?.remove();
+      } else if (state.control) {
+        const label = document.querySelector("#run-control-label");
+        if (label) {
+          label.textContent = state.control.label;
+        }
       }
       if (live) {
         window.setTimeout(pollJobRun, 1000);

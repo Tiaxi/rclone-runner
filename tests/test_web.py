@@ -1644,3 +1644,107 @@ async def test_step_status_allows_delete_only_after_the_whole_job_finishes():
 
             _finish(db, step_run)
             assert (await main.run_status(step_run.id, None, db))["can_delete"] is True
+
+
+class FakeControlRunner:
+    def __init__(self, error: Exception | None = None, paused: bool = False):
+        self.error = error
+        self.calls: list[tuple] = []
+        self.paused = paused
+
+    def control_state(self, job_run_id):
+        return {
+            "available": True,
+            "paused": self.paused,
+            "limit": "8M",
+            "limit_label": "8 MiB/s",
+            "label": "Paused" if self.paused else "8 MiB/s",
+            "source": "run",
+        }
+
+    async def _record(self, *call):
+        self.calls.append(call)
+        if self.error is not None:
+            raise self.error
+
+    def set_bandwidth(self, job_run_id, rate):
+        return self._record("bandwidth", job_run_id, rate)
+
+    def pause(self, job_run_id):
+        return self._record("pause", job_run_id)
+
+    def resume(self, job_run_id):
+        return self._record("resume", job_run_id)
+
+
+async def test_bandwidth_routes_drive_the_runner_and_return_to_the_run(monkeypatch):
+    fake = FakeControlRunner()
+    monkeypatch.setattr(main, "runner", fake)
+
+    responses = [
+        await main.set_job_run_bandwidth(3, None, None, rate="10M", custom=""),
+        await main.set_job_run_bandwidth(3, None, None, rate="job", custom=" 750k "),
+        await main.set_job_run_bandwidth(3, None, None, rate="job", custom=""),
+        await main.pause_job_run(3, None, None),
+        await main.resume_job_run(3, None, None),
+    ]
+
+    assert {response.headers["location"] for response in responses} == {"/job-runs/3"}
+    assert fake.calls == [
+        ("bandwidth", 3, "10M"),
+        ("bandwidth", 3, "750k"),
+        ("bandwidth", 3, None),
+        ("pause", 3),
+        ("resume", 3),
+    ]
+
+
+async def test_bandwidth_route_errors_are_shown_on_the_run_page(monkeypatch):
+    from app.core.live_control import RateError, RcError
+
+    for error, code in (
+        (RateError("bad"), "rate"),
+        (KeyError(3), "ended"),
+        (RcError("down"), "unreachable"),
+    ):
+        monkeypatch.setattr(main, "runner", FakeControlRunner(error))
+        response = await main.pause_job_run(3, None, None)
+        assert response.headers["location"] == f"/job-runs/3?control_error={code}"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            step_run = _create_running_step_run(db, log_path=Path(tmpdir) / "run.log")
+            monkeypatch.setattr(main, "runner", FakeControlRunner(paused=True))
+
+            page = await main.job_run_detail(
+                _request("/job-runs/1"), step_run.job_run_id, None, db, control_error="rate"
+            )
+            html = page.body.decode()
+            status = await main.job_run_status(step_run.job_run_id, None, db)
+
+    assert 'id="run-control"' in html
+    assert "That is not a bandwidth limit" in html
+    assert f'action="/job-runs/{step_run.job_run_id}/resume"' in html
+    assert '<option value="8M" selected>8 MiB/s</option>' in html
+    assert status["control"]["paused"] is True
+    assert status["progress"] == "Paused"
+
+
+async def test_paused_progress_drops_speed_and_eta(monkeypatch):
+    monkeypatch.setattr(main, "runner", FakeControlRunner(paused=True))
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        log_path = Path(tmpdir) / "run.log"
+        log_path.write_text(
+            "Transferred:   \t  412.000 GiB / 2.000 TiB, 20%, 57.000 MiB/s, ETA 7h50m0s\n",
+            encoding="utf-8",
+        )
+        with session_factory() as db:
+            step_run = _create_running_step_run(db, log_path=log_path)
+
+            payload = await main.job_run_status(step_run.job_run_id, None, db)
+            jobs_page = await main.jobs(_request("/jobs"), None, db)
+
+    assert payload["progress"] == "Paused · 412.000 GiB / 2.000 TiB (20%)"
+    assert jobs_page.context["running_now"][0]["progress"] == payload["progress"]

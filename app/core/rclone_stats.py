@@ -121,10 +121,13 @@ class LiveProgress:
     eta: str | None
 
     @property
+    def amount_label(self) -> str:
+        amount = f"{self.transferred} / {self.total}"
+        return f"{amount} ({self.percent})" if self.percent else amount
+
+    @property
     def label(self) -> str:
-        parts = [f"{self.transferred} / {self.total}"]
-        if self.percent:
-            parts[0] += f" ({self.percent})"
+        parts = [self.amount_label]
         parts.append(self.speed)
         if self.eta:
             parts.append(f"ETA {self.eta}")

@@ -31,6 +31,7 @@ from app.auth import (
 )
 from app.config import runtime_warnings, settings, startup_permission_error
 from app.core.commands import CommandPolicyError, build_rclone_argv, parse_console_command
+from app.core.live_control import RateError, RcError, rate_label
 from app.core.logs import read_log_append, read_log_chunk
 from app.core.models import utc_now
 from app.core.notifications import (
@@ -104,6 +105,18 @@ logger = logging.getLogger(__name__)
 LOG_CHUNK_LINES = 200
 login_throttle = LoginThrottle()
 HISTORY_PAGE_SIZE = 25
+BANDWIDTH_PRESETS = [
+    ("off", "Unlimited"),
+    *((rate, rate_label(rate)) for rate in ("100M", "50M", "20M", "10M", "5M", "2M", "1M", "512K")),
+]
+CONTROL_ERRORS = {
+    "rate": "That is not a bandwidth limit. Use a number with K, M or G, such as 750K or 8M.",
+    "ended": "The run has finished, so there is nothing to adjust.",
+    "unreachable": (
+        "The running rclone did not respond, so the change applies from the next step. "
+        "Details are in the app log."
+    ),
+}
 HISTORY_VIEWS = ("jobs", "steps", "console")
 
 
@@ -522,7 +535,11 @@ async def runs(
 
 @app.get("/job-runs/{job_run_id}", response_class=HTMLResponse)
 async def job_run_detail(
-    request: Request, job_run_id: int, _: AuthRequired, db: DbSession
+    request: Request,
+    job_run_id: int,
+    _: AuthRequired,
+    db: DbSession,
+    control_error: str | None = None,
 ) -> Response:
     job_run = db.get(JobRunRecord, job_run_id)
     if job_run is None:
@@ -533,9 +550,12 @@ async def job_run_detail(
         "step_rows": _job_run_step_rows(job_run, db),
         "run_stats": _job_run_stats(job_run),
         "active_step_run": active_step_run,
-        "progress": _live_progress(active_step_run),
+        "progress": _progress_text(active_step_run),
         "job_run_status_url": f"/job-runs/{job_run.id}/status",
         "job_run_cancel_url": f"/job-runs/{job_run.id}/cancel",
+        "control": runner.control_state(job_run.id) if job_run.status == "running" else None,
+        "control_error": CONTROL_ERRORS.get(control_error or ""),
+        "bandwidth_presets": BANDWIDTH_PRESETS,
     }
     if active_step_run is not None:
         log_chunk = read_log_chunk(Path(active_step_run.log_path), limit=LOG_CHUNK_LINES)
@@ -573,6 +593,51 @@ async def cancel_job_run(
     return RedirectResponse(f"/job-runs/{job_run_id}", status_code=303)
 
 
+@app.post("/job-runs/{job_run_id}/bandwidth")
+async def set_job_run_bandwidth(
+    job_run_id: int,
+    _: AuthRequired,
+    _csrf: Annotated[None, Depends(require_csrf)],
+    rate: Annotated[str, Form()] = "job",
+    custom: Annotated[str, Form()] = "",
+) -> Response:
+    choice = custom.strip() or rate
+    return await _control_job_run(
+        job_run_id, runner.set_bandwidth(job_run_id, None if choice == "job" else choice)
+    )
+
+
+@app.post("/job-runs/{job_run_id}/pause")
+async def pause_job_run(
+    job_run_id: int, _: AuthRequired, _csrf: Annotated[None, Depends(require_csrf)]
+) -> Response:
+    return await _control_job_run(job_run_id, runner.pause(job_run_id))
+
+
+@app.post("/job-runs/{job_run_id}/resume")
+async def resume_job_run(
+    job_run_id: int, _: AuthRequired, _csrf: Annotated[None, Depends(require_csrf)]
+) -> Response:
+    return await _control_job_run(job_run_id, runner.resume(job_run_id))
+
+
+async def _control_job_run(job_run_id: int, action) -> Response:
+    error = None
+    try:
+        await action
+    except RateError:
+        error = "rate"
+    except KeyError:
+        error = "ended"
+    except RcError:
+        logger.warning("Live control of job run %s failed", job_run_id, exc_info=True)
+        error = "unreachable"
+    url = f"/job-runs/{job_run_id}"
+    if error is not None:
+        url += f"?control_error={error}"
+    return RedirectResponse(url, status_code=303)
+
+
 @app.post("/job-runs/{job_run_id}/delete")
 async def delete_job_run(
     job_run_id: int,
@@ -602,7 +667,7 @@ async def run_detail(request: Request, run_id: int, _: AuthRequired, db: DbSessi
             "run": run,
             "argv": json.loads(run.argv_json),
             "step_stats": _step_stats_display_for_run(run),
-            "progress": _live_progress(run),
+            "progress": _progress_text(run),
             "job_run_step_count": len(run.job_run.step_runs),
             "log_chunk": log_chunk,
             "log_chunk_url": f"/runs/{run.id}/log/chunk",
@@ -1396,7 +1461,7 @@ def _running_now_rows(
                 "dry_run": "dry-run" in job_run.trigger,
                 "started_at": job_run.started_at,
                 "elapsed_seconds": _duration_seconds(job_run.started_at, now),
-                "progress": _progress_label(_live_progress(active_step)),
+                "progress": _progress_text(active_step),
                 "url": f"/job-runs/{job_run.id}",
             }
         )
@@ -1431,7 +1496,8 @@ def _job_run_status_payload(job_run: JobRunRecord, db) -> dict[str, object]:
         "elapsed_seconds": elapsed_seconds,
         "can_cancel": job_run.status == "running",
         "active_step_run_id": active_step_run.id if active_step_run is not None else None,
-        "progress": _progress_label(_live_progress(active_step_run)),
+        "progress": _progress_text(active_step_run),
+        "control": runner.control_state(job_run.id) if job_run.status == "running" else None,
         "stats": {
             "transferred_data": run_stats.transferred_data_label,
             "transferred_files": run_stats.transferred_files_label,
@@ -1520,6 +1586,19 @@ def _progress_label(progress: LiveProgress | None) -> str | None:
     return progress.label if progress is not None else None
 
 
+def _progress_text(step_run: JobStepRunRecord | None) -> str | None:
+    """Live progress of a running step, marked when its run is paused."""
+    progress = _live_progress(step_run)
+    if step_run is None or step_run.status != "running":
+        return _progress_label(progress)
+    control = runner.control_state(step_run.job_run_id)
+    if control is None or not control["paused"]:
+        return _progress_label(progress)
+    # rclone's speed is an average and its ETA assumes it continues, so both mislead while
+    # paused; show only how far the transfer got.
+    return f"Paused · {progress.amount_label}" if progress is not None else "Paused"
+
+
 def _unstarted_step_status(job_run: JobRunRecord) -> str:
     if job_run.status == "canceled":
         return "canceled"
@@ -1543,7 +1622,7 @@ def _run_status_payload(run: JobStepRunRecord) -> dict[str, object]:
         "can_cancel": run.status == "running",
         # Deleting is refused while the step or the job around it is still running.
         "can_delete": "running" not in {run.status, run.job_run.status},
-        "progress": _progress_label(_live_progress(run)),
+        "progress": _progress_text(run),
         "stats_label": stats.label,
         "stats_available": stats.available,
     }

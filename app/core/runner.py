@@ -10,6 +10,15 @@ from pathlib import Path
 
 from app.core.aio import run_to_completion
 from app.core.commands import CommandPolicyError, build_rclone_argv, child_environment
+from app.core.live_control import (
+    RcError,
+    RunControl,
+    configured_rate,
+    normalize_rate,
+    pause_rate,
+    set_rclone_bandwidth,
+    supports_live_control,
+)
 from app.core.models import Job, JobRunResult, JobStep, StepRunResult, utc_now
 from app.core.rclone_stats import STATS_UNAVAILABLE_JSON, stats_from_log, stats_to_json
 from app.db import ConsoleRunRecord, JobRunRecord, JobStepRunRecord
@@ -25,6 +34,8 @@ NotificationCallback = Callable[[int], Awaitable[None]]
 
 
 OUTPUT_READ_SIZE = 64 * 1024
+# How long a live control request waits for rclone to confirm before returning anyway.
+APPLY_WAIT_SECONDS = 3.0
 TERMINATE_TIMEOUT_SECONDS = 5
 
 
@@ -139,13 +150,18 @@ class LiveJobRunner:
         session_factory,
         executor: Executor = subprocess_executor,
         notification_callback: NotificationCallback | None = None,
+        control_dir: Path | None = None,
     ) -> None:
         self._log_root = log_root
         self._session_factory = session_factory
         self._executor = executor
         self._notification_callback = notification_callback
+        # Where steps' remote control sockets go; None turns live control off. It must be a
+        # private directory: anyone who can open a socket there controls that rclone.
+        self._control_dir = control_dir
         self._active_job_ids: set[int] = set()
         self._tasks: dict[int, asyncio.Task[None]] = {}
+        self._controls: dict[int, RunControl] = {}
         self._notification_tasks: set[asyncio.Task[None]] = set()
 
     def start_job(
@@ -220,6 +236,8 @@ class LiveJobRunner:
             self._active_job_ids.discard(job.id)
             raise
         self._tasks[job_run_id] = task
+        if self._control_dir is not None:
+            self._controls[job_run_id] = RunControl()
         task.add_done_callback(lambda completed: self._task_done(job.id, job_run_id, completed))
         return first_step_run
 
@@ -321,6 +339,53 @@ class LiveJobRunner:
             task.cancel()
         return True
 
+    def control_state(self, job_run_id: int) -> dict[str, object] | None:
+        """Live control state of a running job run, or None when it has none."""
+        control = self._controls.get(job_run_id)
+        return control.state() if control is not None else None
+
+    async def set_bandwidth(self, job_run_id: int, rate: str | None) -> None:
+        """Set the run's bandwidth limit; None goes back to the job's own setting.
+
+        Raises RateError for a limit rclone would not accept, KeyError when the run has no
+        live control, and RcError when the running rclone could not be reached. The choice
+        is kept either way and applies to the run's later steps.
+        """
+        control = self._controls[job_run_id]
+        control.limit = normalize_rate(rate) if rate is not None else None
+        await self._apply(control)
+
+    async def pause(self, job_run_id: int) -> None:
+        control = self._controls[job_run_id]
+        control.paused = True
+        await self._apply(control)
+
+    async def resume(self, job_run_id: int) -> None:
+        control = self._controls[job_run_id]
+        control.paused = False
+        await self._apply(control)
+
+    async def _apply(self, control: RunControl) -> None:
+        socket_path = control.socket_path
+        if socket_path is None:
+            # Between steps, or a step that cannot be controlled: the next step starts with
+            # the new setting.
+            return
+        task = control.apply_task
+        if task is None or task.done():
+            task = asyncio.create_task(_send_latest_rate(control, socket_path))
+            task.add_done_callback(_log_apply_failure)
+            control.apply_task = task
+        try:
+            # rclone may take a while to answer (see live_control); it keeps the change.
+            await asyncio.wait_for(asyncio.shield(task), APPLY_WAIT_SECONDS)
+        except TimeoutError:
+            return
+        except (OSError, RcError) as exc:
+            if control.socket_path != socket_path:
+                return  # The step ended meanwhile; the next one starts with the setting.
+            raise RcError(f"could not reach the running rclone: {exc}") from exc
+
     async def wait_for_job_run(self, job_run_id: int) -> None:
         task = self._tasks.get(job_run_id)
         if task is None:
@@ -344,9 +409,7 @@ class LiveJobRunner:
                 else:
                     step_run = self._create_step_run(job_run_id, job, step, argv, run_stamp)
 
-                exit_code = await self._executor(
-                    json.loads(step_run.argv_json), job.env, Path(step_run.log_path)
-                )
+                exit_code = await self._run_step(job_run_id, step_run, job.env)
                 step_status = "success" if exit_code == 0 else "failed"
                 self._finish_step_run(step_run.id, step_status, exit_code)
                 if exit_code != 0:
@@ -370,6 +433,28 @@ class LiveJobRunner:
             if self._notification_callback is not None:
                 with suppress(Exception):
                     await self._notification_callback(job_run_id)
+
+    async def _run_step(
+        self, job_run_id: int, step_run: JobStepRunRecord, env: dict[str, str]
+    ) -> int:
+        argv = json.loads(step_run.argv_json)
+        log_path = Path(step_run.log_path)
+        control = self._controls.get(job_run_id)
+        if control is None or self._control_dir is None or not supports_live_control(argv):
+            return await self._executor(argv, env, log_path)
+        socket_path = self._control_dir / f"step-{step_run.id}.sock"
+        # rclone refuses to start when a socket from a killed process is still there.
+        socket_path.unlink(missing_ok=True)
+        control.configured = configured_rate(argv)
+        control.pause_rate = pause_rate(argv)
+        # The stored argv stays the job's own command, so it can be copied and rerun as is.
+        spawn_argv = [*argv, *control.spawn_args(socket_path)]
+        control.socket_path = socket_path
+        try:
+            return await self._executor(spawn_argv, env, log_path)
+        finally:
+            control.socket_path = None
+            socket_path.unlink(missing_ok=True)
 
     def _get_first_step_run(self, job_run_id: int) -> JobStepRunRecord:
         with self._session_factory() as db:
@@ -450,8 +535,25 @@ class LiveJobRunner:
     def _task_done(self, job_id: int, job_run_id: int, task: asyncio.Task[None]) -> None:
         self._active_job_ids.discard(job_id)
         self._tasks.pop(job_run_id, None)
+        self._controls.pop(job_run_id, None)
         if not task.cancelled():
             task.exception()
+
+
+async def _send_latest_rate(control: RunControl, socket_path: Path) -> None:
+    """Send limit changes to one rclone until it has the latest, one call at a time."""
+    sent = None
+    while control.socket_path == socket_path and (rate := control.target_rate()) != sent:
+        await set_rclone_bandwidth(socket_path, rate)
+        sent = rate
+
+
+def _log_apply_failure(task: asyncio.Task[None]) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("Could not change a running rclone's bandwidth limit: %s", exc)
 
 
 def _detached_copy(step_run: JobStepRunRecord) -> JobStepRunRecord:

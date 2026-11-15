@@ -20,7 +20,7 @@
       {% if run.status == "running" %}
       <div class="run-summary-item wide" id="run-progress-item">
         <span class="run-summary-label">Progress</span>
-        <span id="run-progress" data-waiting="Not reported yet. rclone reports progress every minute with --verbose (-v).">{{ progress.label if progress else "Not reported yet. rclone reports progress every minute with --verbose (-v)." }}</span>
+        <span id="run-progress" data-waiting="Not reported yet. rclone reports progress every minute with --verbose (-v).">{{ progress or "Not reported yet. rclone reports progress every minute with --verbose (-v)." }}</span>
       </div>
       {% endif %}
       <div class="run-summary-item">
