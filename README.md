@@ -3,13 +3,13 @@
 Dockerized rclone scheduler and web UI for TrueNAS SCALE.
 
 Rclone Runner is intentionally CLI-native. It does not try to wrap every rclone feature in a GUI.
-Use the restricted web console for direct `rclone` access, configure remotes with `rclone config`,
+Use the web console for direct `rclone` access, configure remotes with `rclone config`,
 then define scheduled jobs from raw rclone subcommands, shared arguments, and environment variables.
 
 ## Features
 
 - Single admin login.
-- Restricted web terminal for `rclone` commands only.
+- Web terminal for `rclone` commands.
 - Jobs with cron schedules or `Never` schedules.
 - Sequential job steps written as raw rclone subcommands.
 - Job-level common rclone arguments and environment variables.
@@ -83,7 +83,8 @@ Important variables:
 
 Email notifications are configured from the Settings page. The app supports generic SMTP settings,
 including Gmail with `smtp.gmail.com`, port `587`, STARTTLS, your Gmail address as the username,
-and a Gmail app password as the SMTP password.
+and a Gmail app password as the SMTP password. Servers that need implicit TLS (usually port `465`)
+are supported with the "Use implicit TLS" option. Server certificates are verified in both modes.
 
 The SMTP password is stored in the SQLite database and is write-only in the UI: leaving the password
 field blank keeps the saved value. You can choose which job outcomes send mail: success, failure,
@@ -187,8 +188,24 @@ BW_LIMIT=8M
 
 ## Security Notes
 
-- The web console accepts only commands that resolve to `rclone ...`.
-- Do not expose the app publicly without HTTPS and a strong password.
+Treat access to the app as root-equivalent access to the container and to every configured remote:
+
+- **The console and job steps are not a sandbox.** They only accept commands that start with
+  `rclone`, but rclone itself can run other programs (for example `--password-command` or
+  `--sftp-ssh`), start network services (`serve`, `rcd`), and print every credential
+  (`rclone config show`).
+- **Whoever can log in can read your remotes' credentials**: OAuth tokens, crypt passwords and SSH
+  keys in `rclone.conf` and `/config/rclone`. The container runs as an unprivileged user (see
+  [Container user](#container-user)), which limits damage to the host, not to the remotes.
+- **Use a strong admin password** and don't expose the app publicly. Put it behind HTTPS or a
+  trusted reverse proxy before any remote access. After 10 failed logins from one address within
+  15 minutes, further attempts are refused until the window passes. Behind a proxy that does not
+  forward client addresses, all clients share that limit.
+- **The console only accepts connections from its own pages.** If you use a reverse proxy, it must
+  pass the original `Host`, or set `X-Forwarded-Host`.
+- **The app's own settings stay out of commands.** `${VAR}` in steps and common args expands job
+  environment variables and container variables, but not the app's `RCLONE_RUNNER_*` settings, and
+  rclone does not inherit them.
 - Do not commit `.env`, `data/`, logs, `rclone.conf`, or generated database files.
 - Be careful with `rclone config show`; it can display tokens and secrets in logs.
 
