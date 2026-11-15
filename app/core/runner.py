@@ -2,16 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 
-from app.core.commands import build_rclone_argv
+from app.core.commands import CommandPolicyError, build_rclone_argv
 from app.core.models import Job, JobRunResult, JobStep, StepRunResult, utc_now
 from app.core.rclone_stats import stats_from_log, stats_to_json
-from app.db import JobRunRecord, JobStepRunRecord
+from app.db import ConsoleRunRecord, JobRunRecord, JobStepRunRecord
+
+logger = logging.getLogger(__name__)
+
+INTERRUPTED_LOG_NOTE = (
+    "\n[rclone-runner] Interrupted: the app restarted while this step was running.\n"
+)
 
 Executor = Callable[[list[str], dict[str, str], Path], Awaitable[int]]
 NotificationCallback = Callable[[int], Awaitable[None]]
@@ -122,6 +129,7 @@ class LiveJobRunner:
         self._notification_callback = notification_callback
         self._active_job_ids: set[int] = set()
         self._tasks: dict[int, asyncio.Task[None]] = {}
+        self._notification_tasks: set[asyncio.Task[None]] = set()
 
     def start_job(
         self, job: Job, trigger: str, dry_run: bool = False, step_id: int | None = None
@@ -144,69 +152,149 @@ class LiveJobRunner:
                 db.commit()
             return None
 
-        self._active_job_ids.add(job.id)
         run_stamp = _stamp(now)
-        first_step = selected_steps[0]
-        first_argv = build_rclone_argv(first_step.command, _common_args(job, dry_run), job.env)
-        first_log_path = self._log_root / f"job-{job.id}" / f"{run_stamp}-step-{first_step.id}.log"
-        first_log_path.parent.mkdir(parents=True, exist_ok=True)
-        first_log_path.touch(exist_ok=True)
+        common_args = _common_args(job, dry_run)
+        planned_steps: list[tuple[JobStep, list[str]]] = []
+        for step in selected_steps:
+            try:
+                planned_steps.append((step, build_rclone_argv(step.command, common_args, job.env)))
+            except CommandPolicyError as exc:
+                return self._record_invalid_run(job, trigger, step, run_stamp, exc)
 
+        self._active_job_ids.add(job.id)
+        try:
+            first_step, first_argv = planned_steps[0]
+            first_log_path = self._step_log_path(job, first_step, run_stamp)
+            first_log_path.parent.mkdir(parents=True, exist_ok=True)
+            first_log_path.touch(exist_ok=True)
+
+            with self._session_factory() as db:
+                job_run = JobRunRecord(
+                    job_id=job.id,
+                    job_name=job.name,
+                    trigger=trigger,
+                    status="running",
+                    started_at=now,
+                    ended_at=None,
+                )
+                db.add(job_run)
+                db.flush()
+                step_run = JobStepRunRecord(
+                    job_run_id=job_run.id,
+                    step_id=first_step.id,
+                    step_name=first_step.name,
+                    argv_json=json.dumps(first_argv),
+                    status="running",
+                    exit_code=None,
+                    log_path=str(first_log_path),
+                    started_at=now,
+                    ended_at=None,
+                )
+                db.add(step_run)
+                db.commit()
+                db.refresh(step_run)
+                job_run_id = job_run.id
+                first_step_run = _detached_copy(step_run)
+
+            task = asyncio.create_task(
+                self._run_job_background(job_run_id, job, planned_steps, run_stamp)
+            )
+        except BaseException:
+            self._active_job_ids.discard(job.id)
+            raise
+        self._tasks[job_run_id] = task
+        task.add_done_callback(lambda completed: self._task_done(job.id, job_run_id, completed))
+        return first_step_run
+
+    def recover_interrupted_runs(self) -> list[int]:
+        """Close out runs left "running" by a previous process and notify about them.
+
+        Only call this at startup, before any job has been started by this process.
+        """
+        now = utc_now()
+        with self._session_factory() as db:
+            job_runs = db.query(JobRunRecord).filter_by(status="running").all()
+            job_run_ids = [job_run.id for job_run in job_runs]
+            for job_run in job_runs:
+                job_run.status = "failed"
+                job_run.ended_at = now
+            for step_run in db.query(JobStepRunRecord).filter_by(status="running").all():
+                _append_log(Path(step_run.log_path), INTERRUPTED_LOG_NOTE)
+                step_run.status = "failed"
+                step_run.exit_code = None
+                step_run.ended_at = now
+            for console_run in db.query(ConsoleRunRecord).filter_by(status="running").all():
+                console_run.status = "canceled"
+                console_run.exit_code = None
+                console_run.ended_at = now
+            db.commit()
+        if job_run_ids:
+            logger.warning("Marked interrupted job runs as failed: %s", job_run_ids)
+        for job_run_id in job_run_ids:
+            self._notify_soon(job_run_id)
+        return job_run_ids
+
+    def _record_invalid_run(
+        self,
+        job: Job,
+        trigger: str,
+        step: JobStep,
+        run_stamp: str,
+        error: CommandPolicyError,
+    ) -> JobStepRunRecord:
+        now = utc_now()
+        log_path = self._step_log_path(job, step, run_stamp)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            f"[rclone-runner] Could not start step {step.name!r}: {error}\n"
+            "[rclone-runner] No steps were run.\n",
+            encoding="utf-8",
+        )
         with self._session_factory() as db:
             job_run = JobRunRecord(
                 job_id=job.id,
                 job_name=job.name,
                 trigger=trigger,
-                status="running",
+                status="failed",
                 started_at=now,
-                ended_at=None,
+                ended_at=now,
             )
             db.add(job_run)
             db.flush()
             step_run = JobStepRunRecord(
                 job_run_id=job_run.id,
-                step_id=first_step.id,
-                step_name=first_step.name,
-                argv_json=json.dumps(first_argv),
-                status="running",
+                step_id=step.id,
+                step_name=step.name,
+                argv_json=json.dumps([]),
+                status="failed",
                 exit_code=None,
-                log_path=str(first_log_path),
+                log_path=str(log_path),
                 started_at=now,
-                ended_at=None,
+                ended_at=now,
             )
             db.add(step_run)
             db.commit()
             db.refresh(step_run)
             job_run_id = job_run.id
-            step_run_id = step_run.id
-            step_run_job_run_id = step_run.job_run_id
-            step_run_step_id = step_run.step_id
-            step_run_step_name = step_run.step_name
-            step_run_argv_json = step_run.argv_json
-            step_run_status = step_run.status
-            step_run_exit_code = step_run.exit_code
-            step_run_log_path = step_run.log_path
-            step_run_started_at = step_run.started_at
-            step_run_ended_at = step_run.ended_at
-            db.expunge(step_run)
+            result = _detached_copy(step_run)
+        self._notify_soon(job_run_id)
+        return result
 
-        task = asyncio.create_task(
-            self._run_job_background(job_run_id, job, dry_run, selected_steps, run_stamp)
-        )
-        self._tasks[job_run_id] = task
-        task.add_done_callback(lambda completed: self._task_done(job.id, job_run_id, completed))
-        return JobStepRunRecord(
-            id=step_run_id,
-            job_run_id=step_run_job_run_id,
-            step_id=step_run_step_id,
-            step_name=step_run_step_name,
-            argv_json=step_run_argv_json,
-            status=step_run_status,
-            exit_code=step_run_exit_code,
-            log_path=step_run_log_path,
-            started_at=step_run_started_at,
-            ended_at=step_run_ended_at,
-        )
+    def _notify_soon(self, job_run_id: int) -> None:
+        if self._notification_callback is None:
+            return
+        callback = self._notification_callback
+
+        async def notify() -> None:
+            with suppress(Exception):
+                await callback(job_run_id)
+
+        task = asyncio.create_task(notify())
+        self._notification_tasks.add(task)
+        task.add_done_callback(self._notification_tasks.discard)
+
+    def _step_log_path(self, job: Job, step: JobStep, run_stamp: str) -> Path:
+        return self._log_root / f"job-{job.id}" / f"{run_stamp}-step-{step.id}.log"
 
     def cancel_job_run(self, job_run_id: int) -> bool:
         task = self._tasks.get(job_run_id)
@@ -226,18 +314,17 @@ class LiveJobRunner:
         self,
         job_run_id: int,
         job: Job,
-        dry_run: bool,
-        selected_steps: list[JobStep],
+        planned_steps: list[tuple[JobStep, list[str]]],
         run_stamp: str,
     ) -> None:
         job_status = "success"
         step_run: JobStepRunRecord | None = None
         try:
-            for index, step in enumerate(selected_steps):
+            for index, (step, argv) in enumerate(planned_steps):
                 if index == 0:
                     step_run = self._get_first_step_run(job_run_id)
                 else:
-                    step_run = self._create_step_run(job_run_id, job, step, dry_run, run_stamp)
+                    step_run = self._create_step_run(job_run_id, job, step, argv, run_stamp)
 
                 exit_code = await self._executor(
                     json.loads(step_run.argv_json), job.env, Path(step_run.log_path)
@@ -251,9 +338,15 @@ class LiveJobRunner:
             job_status = "canceled"
             self._cancel_running_step(job_run_id)
             raise
-        except Exception:
+        except Exception as exc:
             job_status = "failed"
+            logger.exception("Job run %s failed unexpectedly", job_run_id)
             if step_run is not None:
+                with suppress(Exception):
+                    _append_log(
+                        Path(step_run.log_path),
+                        f"\n[rclone-runner] Step failed to run: {exc!r}\n",
+                    )
                 self._finish_step_run(step_run.id, "failed", None)
         finally:
             self._finish_job_run(job_run_id, job_status)
@@ -275,11 +368,10 @@ class LiveJobRunner:
             return step_run
 
     def _create_step_run(
-        self, job_run_id: int, job: Job, step: JobStep, dry_run: bool, run_stamp: str
+        self, job_run_id: int, job: Job, step: JobStep, argv: list[str], run_stamp: str
     ) -> JobStepRunRecord:
         now = utc_now()
-        argv = build_rclone_argv(step.command, _common_args(job, dry_run), job.env)
-        log_path = self._log_root / f"job-{job.id}" / f"{run_stamp}-step-{step.id}.log"
+        log_path = self._step_log_path(job, step, run_stamp)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.touch(exist_ok=True)
         with self._session_factory() as db:
@@ -341,6 +433,27 @@ class LiveJobRunner:
         self._tasks.pop(job_run_id, None)
         if not task.cancelled():
             task.exception()
+
+
+def _detached_copy(step_run: JobStepRunRecord) -> JobStepRunRecord:
+    return JobStepRunRecord(
+        id=step_run.id,
+        job_run_id=step_run.job_run_id,
+        step_id=step_run.step_id,
+        step_name=step_run.step_name,
+        argv_json=step_run.argv_json,
+        status=step_run.status,
+        exit_code=step_run.exit_code,
+        log_path=step_run.log_path,
+        started_at=step_run.started_at,
+        ended_at=step_run.ended_at,
+    )
+
+
+def _append_log(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as log_file:
+        log_file.write(text)
 
 
 def _stamp(value: datetime) -> str:

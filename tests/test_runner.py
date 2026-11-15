@@ -6,9 +6,9 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.core.models import Job, JobStep
+from app.core.models import Job, JobStep, utc_now
 from app.core.runner import JobRunner, LiveJobRunner
-from app.db import Base, JobRunRecord, JobStepRunRecord
+from app.db import Base, ConsoleRunRecord, JobRunRecord, JobStepRunRecord
 from app.main import run_mode_label
 
 
@@ -382,6 +382,194 @@ async def test_live_runner_notification_failure_does_not_change_job_status():
         with session_factory() as db:
             job_run = db.get(JobRunRecord, first_step.job_run_id)
             assert job_run.status == "success"
+
+
+async def _drain_notifications():
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_live_runner_records_invalid_command_and_does_not_block_later_runs():
+    calls = []
+    notified = []
+
+    async def executor(argv, env, log_path):
+        calls.append(argv)
+        return 0
+
+    async def notification_callback(job_run_id):
+        notified.append(job_run_id)
+
+    job = Job(
+        id=42,
+        name="backup",
+        common_args="--bwlimit ${BW_LIMIT}",
+        env={},
+        steps=[JobStep(id=1, name="one", command="lsd secret:")],
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        runner = LiveJobRunner(
+            Path(tmpdir),
+            session_factory=session_factory,
+            executor=executor,
+            notification_callback=notification_callback,
+        )
+
+        failed_step = runner.start_job(job, trigger="schedule")
+        await _drain_notifications()
+
+        assert failed_step is not None
+        assert failed_step.status == "failed"
+        assert "missing environment variable: BW_LIMIT" in Path(failed_step.log_path).read_text()
+        with session_factory() as db:
+            job_run = db.get(JobRunRecord, failed_step.job_run_id)
+            assert job_run.status == "failed"
+            assert job_run.ended_at is not None
+        assert notified == [failed_step.job_run_id]
+        assert calls == []
+
+        job.env = {"BW_LIMIT": "8M"}
+        next_step = runner.start_job(job, trigger="schedule")
+
+        assert next_step is not None
+        assert next_step.status == "running"
+        await runner.wait_for_job_run(next_step.job_run_id)
+        assert calls == [["rclone", "lsd", "--bwlimit", "8M", "secret:"]]
+
+
+@pytest.mark.asyncio
+async def test_live_runner_checks_every_step_before_running_any():
+    calls = []
+
+    async def executor(argv, env, log_path):
+        calls.append(argv)
+        return 0
+
+    job = Job(
+        id=42,
+        name="backup",
+        common_args="",
+        env={},
+        steps=[
+            JobStep(id=1, name="first", command="lsd secret:", position=1),
+            JobStep(id=2, name="second", command="lsd ${MISSING}:", position=2),
+        ],
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        runner = LiveJobRunner(Path(tmpdir), session_factory=session_factory, executor=executor)
+
+        failed_step = runner.start_job(job, trigger="manual")
+
+        assert failed_step is not None
+        assert failed_step.step_name == "second"
+        assert failed_step.status == "failed"
+        assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_live_runner_writes_unexpected_executor_errors_to_step_log():
+    async def executor(argv, env, log_path):
+        raise FileNotFoundError("rclone")
+
+    job = Job(
+        id=42,
+        name="backup",
+        common_args="",
+        env={},
+        steps=[JobStep(id=1, name="one", command="lsd secret:")],
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        runner = LiveJobRunner(Path(tmpdir), session_factory=session_factory, executor=executor)
+        first_step = runner.start_job(job, trigger="manual")
+        await runner.wait_for_job_run(first_step.job_run_id)
+
+        assert "FileNotFoundError('rclone')" in Path(first_step.log_path).read_text()
+
+
+@pytest.mark.asyncio
+async def test_recover_interrupted_runs_closes_stale_runs_and_notifies():
+    notified = []
+
+    async def notification_callback(job_run_id):
+        notified.append(job_run_id)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        log_path = Path(tmpdir) / "step.log"
+        log_path.write_text("Transferred: 1 / 10\n", encoding="utf-8")
+        with session_factory() as db:
+            job_run = JobRunRecord(
+                job_id=1,
+                job_name="backup",
+                trigger="schedule",
+                status="running",
+                started_at=utc_now(),
+                ended_at=None,
+            )
+            finished_run = JobRunRecord(
+                job_id=1,
+                job_name="backup",
+                trigger="schedule",
+                status="success",
+                started_at=utc_now(),
+                ended_at=utc_now(),
+            )
+            db.add_all([job_run, finished_run])
+            db.flush()
+            db.add(
+                JobStepRunRecord(
+                    job_run_id=job_run.id,
+                    step_id=1,
+                    step_name="one",
+                    argv_json="[]",
+                    status="running",
+                    exit_code=None,
+                    log_path=str(log_path),
+                    started_at=job_run.started_at,
+                    ended_at=None,
+                )
+            )
+            db.add(
+                ConsoleRunRecord(
+                    status="running",
+                    command="config",
+                    argv_json="[]",
+                    exit_code=None,
+                    log_path=str(Path(tmpdir) / "console.log"),
+                    started_at=utc_now(),
+                    ended_at=None,
+                )
+            )
+            db.commit()
+            stale_id = job_run.id
+            finished_id = finished_run.id
+
+        runner = LiveJobRunner(
+            Path(tmpdir),
+            session_factory=session_factory,
+            notification_callback=notification_callback,
+        )
+        recovered = runner.recover_interrupted_runs()
+        await _drain_notifications()
+
+        assert recovered == [stale_id]
+        assert notified == [stale_id]
+        with session_factory() as db:
+            stale = db.get(JobRunRecord, stale_id)
+            assert stale.status == "failed"
+            assert stale.ended_at is not None
+            assert stale.step_runs[0].status == "failed"
+            assert stale.step_runs[0].ended_at is not None
+            assert db.get(JobRunRecord, finished_id).status == "success"
+            assert db.query(ConsoleRunRecord).one().status == "canceled"
+        assert "app restarted" in log_path.read_text()
 
 
 def _session_factory(database_path: Path, expire_on_commit: bool = False):
