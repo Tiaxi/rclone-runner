@@ -253,7 +253,7 @@ async def create_job(
     )
     db.add(job)
     db.flush()
-    _replace_steps(job, steps_text)
+    _replace_steps(db, job, steps_text)
     db.commit()
     sync_schedules(db)
     return RedirectResponse(f"/jobs/{job.id}", status_code=303)
@@ -331,7 +331,7 @@ async def update_job(
     job.env_json = json.dumps(parse_env_lines(env_lines))
     job.enabled = enabled == "on"
     job.updated_at = utc_now()
-    _replace_steps(job, steps_text)
+    _replace_steps(db, job, steps_text)
     db.commit()
     sync_schedules(db)
     return RedirectResponse(f"/jobs/{job.id}", status_code=303)
@@ -937,8 +937,17 @@ def _email_settings_from_form(
     )
 
 
-def _replace_steps(job: JobRecord, steps_text: str) -> None:
-    job.steps.clear()
+def _replace_steps(db, job: JobRecord, steps_text: str) -> None:
+    """Apply the edited step list, keeping the IDs of steps whose names are unchanged.
+
+    Step runs refer to steps by ID, so reusing records keeps a job's run history attached to
+    its steps when commands are edited or steps are reordered.
+    """
+    unused_by_name: dict[str, list[JobStepRecord]] = {}
+    for step in job.steps:
+        unused_by_name.setdefault(step.name, []).append(step)
+
+    steps: list[JobStepRecord] = []
     for index, raw_line in enumerate(steps_text.splitlines(), start=1):
         line = raw_line.strip()
         if not line:
@@ -947,7 +956,27 @@ def _replace_steps(job: JobRecord, steps_text: str) -> None:
         if not separator:
             name = f"Step {index}"
             command = line
-        job.steps.append(JobStepRecord(position=index, name=name.strip(), command=command.strip()))
+        name = name.strip()
+        candidates = unused_by_name.get(name)
+        if candidates:
+            step = candidates.pop(0)
+            step.position = index
+            step.command = command.strip()
+        else:
+            step = JobStepRecord(position=index, name=name, command=command.strip())
+        steps.append(step)
+
+    removed_ids = [
+        step.id for unused in unused_by_name.values() for step in unused if step.id is not None
+    ]
+    if removed_ids:
+        # Keep history rows, but stop them pointing at IDs SQLite may hand out again.
+        (
+            db.query(JobStepRunRecord)
+            .filter(JobStepRunRecord.step_id.in_(removed_ids))
+            .update({JobStepRunRecord.step_id: None}, synchronize_session="fetch")
+        )
+    job.steps = steps
 
 
 def _steps_to_text(steps: list[JobStepRecord]) -> str:
@@ -1238,7 +1267,9 @@ def _job_run_step_rows(job_run: JobRunRecord, db) -> list[dict[str, object]]:
     }
     if job_run.job_id is not None and "step" not in job_run.trigger:
         job = db.get(JobRecord, job_run.job_id)
-        if job is not None:
+        current_step_ids = {step.id for step in job.steps} if job is not None else set()
+        # Runs recorded against steps that no longer exist are shown as recorded instead.
+        if job is not None and all(run.step_id in current_step_ids for run in step_runs):
             rows = []
             for step in job.steps:
                 step_run = step_run_by_step_id.get(step.id)
