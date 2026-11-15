@@ -1619,3 +1619,10 @@ def _create_running_step_run(db, log_path: Path | None = None):
     db.commit()
     db.refresh(step_run)
     return step_run
+
+
+def test_exit_label_marks_runs_that_ended_without_an_exit_code():
+    assert main._exit_label("running", None) == "Pending"
+    assert main._exit_label("failed", None) == "-"
+    assert main._exit_label("canceled", None) == "Canceled"
+    assert main._exit_label("failed", 1) == "1"
