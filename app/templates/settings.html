@@ -37,7 +37,9 @@
   <label>Recipients <textarea name="recipients" rows="3" placeholder="ops@example.com">{{ email_settings.recipients }}</textarea></label>
   <label>App URL <input name="app_base_url" value="{{ email_settings.app_base_url }}" placeholder="http://rclone-runner.local:8000"></label>
   <label>Failure log tail lines <input name="include_log_tail_lines" type="number" min="1" value="{{ email_settings.include_log_tail_lines }}"></label>
-  <label class="checkbox"><input type="checkbox" name="use_starttls" {% if email_settings.use_starttls %}checked{% endif %}> Use STARTTLS</label>
+  <label class="checkbox"><input type="checkbox" name="use_starttls" {% if email_settings.use_starttls %}checked{% endif %}> Use STARTTLS (usually port 587)</label>
+  <label class="checkbox"><input type="checkbox" name="use_ssl" {% if email_settings.use_ssl %}checked{% endif %}> Use implicit TLS (usually port 465)</label>
+  <p class="field-note full">With neither option, the SMTP password is sent unencrypted. TLS certificates are verified.</p>
   <fieldset class="full option-group">
     <legend>Email events</legend>
     <label class="checkbox"><input type="checkbox" name="notify_success" {% if email_settings.notify_success %}checked{% endif %}> Successful job runs</label>

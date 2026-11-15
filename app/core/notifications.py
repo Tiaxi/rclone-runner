@@ -5,6 +5,7 @@ import html
 import json
 import logging
 import smtplib
+import ssl
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -43,6 +44,8 @@ class EmailNotificationSettings:
     sender: str = ""
     recipients: str = ""
     use_starttls: bool = True
+    # Implicit TLS (SMTPS, usually port 465). Takes precedence over STARTTLS.
+    use_ssl: bool = False
     notify_success: bool = False
     notify_failure: bool = True
     notify_canceled: bool = True
@@ -175,9 +178,18 @@ async def send_test_notification(
 
 
 def send_smtp_message(value: EmailNotificationSettings, message: EmailMessage) -> None:
-    with smtplib.SMTP(value.smtp_host, value.smtp_port, timeout=SMTP_TIMEOUT_SECONDS) as smtp:
-        if value.use_starttls:
-            smtp.starttls()
+    # smtplib verifies nothing unless given a context: starttls() without one accepts any
+    # certificate, so always pass a verifying default context.
+    context = ssl.create_default_context()
+    if value.use_ssl:
+        connection = smtplib.SMTP_SSL(
+            value.smtp_host, value.smtp_port, timeout=SMTP_TIMEOUT_SECONDS, context=context
+        )
+    else:
+        connection = smtplib.SMTP(value.smtp_host, value.smtp_port, timeout=SMTP_TIMEOUT_SECONDS)
+    with connection as smtp:
+        if value.use_starttls and not value.use_ssl:
+            smtp.starttls(context=context)
         if value.smtp_username or value.smtp_password:
             smtp.login(value.smtp_username, value.smtp_password)
         smtp.send_message(message)
