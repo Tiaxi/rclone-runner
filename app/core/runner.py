@@ -389,6 +389,17 @@ class LiveJobRunner:
                 return  # The step ended meanwhile; the next one starts with the setting.
             raise RcError(f"could not reach the running rclone: {exc}") from exc
 
+    async def _apply_quietly(self, control: RunControl) -> None:
+        try:
+            await self._apply(control)
+        except RcError as exc:
+            logger.warning("Could not apply the run's bandwidth setting to a new step: %s", exc)
+
+    def _start_background(self, coroutine) -> None:
+        task = asyncio.create_task(coroutine)
+        self._notification_tasks.add(task)
+        task.add_done_callback(self._notification_tasks.discard)
+
     async def wait_for_job_run(self, job_run_id: int) -> None:
         task = self._tasks.get(job_run_id)
         if task is None:
@@ -455,6 +466,10 @@ class LiveJobRunner:
         # The stored argv stays the job's own command, so it can be copied and rerun as is.
         spawn_argv = with_flags(argv, control.spawn_args(socket_path))
         control.socket_path = socket_path
+        if control.target_rate(for_new_process=True) is not None:
+            # The job's own --bwlimit comes after ours on the command line and wins, so send
+            # the run's setting through the socket as soon as rclone is listening.
+            self._start_background(self._apply_quietly(control))
         try:
             return await self._executor(spawn_argv, env, log_path)
         finally:

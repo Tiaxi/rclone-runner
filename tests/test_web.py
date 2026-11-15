@@ -1660,6 +1660,7 @@ class FakeControlRunner:
             "limit": "8M",
             "limit_label": "8 MiB/s",
             "label": "Paused" if self.paused else "8 MiB/s",
+            "detail": "Throttled to 64 KiB/s" if self.paused else "Set for this run",
             "source": "run",
         }
 
@@ -1729,6 +1730,11 @@ async def test_bandwidth_route_errors_are_shown_on_the_run_page(monkeypatch):
     assert f'action="/job-runs/{step_run.job_run_id}/resume"' in html
     assert '<option value="8M" selected>8 MiB/s</option>' in html
     assert status["control"]["paused"] is True
+    # The page refreshes the explanation when a step change makes the pause pending or live.
+    assert (
+        '<span class="table-subtext" id="run-control-detail">Throttled to 64 KiB/s</span>' in html
+    )
+    assert "state.control.detail" in html
     assert status["progress"] == "Paused"
 
 

@@ -79,23 +79,18 @@ def _single_rate_label(rate: str) -> str:
     return f"{rate[:-1]} {_UNIT_LABELS[unit]}"
 
 
-def options(argv: list[str]) -> list[str]:
-    """The part of a command that rclone reads as flags: everything before a lone "--"."""
-    return argv[: argv.index("--")] if "--" in argv else argv
-
-
 def with_flags(argv: list[str], flags: list[str]) -> list[str]:
-    """Add flags to a command, before "--" so rclone does not take them for paths."""
-    if "--" not in argv:
-        return [*argv, *flags]
-    end = argv.index("--")
-    return [*argv[:end], *flags, *argv[end:]]
+    """Add flags to a command right after its subcommand.
+
+    Nothing there can be another flag's value or follow an option terminator, which the end
+    of the command can (``--backup-dir --`` names a folder called "--").
+    """
+    return [*argv[:2], *flags, *argv[2:]]
 
 
 def configured_rate(argv: list[str]) -> str | None:
     """The single --bwlimit value in a command, or None when unset or a timetable."""
     value = None
-    argv = options(argv)
     for index, arg in enumerate(argv):
         if arg == "--bwlimit" and index + 1 < len(argv):
             value = argv[index + 1]
@@ -112,7 +107,6 @@ def configured_rate(argv: list[str]) -> str | None:
 def pause_rate(argv: list[str]) -> str:
     """The throttle for pausing this command: a little per parallel transfer."""
     transfers = RCLONE_DEFAULT_TRANSFERS
-    argv = options(argv)
     for index, arg in enumerate(argv):
         value = None
         if arg == "--transfers" and index + 1 < len(argv):
@@ -128,7 +122,7 @@ def supports_live_control(argv: list[str]) -> bool:
     if len(argv) < 2 or argv[1] in _UNCONTROLLED_SUBCOMMANDS:
         return False
     # The job sets up its own remote control; adding ours would mix the two.
-    return not any(arg == "--rc" or arg.startswith("--rc-") for arg in options(argv))
+    return not any(arg == "--rc" or arg.startswith("--rc-") for arg in argv)
 
 
 @dataclass
@@ -146,11 +140,12 @@ class RunControl:
     apply_socket: Path | None = None
 
     def spawn_args(self, socket_path: Path) -> list[str]:
-        args = ["--rc", "--rc-addr", f"unix://{socket_path}", "--rc-no-auth"]
+        args = ["--rc", f"--rc-addr=unix://{socket_path}", "--rc-no-auth"]
         rate = self.target_rate(for_new_process=True)
         if rate is not None:
-            # A later --bwlimit wins over one in the job's own arguments.
-            args += ["--bwlimit", rate]
+            # These go before the job's own arguments, so a --bwlimit there would win; the
+            # runner also sends this rate through the socket once rclone is up.
+            args.append(f"--bwlimit={rate}")
         return args
 
     def target_rate(self, for_new_process: bool = False) -> str | None:
@@ -168,10 +163,13 @@ class RunControl:
         paused_now = self.paused and available
         if paused_now:
             label = "Paused"
+            detail = f"Throttled to {rate_label(self.pause_rate)}; connections stay open"
         elif self.paused:
             label = f"{rate_label(self.limit or self.configured)} (pause pending)"
+            detail = "Takes effect when the next step starts"
         else:
             label = rate_label(self.limit or self.configured)
+            detail = "Set for this run" if self.limit is not None else "From the job's arguments"
         return {
             "available": available,
             "paused": self.paused,
@@ -179,6 +177,7 @@ class RunControl:
             "limit": self.limit,
             "limit_label": rate_label(self.limit) if self.limit is not None else None,
             "label": label,
+            "detail": detail,
             "pause_label": rate_label(self.pause_rate),
             "source": "run" if self.limit is not None else "job",
         }
