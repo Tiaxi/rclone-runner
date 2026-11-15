@@ -1839,3 +1839,96 @@ async def test_job_page_shows_source_measurements():
             assert '<span class="run-status running">Measuring</span>' in html
             assert 'data-measuring="true"' in html
             assert "disabled>Measuring…</button>" in html
+
+
+async def test_expected_speed_setting_validates_input():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            saved = await main.save_estimate_settings(None, None, db, expected_speed=" 48,5 ")
+            bad = await main.save_estimate_settings(None, None, db, expected_speed="fast")
+            zero = await main.save_estimate_settings(None, None, db, expected_speed="0")
+            page = await main.settings_page(_request("/settings"), None, db, speed_saved=1)
+
+            assert saved.headers["location"] == "/settings?speed_saved=1#estimates"
+            assert bad.headers["location"] == "/settings?speed_error=1#estimates"
+            assert zero.headers["location"] == "/settings?speed_error=1#estimates"
+            assert page.context["expected_speed"] == 48.5
+            assert 'value="48.5"' in page.body.decode()
+
+            cleared = await main.save_estimate_settings(None, None, db, expected_speed="")
+            assert cleared.headers["location"] == "/settings?speed_saved=1#estimates"
+            page = await main.settings_page(_request("/settings"), None, db)
+            assert page.context["expected_speed"] is None
+
+
+async def test_job_page_estimates_from_history_and_dry_runs():
+    from app.core.rclone_stats import RcloneTransferStats, stats_to_json
+    from app.core.sources import size_command
+
+    gib = 1024**3
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = _create_job_with_sources(db)
+            step_id = job.steps[0].id
+            page = await main.job_detail(_request("/"), job.id, None, db)
+            html = page.body.decode()
+            assert "set an expected upload speed" in html
+            assert "Needs a dry run" in html
+
+            started = main.utc_now().replace(microsecond=0)
+            from datetime import timedelta
+
+            for trigger, transferred, seconds in (
+                ("manual", 10 * gib, 1024),  # 10 MiB/s
+                ("manual-dry-run", 3 * gib, 5),  # what the next sync would upload
+            ):
+                run = JobRunRecord(
+                    job_id=job.id,
+                    job_name=job.name,
+                    trigger=trigger,
+                    status="success",
+                    started_at=started,
+                    ended_at=started + timedelta(seconds=seconds),
+                )
+                db.add(run)
+                db.flush()
+                db.add(
+                    JobStepRunRecord(
+                        job_run_id=run.id,
+                        step_id=step_id,
+                        step_name="Music",
+                        argv_json="[]",
+                        status="success",
+                        exit_code=0,
+                        log_path=str(Path(tmpdir) / f"{trigger}.log"),
+                        started_at=run.started_at,
+                        ended_at=run.ended_at,
+                        transfer_stats_json=stats_to_json(RcloneTransferStats(transferred, 100, 0)),
+                    )
+                )
+            argv = main.build_rclone_argv("sync /media/a remote:a", "--exclude *.tmp", {})
+            db.add(
+                SourceMeasurementRecord(
+                    key=size_command(argv).key,
+                    source="/media/a",
+                    status="success",
+                    bytes=36 * gib,
+                    files=1000,
+                    started_at=started,
+                    measured_at=started,
+                )
+            )
+            db.commit()
+
+            page = await main.job_detail(_request("/"), job.id, None, db)
+            html = page.body.decode()
+            (music, _listing) = page.context["source_rows"]
+
+    # 36 GiB at 10 MiB/s is an hour; the dry run's 3 GiB takes just over 5 minutes.
+    assert music["full_estimate"] == "about 1 h"
+    assert music["next_estimate"] == "about 6 min"
+    assert "3.000 GiB to upload" in html
+    assert page.context["source_speed"].explanation == "this job's last sizeable run"
+    assert "Estimates assume 10.0 MiB/s, this job&#39;s last sizeable run." in html

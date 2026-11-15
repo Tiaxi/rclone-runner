@@ -686,7 +686,8 @@ def test_post_forms_include_csrf_fields_and_destructive_confirmations():
     runs_html = _history_html("jobs", [job_run], csrf_field=lambda: csrf_input)
 
     assert jobs_html.count('name="csrf_token"') == 4
-    assert settings_html.count('name="csrf_token"') == 4
+    # Log out, email settings, expected speed, prune, and clear history.
+    assert settings_html.count('name="csrf_token"') == 5
     # Logout and the run's delete form.
     assert runs_html.count('name="csrf_token"') == 2
     assert 'return confirm("Delete backup? Run history will be kept.")' in jobs_html

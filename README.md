@@ -15,6 +15,7 @@ then define scheduled jobs from raw rclone subcommands, shared arguments, and en
 - Job-level common rclone arguments and environment variables.
 - Manual full-job, dry-run, step-run, and step dry-run actions.
 - Live bandwidth limit and pause for running jobs.
+- Source sizes and upload time estimates per step.
 - Run history for jobs and console commands.
 - Lazy-loaded log viewer with raw log access.
 - SQLite persistence under `/data`.
@@ -224,6 +225,24 @@ To do this, each step's rclone runs with its remote control API on a Unix socket
 temporary directory, without a password. Only the app's own user can open it, and that user can
 already run any rclone command from the console. Steps whose arguments set their own `--rc`
 options are left alone and can't be adjusted while they run.
+
+## Source Sizes and Time Estimates
+
+A job's page lists each step's source with its size and file count. Click **Measure sources** to
+run `rclone size` on them, one at a time in the background. Measuring counts what the step would
+look at: it applies the job's filter flags (`--exclude`, `--max-age` and similar) and its symlink
+and local backend options. Steps that share a source and filters share a measurement.
+
+Each step also shows two time estimates:
+
+- **Full upload**: the measured size at the expected speed, for an initial sync to an empty
+  destination.
+- **Next sync**: what the step's latest dry run said it would upload, at the same speed.
+
+The speed comes from the job's own recent runs: the median of up to 10 runs that each uploaded
+at least 256 MiB over at least a minute. Until a job has such runs, it uses the **expected upload
+speed** from Settings (100 Mbit/s is about 12 MiB/s). A `--bwlimit` in the job's arguments caps
+the speed. Estimates go by size alone, so folders of many small files take longer than shown.
 
 ## Security Notes
 
