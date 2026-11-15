@@ -1,4 +1,6 @@
 import asyncio
+import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -7,7 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.models import Job, JobStep, utc_now
-from app.core.runner import JobRunner, LiveJobRunner
+from app.core.runner import JobRunner, LiveJobRunner, subprocess_executor
 from app.db import Base, ConsoleRunRecord, JobRunRecord, JobStepRunRecord
 from app.main import run_mode_label
 
@@ -637,6 +639,40 @@ async def test_live_runner_records_invalid_command_when_log_is_unwritable():
         assert failed_step.status == "failed"
         with session_factory() as db:
             assert db.get(JobRunRecord, failed_step.job_run_id).status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_subprocess_executor_logs_output_lines_longer_than_stream_limit(tmp_path: Path):
+    log_path = tmp_path / "step.log"
+    script = "import sys; sys.stdout.write('x' * 200_000); sys.stdout.flush()"
+
+    exit_code = await subprocess_executor([sys.executable, "-c", script], {}, log_path)
+
+    assert exit_code == 0
+    assert log_path.read_bytes() == b"x" * 200_000
+
+
+@pytest.mark.asyncio
+async def test_subprocess_executor_stops_process_when_log_write_fails(tmp_path: Path):
+    if not Path("/dev/full").exists():
+        pytest.skip("needs /dev/full to simulate a full disk")
+    pid_path = tmp_path / "child.pid"
+    script = (
+        "import os, sys, time\n"
+        f"open({str(pid_path)!r}, 'w').write(str(os.getpid()))\n"
+        "while True:\n"
+        "    sys.stdout.write('progress\\n'); sys.stdout.flush(); time.sleep(0.05)\n"
+    )
+
+    with pytest.raises(OSError):
+        await asyncio.wait_for(
+            subprocess_executor([sys.executable, "-c", script], {}, Path("/dev/full")),
+            timeout=10,
+        )
+
+    pid = int(pid_path.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
 
 
 def _session_factory(database_path: Path, expire_on_commit: bool = False):
