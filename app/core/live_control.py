@@ -34,7 +34,9 @@ CONNECT_TIMEOUT_SECONDS = 5.0
 BWLIMIT_REPLY_TIMEOUT_SECONDS = 300.0
 
 _ONE_RATE = r"(?:off|\d+(?:\.\d+)?[bkmgtp]?)"
-_RATE_PATTERN = re.compile(rf"^{_ONE_RATE}(?::{_ONE_RATE})?$", re.IGNORECASE)
+# ASCII only: rclone rejects other digits, and a look-alike such as the Kelvin sign would
+# match case-insensitively.
+_RATE_PATTERN = re.compile(rf"^{_ONE_RATE}(?::{_ONE_RATE})?$", re.IGNORECASE | re.ASCII)
 _UNIT_LABELS = {"B": "B/s", "K": "KiB/s", "M": "MiB/s", "G": "GiB/s", "T": "TiB/s", "P": "PiB/s"}
 # Subcommands whose own flags use the remote control address, or that are servers themselves.
 _UNCONTROLLED_SUBCOMMANDS = {"rc", "rcd"}
@@ -77,9 +79,23 @@ def _single_rate_label(rate: str) -> str:
     return f"{rate[:-1]} {_UNIT_LABELS[unit]}"
 
 
+def options(argv: list[str]) -> list[str]:
+    """The part of a command that rclone reads as flags: everything before a lone "--"."""
+    return argv[: argv.index("--")] if "--" in argv else argv
+
+
+def with_flags(argv: list[str], flags: list[str]) -> list[str]:
+    """Add flags to a command, before "--" so rclone does not take them for paths."""
+    if "--" not in argv:
+        return [*argv, *flags]
+    end = argv.index("--")
+    return [*argv[:end], *flags, *argv[end:]]
+
+
 def configured_rate(argv: list[str]) -> str | None:
     """The single --bwlimit value in a command, or None when unset or a timetable."""
     value = None
+    argv = options(argv)
     for index, arg in enumerate(argv):
         if arg == "--bwlimit" and index + 1 < len(argv):
             value = argv[index + 1]
@@ -96,13 +112,14 @@ def configured_rate(argv: list[str]) -> str | None:
 def pause_rate(argv: list[str]) -> str:
     """The throttle for pausing this command: a little per parallel transfer."""
     transfers = RCLONE_DEFAULT_TRANSFERS
+    argv = options(argv)
     for index, arg in enumerate(argv):
         value = None
         if arg == "--transfers" and index + 1 < len(argv):
             value = argv[index + 1]
         elif arg.startswith("--transfers="):
             value = arg.split("=", 1)[1]
-        if value is not None and value.isdigit():
+        if value is not None and value.isascii() and value.isdigit():
             transfers = max(1, int(value))
     return f"{PAUSE_RATE_PER_TRANSFER * transfers}K"
 
@@ -111,7 +128,7 @@ def supports_live_control(argv: list[str]) -> bool:
     if len(argv) < 2 or argv[1] in _UNCONTROLLED_SUBCOMMANDS:
         return False
     # The job sets up its own remote control; adding ours would mix the two.
-    return not any(arg == "--rc" or arg.startswith("--rc-") for arg in argv)
+    return not any(arg == "--rc" or arg.startswith("--rc-") for arg in options(argv))
 
 
 @dataclass
@@ -123,8 +140,10 @@ class RunControl:
     socket_path: Path | None = None
     configured: str | None = None
     pause_rate: str = f"{PAUSE_RATE_PER_TRANSFER * RCLONE_DEFAULT_TRANSFERS}K"
-    # The one task sending limit changes to the current rclone, so they arrive in order.
+    # The one task sending limit changes to one step's rclone, so they arrive in order, and
+    # the socket it sends to: a new step needs a new task.
     apply_task: asyncio.Task[None] | None = None
+    apply_socket: Path | None = None
 
     def spawn_args(self, socket_path: Path) -> list[str]:
         args = ["--rc", "--rc-addr", f"unix://{socket_path}", "--rc-no-auth"]
@@ -143,12 +162,23 @@ class RunControl:
         return None if for_new_process else (self.configured or "off")
 
     def state(self) -> dict[str, object]:
+        available = self.socket_path is not None
+        # A pause only takes effect on a step rclone runs with our control socket; on any
+        # other step it waits for the next one.
+        paused_now = self.paused and available
+        if paused_now:
+            label = "Paused"
+        elif self.paused:
+            label = f"{rate_label(self.limit or self.configured)} (pause pending)"
+        else:
+            label = rate_label(self.limit or self.configured)
         return {
-            "available": self.socket_path is not None,
+            "available": available,
             "paused": self.paused,
+            "paused_now": paused_now,
             "limit": self.limit,
             "limit_label": rate_label(self.limit) if self.limit is not None else None,
-            "label": "Paused" if self.paused else rate_label(self.limit or self.configured),
+            "label": label,
             "pause_label": rate_label(self.pause_rate),
             "source": "run" if self.limit is not None else "job",
         }

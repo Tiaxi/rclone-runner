@@ -18,6 +18,7 @@ from app.core.live_control import (
     pause_rate,
     set_rclone_bandwidth,
     supports_live_control,
+    with_flags,
 )
 from app.core.models import Job, JobRunResult, JobStep, StepRunResult, utc_now
 from app.core.rclone_stats import STATS_UNAVAILABLE_JSON, stats_from_log, stats_to_json
@@ -372,10 +373,12 @@ class LiveJobRunner:
             # the new setting.
             return
         task = control.apply_task
-        if task is None or task.done():
+        if task is None or task.done() or control.apply_socket != socket_path:
+            # A task left from an earlier step stops by itself; this step gets its own.
             task = asyncio.create_task(_send_latest_rate(control, socket_path))
             task.add_done_callback(_log_apply_failure)
             control.apply_task = task
+            control.apply_socket = socket_path
         try:
             # rclone may take a while to answer (see live_control); it keeps the change.
             await asyncio.wait_for(asyncio.shield(task), APPLY_WAIT_SECONDS)
@@ -440,15 +443,17 @@ class LiveJobRunner:
         argv = json.loads(step_run.argv_json)
         log_path = Path(step_run.log_path)
         control = self._controls.get(job_run_id)
-        if control is None or self._control_dir is None or not supports_live_control(argv):
+        if control is None or self._control_dir is None:
+            return await self._executor(argv, env, log_path)
+        control.configured = configured_rate(argv)
+        control.pause_rate = pause_rate(argv)
+        if not supports_live_control(argv):
             return await self._executor(argv, env, log_path)
         socket_path = self._control_dir / f"step-{step_run.id}.sock"
         # rclone refuses to start when a socket from a killed process is still there.
         socket_path.unlink(missing_ok=True)
-        control.configured = configured_rate(argv)
-        control.pause_rate = pause_rate(argv)
         # The stored argv stays the job's own command, so it can be copied and rerun as is.
-        spawn_argv = [*argv, *control.spawn_args(socket_path)]
+        spawn_argv = with_flags(argv, control.spawn_args(socket_path))
         control.socket_path = socket_path
         try:
             return await self._executor(spawn_argv, env, log_path)
