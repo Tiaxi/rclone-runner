@@ -40,8 +40,10 @@ from app.core.notifications import (
 )
 from app.core.pty_console import bridge_pty, display_argv
 from app.core.rclone_stats import (
+    LiveProgress,
     RcloneTransferStats,
     RunStatsDisplay,
+    live_progress_from_log,
     pending_stats_display,
     run_stats_display,
     step_stats_display,
@@ -501,6 +503,7 @@ async def job_run_detail(
         "step_rows": _job_run_step_rows(job_run, db),
         "run_stats": _job_run_stats(job_run),
         "active_step_run": active_step_run,
+        "progress": _live_progress(active_step_run),
         "job_run_status_url": f"/job-runs/{job_run.id}/status",
         "job_run_cancel_url": f"/job-runs/{job_run.id}/cancel",
     }
@@ -568,6 +571,7 @@ async def run_detail(request: Request, run_id: int, _: AuthRequired, db: DbSessi
             "run": run,
             "argv": json.loads(run.argv_json),
             "step_stats": _step_stats_display_for_run(run),
+            "progress": _live_progress(run),
             "job_run_step_count": len(run.job_run.step_runs),
             "log_chunk": log_chunk,
             "log_chunk_url": f"/runs/{run.id}/log/chunk",
@@ -1338,6 +1342,7 @@ def _job_run_status_payload(job_run: JobRunRecord, db) -> dict[str, object]:
         "elapsed_seconds": elapsed_seconds,
         "can_cancel": job_run.status == "running",
         "active_step_run_id": active_step_run.id if active_step_run is not None else None,
+        "progress": _progress_label(_live_progress(active_step_run)),
         "stats": {
             "transferred_data": run_stats.transferred_data_label,
             "transferred_files": run_stats.transferred_files_label,
@@ -1416,6 +1421,16 @@ def _active_step_run(job_run: JobRunRecord) -> JobStepRunRecord | None:
     return None
 
 
+def _live_progress(step_run: JobStepRunRecord | None) -> LiveProgress | None:
+    if step_run is None or step_run.status != "running":
+        return None
+    return live_progress_from_log(Path(step_run.log_path))
+
+
+def _progress_label(progress: LiveProgress | None) -> str | None:
+    return progress.label if progress is not None else None
+
+
 def _unstarted_step_status(job_run: JobRunRecord) -> str:
     if job_run.status == "canceled":
         return "canceled"
@@ -1437,6 +1452,7 @@ def _run_status_payload(run: JobStepRunRecord) -> dict[str, object]:
         "elapsed": _format_seconds(elapsed_seconds),
         "elapsed_seconds": elapsed_seconds,
         "can_cancel": run.status == "running",
+        "progress": _progress_label(_live_progress(run)),
         "stats_label": stats.label,
         "stats_available": stats.available,
     }

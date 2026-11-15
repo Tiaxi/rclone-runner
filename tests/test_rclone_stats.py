@@ -6,6 +6,7 @@ from app.core.rclone_stats import (
     STATS_TAIL_BYTES,
     STATS_UNAVAILABLE_JSON,
     RcloneTransferStats,
+    live_progress_from_log,
     parse_rclone_transfer_stats,
     stats_from_log,
     step_stats_display,
@@ -123,3 +124,52 @@ def test_stats_from_log_keeps_first_tail_line_at_exact_line_boundary(tmp_path: P
 
     assert stats is not None
     assert stats.transferred_files == 134
+
+
+# Captured from rclone v1.75.2 with -v --stats 1s, in both output formats.
+LIVE_BLOCK_LOG = (
+    "Transferred:   \t    2.028 MiB / 5.723 MiB, 35%, 2.028 MiB/s, ETA 1s\n"
+    "Transferred:            1 / 2, 50%\n"
+    "Elapsed time:         1.0s\n"
+    "2026/11/15 03:14:19 INFO  : big.bin: Copied (new)\n"
+    "Transferred:   \t    4.028 MiB / 5.723 MiB, 70%, 2.028 MiB/s, ETA 0s\n"
+    "Transferred:            1 / 2, 50%\n"
+)
+LIVE_ONE_LINE_LOG = (
+    "2026/11/15 03:14:18 INFO  : small.bin: Copied (new)\n"
+    "2026/11/15 03:14:19 INFO  :     2.028 MiB / 5.723 MiB, 35%, 2.028 MiB/s, ETA 1s\n"
+)
+
+
+def test_live_progress_uses_latest_report_in_block_format(tmp_path: Path):
+    log_path = tmp_path / "step.log"
+    log_path.write_text(LIVE_BLOCK_LOG, encoding="utf-8")
+
+    progress = live_progress_from_log(log_path)
+
+    assert progress is not None
+    assert progress.label == "4.028 MiB / 5.723 MiB (70%) · 2.028 MiB/s · ETA 0s"
+
+
+def test_live_progress_reads_one_line_format(tmp_path: Path):
+    log_path = tmp_path / "step.log"
+    log_path.write_text(LIVE_ONE_LINE_LOG, encoding="utf-8")
+
+    assert live_progress_from_log(log_path).label == (
+        "2.028 MiB / 5.723 MiB (35%) · 2.028 MiB/s · ETA 1s"
+    )
+
+
+def test_live_progress_omits_unknown_percent_and_eta(tmp_path: Path):
+    log_path = tmp_path / "step.log"
+    log_path.write_text("Transferred:   \t          0 B / 0 B, -, 0 B/s, ETA -\n")
+
+    assert live_progress_from_log(log_path).label == "0 B / 0 B · 0 B/s"
+
+
+def test_live_progress_is_none_without_reports(tmp_path: Path):
+    log_path = tmp_path / "step.log"
+    log_path.write_text("2026/11/15 03:14:18 INFO  : small.bin: Copied (new)\n")
+
+    assert live_progress_from_log(log_path) is None
+    assert live_progress_from_log(tmp_path / "missing.log") is None

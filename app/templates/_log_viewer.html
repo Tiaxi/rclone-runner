@@ -25,6 +25,8 @@
     const exitCode = document.querySelector("#run-exit-code");
     const finishedAt = document.querySelector("#run-finished-at");
     const elapsed = document.querySelector("#run-elapsed");
+    const progress = document.querySelector("#run-progress");
+    const progressItem = document.querySelector("#run-progress-item");
     const cancelForm = document.querySelector("#cancel-run-form");
     let loading = false;
     let live = output.dataset.live === "true";
@@ -88,6 +90,10 @@
       }
       if (elapsed && state.elapsed) {
         elapsed.textContent = state.elapsed;
+      }
+      if (progress) {
+        progress.textContent = state.progress ?? progress.dataset.waiting;
+        progressItem.hidden = state.status !== "running";
       }
       if (!state.can_cancel && cancelForm) {
         cancelForm.remove();

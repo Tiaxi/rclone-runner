@@ -22,6 +22,12 @@
         <span class="run-summary-label">Current step</span>
         <span id="job-run-current-step">{{ active_step_run.step_name if active_step_run else "None" }}</span>
       </div>
+      {% if job_run.status == "running" %}
+      <div class="run-summary-item" id="job-run-progress-item">
+        <span class="run-summary-label">Progress</span>
+        <span id="job-run-progress" data-waiting="Not reported yet. rclone reports progress every minute with --verbose (-v).">{{ progress.label if progress else "Not reported yet. rclone reports progress every minute with --verbose (-v)." }}</span>
+      </div>
+      {% endif %}
       <div class="run-summary-item">
         <span class="run-summary-label">Elapsed</span>
         <span id="job-run-elapsed">{{ format_duration(job_run.started_at, job_run.ended_at) if job_run.ended_at is not none else format_duration(job_run.started_at, utc_now()) }}</span>
@@ -112,6 +118,8 @@
     const dataTransferred = document.querySelector("#job-run-data-transferred");
     const filesTransferred = document.querySelector("#job-run-files-transferred");
     const deletedFiles = document.querySelector("#job-run-deleted-files");
+    const progress = document.querySelector("#job-run-progress");
+    const progressItem = document.querySelector("#job-run-progress-item");
     const cancelForm = document.querySelector("#cancel-job-run-form");
     let live = statusText && statusText.classList.contains("running");
 
@@ -138,6 +146,10 @@
       }
       if (finishedAt) {
         finishedAt.textContent = state.finished_at ?? "Running";
+      }
+      if (progress) {
+        progress.textContent = state.progress ?? progress.dataset.waiting;
+        progressItem.hidden = state.status !== "running";
       }
       if (state.stats) {
         if (dataTransferred) {

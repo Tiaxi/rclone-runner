@@ -105,10 +105,65 @@ def stats_from_json(value: str | None) -> RcloneTransferStats | None:
 
 
 def stats_from_log(path: Path) -> RcloneTransferStats | None:
+    text = _read_log_tail(path, STATS_TAIL_BYTES)
+    return None if text is None else parse_rclone_transfer_stats(text)
+
+
+@dataclass(frozen=True, slots=True)
+class LiveProgress:
+    """The latest progress rclone reported while a step is still running."""
+
+    transferred: str
+    total: str
+    percent: str | None
+    speed: str
+    eta: str | None
+
+    @property
+    def label(self) -> str:
+        parts = [f"{self.transferred} / {self.total}"]
+        if self.percent:
+            parts[0] += f" ({self.percent})"
+        parts.append(self.speed)
+        if self.eta:
+            parts.append(f"ETA {self.eta}")
+        return " · ".join(parts)
+
+
+# rclone prints progress every minute at INFO level, so only with --verbose (-v). It matches
+# both the multi-line block ("Transferred: 1.2 GiB / 2 TiB, 5%, 50 MiB/s, ETA 9h") and
+# --stats-one-line output.
+_SIZE = r"\d+(?:\.\d+)?\s*[KMGTPE]?i?B"
+_PROGRESS_RE = re.compile(
+    rf"(?P<transferred>{_SIZE})\s*/\s*(?P<total>{_SIZE}),\s*(?P<percent>\d+%|-),\s*"
+    rf"(?P<speed>{_SIZE}/s),\s*ETA\s*(?P<eta>[^\s,]+)"
+)
+PROGRESS_TAIL_BYTES = 64 * 1024
+
+
+def live_progress_from_log(path: Path) -> LiveProgress | None:
+    text = _read_log_tail(path, PROGRESS_TAIL_BYTES)
+    if text is None:
+        return None
+    matches = list(_PROGRESS_RE.finditer(text))
+    if not matches:
+        return None
+    match = matches[-1]
+    return LiveProgress(
+        transferred=match["transferred"],
+        total=match["total"],
+        percent=None if match["percent"] == "-" else match["percent"],
+        speed=match["speed"],
+        eta=None if match["eta"] == "-" else match["eta"],
+    )
+
+
+def _read_log_tail(path: Path, max_bytes: int) -> str | None:
+    """The last max_bytes of a log, starting at a line boundary."""
     try:
         with path.open("rb") as log_file:
             size = log_file.seek(0, 2)
-            start = max(0, size - STATS_TAIL_BYTES)
+            start = max(0, size - max_bytes)
             # Read from one byte earlier, so a tail that starts exactly at a line boundary
             # keeps its first line: only text up to the first newline is dropped.
             log_file.seek(max(0, start - 1))
@@ -117,7 +172,7 @@ def stats_from_log(path: Path) -> RcloneTransferStats | None:
         return None
     if start > 0:
         data = data.partition(b"\n")[2]
-    return parse_rclone_transfer_stats(data.decode("utf-8", errors="replace"))
+    return data.decode("utf-8", errors="replace")
 
 
 class _StepRunStats(Protocol):
