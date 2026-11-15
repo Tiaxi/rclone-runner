@@ -1588,7 +1588,8 @@ def _exit_label(status: str, exit_code: int | None) -> str:
         return "Canceled"
     if status == "skipped":
         return "Skipped"
-    return "Pending"
+    # A run that ended without an exit code (for example, interrupted by a restart) has none.
+    return "Pending" if status in {"running", "pending"} else "-"
 
 
 def _console_log_path(started_at: datetime) -> Path:
