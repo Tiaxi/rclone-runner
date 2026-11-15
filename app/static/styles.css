@@ -432,6 +432,7 @@ label {
 }
 
 input,
+select,
 textarea {
   background: var(--input-bg);
   border: 1px solid var(--line);
@@ -706,6 +707,53 @@ textarea {
   gap: 4px;
   min-height: 64px;
   padding: 10px 12px;
+}
+
+.run-control {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin: -8px 0 24px;
+  padding: 12px 14px;
+}
+
+.run-control-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+}
+
+.run-control-state {
+  display: grid;
+  gap: 2px;
+  margin-right: auto;
+  min-width: 180px;
+}
+
+.bandwidth-form {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bandwidth-form select,
+.bandwidth-form input {
+  width: auto;
+}
+
+.bandwidth-form input {
+  max-width: 170px;
+}
+
+.run-control .notice {
+  margin: 0 0 10px;
+}
+
+.run-control .field-note {
+  margin: 8px 0 0;
+  padding: 0;
 }
 
 .run-summary-item.wide {
