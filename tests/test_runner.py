@@ -101,6 +101,33 @@ async def test_dry_run_injects_dry_run_arg_after_rclone_operation():
 
 
 @pytest.mark.asyncio
+async def test_dry_run_comes_first_even_when_the_common_args_name_it():
+    calls = []
+
+    async def executor(argv, env, log_path):
+        calls.append(argv)
+        return 0
+
+    # Here --dry-run is the pattern to exclude, not a flag.
+    job = Job(
+        id=8,
+        name="backup",
+        common_args="--exclude --dry-run",
+        env={},
+        steps=[JobStep(id=1, name="one", command="sync /source secret:/source")],
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        await JobRunner(Path(tmpdir), executor=executor).run_job(
+            job, trigger="manual-dry-run", dry_run=True
+        )
+
+    assert calls == [
+        ["rclone", "sync", "--dry-run", "--exclude", "--dry-run", "/source", "secret:/source"]
+    ]
+
+
+@pytest.mark.asyncio
 async def test_can_run_one_selected_step():
     calls = []
 

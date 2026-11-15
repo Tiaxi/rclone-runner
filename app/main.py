@@ -32,7 +32,7 @@ from app.auth import (
 from app.config import runtime_warnings, settings, startup_permission_error
 from app.core.commands import (
     CommandPolicyError,
-    build_rclone_argv,
+    build_step_argv,
     parse_console_command,
     run_variables,
 )
@@ -56,6 +56,8 @@ from app.core.notifications import (
     save_email_notification_settings,
     send_test_notification,
 )
+from app.core.prune import PruneCommandError, dry_run_requested, is_prune_command
+from app.core.prune import from_argv as prune_from_argv
 from app.core.pty_console import bridge_pty, display_argv
 from app.core.rclone_stats import (
     LiveProgress,
@@ -367,6 +369,7 @@ def _job_detail_context(job: JobRecord, db) -> dict[str, object]:
         "env_lines": env_to_lines(job.env_json),
         "steps_text": _steps_to_text(job.steps),
         "command_previews": _command_previews(job),
+        "run_warning": _run_warning(job),
         "job_run_rows": [_history_row("jobs", job_run) for job_run in job_runs],
         "runs": runs,
         "delete_blocked": False,
@@ -402,7 +405,7 @@ def _step_commands(job: JobRecord):
     rows = []
     for step in sorted(job.steps, key=lambda item: item.position):
         try:
-            argv = build_rclone_argv(step.command, job.common_args or "", env)
+            argv = build_step_argv(step.command, job.common_args or "", env)
         except CommandPolicyError:
             rows.append((step, None, None))
             continue
@@ -526,20 +529,15 @@ def _is_dry_run(step_run: JobStepRunRecord) -> bool:
         argv = json.loads(step_run.argv_json)
     except ValueError:
         return False
+    if is_prune_command(argv):
+        try:
+            return prune_from_argv(argv).dry_run
+        except PruneCommandError:
+            return False
     if len(argv) < 2:
         return False
-    # rclone uses the last value given, and -n may be combined with other short flags (-vn).
-    dry_run = False
     flags, _paths = split_command(argv)
-    for flag in flags:
-        name, has_value, value = flag[0].partition("=")
-        if name == "--dry-run":
-            dry_run = value.lower() not in {"false", "0", "f"} if has_value else True
-        elif not name.startswith("--") and name[1:].isalpha() and "n" in name[1:]:
-            # In "-vn=false" the value belongs to the last letter.
-            explicit = has_value and name.endswith("n")
-            dry_run = value.lower() not in {"false", "0", "f"} if explicit else True
-    return dry_run
+    return dry_run_requested(flag[0] for flag in flags)
 
 
 def _latest_dry_run_stats(job: JobRecord, db) -> dict[int, dict[str, object]]:
@@ -1410,6 +1408,7 @@ def _job_rows(records: list[JobRecord], db) -> list[dict[str, object]]:
     return [
         {
             "record": record,
+            "run_warning": _run_warning(record),
             "schedule_summary": cron_summary(record.cron),
             "last_run": latest_runs.get(record.id),
             "next_run": next_run_time(record.cron) if record.enabled else None,
@@ -1434,21 +1433,51 @@ def _latest_job_runs_by_job_id(records: list[JobRecord], db) -> dict[int, JobRun
     return latest_runs
 
 
-def _command_previews(job: JobRecord) -> list[dict[str, str]]:
+def _command_previews(job: JobRecord) -> list[dict[str, object]]:
     # Previews show what a run started now would use.
     env = run_variables(utc_now(), settings.timezone) | parse_env_lines(env_to_lines(job.env_json))
     previews = []
     for step in job.steps:
+        deletes = None
         try:
-            argv = build_rclone_argv(step.command, job.common_args or "", env)
+            argv = build_step_argv(step.command, job.common_args or "", env)
             command = display_argv(argv)
         except CommandPolicyError as exc:
             command = f"Invalid command: {exc}"
             tokens = [command]
         else:
             tokens = [display_argv([part]) for part in argv]
-        previews.append({"id": step.id, "name": step.name, "command": command, "tokens": tokens})
+            deletes = _prune_description(argv)
+        previews.append(
+            {
+                "id": step.id,
+                "name": step.name,
+                "command": command,
+                "tokens": tokens,
+                "deletes": deletes,
+            }
+        )
     return previews
+
+
+def _prune_description(argv: list[str]) -> str | None:
+    """What a prune-dated step deletes, or None for any other step or a dry run."""
+    if not is_prune_command(argv):
+        return None
+    try:
+        command = prune_from_argv(argv)
+    except PruneCommandError:
+        return None
+    return None if command.dry_run else command.description()
+
+
+def _run_warning(job: JobRecord) -> str:
+    """What else a real run of the whole job deletes, for its confirmation."""
+    return "".join(
+        f" Step {preview['name']} {preview['deletes']}."
+        for preview in _command_previews(job)
+        if preview["deletes"]
+    )
 
 
 def _delete_job_configuration(db, job: JobRecord) -> None:

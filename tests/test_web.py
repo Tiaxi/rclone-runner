@@ -1804,7 +1804,7 @@ async def test_job_page_shows_source_measurements():
         session_factory = _session_factory(Path(tmpdir) / "runs.db")
         with session_factory() as db:
             job = _create_job_with_sources(db)
-            argv = main.build_rclone_argv("sync /media/a remote:a", "--exclude *.tmp", {})
+            argv = main.build_step_argv("sync /media/a remote:a", "--exclude *.tmp", {})
             key = size_command(argv, {"RCLONE_CONFIG_PASS": "x"}).key
 
             page = await main.job_detail(_request(f"/jobs/{job.id}"), job.id, None, db)
@@ -1908,7 +1908,7 @@ async def test_job_page_estimates_from_history_and_dry_runs():
                         transfer_stats_json=stats_to_json(RcloneTransferStats(transferred, 100, 0)),
                     )
                 )
-            argv = main.build_rclone_argv("sync /media/a remote:a", "--exclude *.tmp", {})
+            argv = main.build_step_argv("sync /media/a remote:a", "--exclude *.tmp", {})
             db.add(
                 SourceMeasurementRecord(
                     key=size_command(argv, {"RCLONE_CONFIG_PASS": "x"}).key,
@@ -1952,7 +1952,7 @@ async def test_estimates_cap_each_step_by_its_own_bwlimit():
             db.add(job)
             save_expected_speed(db, 100)
             for step in job.steps:
-                argv = main.build_rclone_argv(step.command, "", {})
+                argv = main.build_step_argv(step.command, "", {})
                 db.add(
                     SourceMeasurementRecord(
                         key=size_command(argv).key,
@@ -2114,3 +2114,77 @@ async def test_job_page_says_when_rclone_flags_are_unavailable(monkeypatch):
             page = await main.job_detail(_request("/"), job.id, None, db)
 
     assert "can't be identified right now" in page.body.decode()
+
+
+def test_dry_run_detection_reads_prune_steps():
+    from types import SimpleNamespace
+
+    def run(trigger, argv):
+        return SimpleNamespace(job_run=SimpleNamespace(trigger=trigger), argv_json=json.dumps(argv))
+
+    argv = ["prune-dated", "crypt:v", "--keep-days", "30", "--keep-min", "7"]
+    assert not main._is_dry_run(run("schedule", argv))
+    assert main._is_dry_run(run("schedule", [*argv, "--dry-run"]))
+    assert main._is_dry_run(run("manual-step-dry-run", argv))
+    assert not main._is_dry_run(run("schedule", [*argv, "--exclude", "Thumbnails"]))
+
+
+async def test_job_editor_marks_prune_steps_as_destructive():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = JobRecord(name="backup", cron="", enabled=True, common_args="", env_json="{}")
+            job.steps.append(JobStepRecord(position=1, name="Music", command="sync /a crypt:a"))
+            job.steps.append(
+                JobStepRecord(
+                    position=2,
+                    name="Prune",
+                    command="prune-dated crypt:versions --keep-days 30 --keep-min 7",
+                )
+            )
+            job.steps.append(
+                JobStepRecord(
+                    position=3,
+                    name="Trial",
+                    command="prune-dated crypt:old --keep-days 1 --keep-min 1 --dry-run",
+                )
+            )
+            job.steps.append(
+                JobStepRecord(
+                    position=4, name="Root", command="prune-dated crypt: --keep-days 1 --keep-min 1"
+                )
+            )
+            db.add(job)
+            db.commit()
+
+            page = await main.job_detail(_request("/"), job.id, None, db)
+            html = page.body.decode()
+            response = await main.jobs(_request("/jobs"), None, db)
+            jobs_html = response.body.decode()
+
+    deletes = (
+        "permanently deletes dated folders in crypt:versions older than 30 days, "
+        "always keeping the newest 7"
+    )
+    previews = {preview["name"]: preview for preview in page.context["command_previews"]}
+    assert previews["Prune"]["deletes"] == deletes
+    # A step that is always a dry run deletes nothing; neither does one that can't run.
+    assert previews["Trial"]["deletes"] is None
+    assert previews["Root"]["deletes"] is None
+    assert previews["Root"]["command"] == (
+        "Invalid command: prune-dated: refusing to prune the root of crypt:"
+    )
+    assert html.count('<span class="badge destructive">Deletes folders</span>') == 1
+    assert f"This step {deletes}." in html
+
+    step_confirm = f"Run step Prune now? This is a real run, not a dry run: it {deletes}."
+    assert f"return confirm({json.dumps(step_confirm)})" in html
+    assert 'return confirm("Run step Music now? This is a real run, not a dry run.")' in html
+    run_confirm = (
+        "Run backup now? This is a real run, not a dry run: sync can delete files at the "
+        f"destination. Step Prune {deletes}."
+    )
+    assert page.context["run_warning"] == f" Step Prune {deletes}."
+    assert response.context["jobs"][0]["run_warning"] == f" Step Prune {deletes}."
+    for page_html in (html, jobs_html):
+        assert f"return confirm({json.dumps(run_confirm)})" in page_html

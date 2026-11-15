@@ -193,7 +193,9 @@ def split_command(argv: list[str]) -> tuple[list[list[str]], list[str]]:
 
 def size_command(argv: list[str], env: dict[str, str] | None = None) -> SizeCommand | None:
     """The ``rclone size`` command for a step's source, or None if it has no source."""
-    if len(argv) < 3 or argv[1] not in SOURCE_SUBCOMMANDS or not flags_available():
+    if len(argv) < 3 or argv[0] != "rclone" or argv[1] not in SOURCE_SUBCOMMANDS:
+        return None  # Built-in steps such as prune-dated have no source either.
+    if not flags_available():
         # Without rclone's flag list, a flag's value could pass for the source.
         return None
     flags, paths = split_command(argv)
