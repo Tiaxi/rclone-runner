@@ -13,75 +13,40 @@
 <p class="notice">Deleted job configuration. Run history was kept.</p>
 {% endif %}
 
-<h2>Ongoing activity</h2>
-
-<h3>Job runs</h3>
-<section class="table-wrap">
-  <table>
-    <thead><tr><th>Job</th><th>Mode</th><th>Started</th><th>Elapsed</th><th>Current step</th><th>Status</th><th></th></tr></thead>
-    <tbody>
-      {% for item in ongoing_job_runs %}
-      {% set run = item.run %}
-      <tr>
-        <td>{{ run.job_name }}</td>
-        <td><span class="badge {{ 'dry-run' if 'dry-run' in run.trigger else '' }}">{{ run_mode_label(run.trigger) }}</span></td>
-        <td>{{ format_local_time(run.started_at) }}</td>
-        <td>{{ format_duration(run.started_at, utc_now()) }}</td>
-        <td>{{ item.current_step }}</td>
-        <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
-        <td><a href="/job-runs/{{ run.id }}">Open</a></td>
-      </tr>
-      {% else %}
-      <tr><td colspan="7">No job runs are currently active.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+<div id="jobs-live" data-refresh-seconds="{{ 5 if running_now else 30 }}">
+{% if running_now %}
+<section class="running-now" aria-labelledby="running-now-heading">
+  <h2 id="running-now-heading">Running now</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Run</th><th>Mode</th><th>Started</th><th>Elapsed</th><th>Progress</th><th class="action-column"></th></tr></thead>
+      <tbody>
+        {% for item in running_now %}
+        <tr>
+          <td>
+            {% if item.kind == "console" %}
+            <code>{{ item.name }}</code>
+            {% else %}
+            <a href="{{ item.url }}">{{ item.name }}</a>
+            {% endif %}
+            <div class="table-subtext">{{ item.detail }}</div>
+          </td>
+          <td><span class="badge {{ 'dry-run' if item.dry_run else '' }}">{{ item.mode }}</span></td>
+          <td>{{ format_local_time(item.started_at) }}</td>
+          <td class="numeric" data-elapsed-seconds="{{ '%.1f'|format(item.elapsed_seconds) }}">{{ format_seconds(item.elapsed_seconds) }}</td>
+          <td class="numeric">{{ item.progress or "-" }}</td>
+          <td class="action-cell"><a href="{{ item.url }}">{{ "Log" if item.kind == "console" else "Open" }}</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
 </section>
+{% endif %}
 
-<h3>Step runs</h3>
-<section class="table-wrap">
-  <table>
-    <thead><tr><th>Step</th><th>Job</th><th>Mode</th><th>Started</th><th>Elapsed</th><th>Status</th><th></th></tr></thead>
-    <tbody>
-      {% for run in ongoing_step_runs %}
-      <tr>
-        <td>{{ run.step_name }}</td>
-        <td>{{ run.job_run.job_name }}</td>
-        <td><span class="badge {{ 'dry-run' if 'dry-run' in run.job_run.trigger else '' }}">{{ run_mode_label(run.job_run.trigger) }}</span></td>
-        <td>{{ format_local_time(run.started_at) }}</td>
-        <td>{{ format_duration(run.started_at, utc_now()) }}</td>
-        <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
-        <td><a href="/runs/{{ run.id }}">Log</a></td>
-      </tr>
-      {% else %}
-      <tr><td colspan="7">No step runs are currently active.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</section>
-
-<h3>Console commands</h3>
-<section class="table-wrap">
-  <table>
-    <thead><tr><th>Command</th><th>Started</th><th>Elapsed</th><th>Status</th><th></th></tr></thead>
-    <tbody>
-      {% for run in ongoing_console_runs %}
-      <tr>
-        <td><code>{{ run.command }}</code></td>
-        <td>{{ format_local_time(run.started_at) }}</td>
-        <td>{{ format_duration(run.started_at, utc_now()) }}</td>
-        <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
-        <td><a href="/console/runs/{{ run.id }}">Log</a></td>
-      </tr>
-      {% else %}
-      <tr><td colspan="5">No console commands are currently active.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</section>
-
-<h2>Configured jobs</h2>
-<section class="table-wrap">
+<section aria-labelledby="configured-jobs-heading">
+<h2 id="configured-jobs-heading"{% if not running_now %} class="visually-hidden"{% endif %}>Configured jobs</h2>
+<div class="table-wrap">
   <table class="configured-jobs-table">
     <thead><tr><th>Name</th><th>Schedule</th><th>Runs</th><th>Steps</th><th class="action-column"></th></tr></thead>
     <tbody>
@@ -116,7 +81,7 @@
             {% endif %}
           </div>
         </td>
-        <td>{{ job.steps|length }}</td>
+        <td class="numeric">{{ job.steps|length }}</td>
         <td class="action-cell job-actions">
           <div class="button-row">
             <form method="post" action="/jobs/{{ job.id }}/run" onsubmit='return confirm({{ ("Run " ~ job.name ~ " now? This is a real run, not a dry run: sync can delete files at the destination.")|tojson }})'>
@@ -135,9 +100,86 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="5">No jobs yet.</td></tr>
+      <tr><td colspan="5">No jobs yet. <a href="/jobs/new">Create one</a>.</td></tr>
       {% endfor %}
     </tbody>
   </table>
+</div>
 </section>
+</div>
+
+<script>
+  (() => {
+    // Keep the page current without a manual reload: tick elapsed times every second and
+    // replace the live region with a fresh copy, often while something runs and rarely otherwise.
+    const formatSeconds = (total) => {
+      if (total < 60) {
+        return `${total.toFixed(1)}s`;
+      }
+      let seconds = Math.floor(total);
+      let minutes = Math.floor(seconds / 60);
+      seconds %= 60;
+      if (minutes < 60) {
+        return `${minutes}m ${seconds}s`;
+      }
+      const hours = Math.floor(minutes / 60);
+      minutes %= 60;
+      return `${hours}h ${minutes}m ${seconds}s`;
+    };
+
+    let renderedAt = performance.now();
+    let refreshTimer = null;
+
+    const tick = () => {
+      const offset = (performance.now() - renderedAt) / 1000;
+      for (const cell of document.querySelectorAll("#jobs-live [data-elapsed-seconds]")) {
+        cell.textContent = formatSeconds(Number(cell.dataset.elapsedSeconds) + offset);
+      }
+    };
+
+    const refreshDelay = () => {
+      const live = document.getElementById("jobs-live");
+      return Number(live?.dataset.refreshSeconds || 30) * 1000;
+    };
+
+    const scheduleRefresh = () => {
+      window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(refresh, refreshDelay());
+    };
+
+    const refresh = async () => {
+      if (document.hidden) {
+        return;
+      }
+      try {
+        const response = await fetch(window.location.pathname, { headers: { Accept: "text/html" } });
+        if (response.ok) {
+          const html = await response.text();
+          const next = new DOMParser().parseFromString(html, "text/html").getElementById("jobs-live");
+          const current = document.getElementById("jobs-live");
+          if (!next || !current) {
+            // The session ended and the login page came back: stop until the user reloads.
+            return;
+          }
+          current.replaceWith(next);
+          renderedAt = performance.now();
+        }
+      } catch {
+        // The server is restarting or the network dropped; try again on the next round.
+      }
+      scheduleRefresh();
+    };
+
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) {
+        refresh();
+      } else {
+        window.clearTimeout(refreshTimer);
+      }
+    });
+
+    window.setInterval(tick, 1000);
+    scheduleRefresh();
+  })();
+</script>
 {% endblock %}

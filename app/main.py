@@ -91,6 +91,7 @@ def run_mode_label(trigger: str) -> str:
 templates.env.globals["run_mode_label"] = run_mode_label
 templates.env.globals["format_local_time"] = lambda value: _format_local_time(value)
 templates.env.globals["format_duration"] = lambda start, end: _format_duration(start, end)
+templates.env.globals["format_seconds"] = lambda seconds: _format_seconds(seconds)
 templates.env.globals["utc_now"] = utc_now
 templates.env.globals["run_exit_label"] = lambda run: _exit_label(run.status, run.exit_code)
 
@@ -192,16 +193,10 @@ async def index(_: AuthRequired) -> Response:
 @app.get("/jobs", response_class=HTMLResponse)
 async def jobs(request: Request, _: AuthRequired, db: DbSession, deleted: bool = False) -> Response:
     records = db.query(JobRecord).order_by(JobRecord.name).all()
-    ongoing_job_runs = (
+    running_job_runs = (
         db.query(JobRunRecord).filter_by(status="running").order_by(JobRunRecord.started_at).all()
     )
-    ongoing_step_runs = (
-        db.query(JobStepRunRecord)
-        .filter_by(status="running")
-        .order_by(JobStepRunRecord.started_at)
-        .all()
-    )
-    ongoing_console_runs = (
+    running_console_runs = (
         db.query(ConsoleRunRecord)
         .filter_by(status="running")
         .order_by(ConsoleRunRecord.started_at)
@@ -212,9 +207,7 @@ async def jobs(request: Request, _: AuthRequired, db: DbSession, deleted: bool =
         "jobs.html",
         {
             "jobs": _job_rows(records, db),
-            "ongoing_job_runs": _ongoing_job_run_rows(ongoing_job_runs),
-            "ongoing_step_runs": ongoing_step_runs,
-            "ongoing_console_runs": ongoing_console_runs,
+            "running_now": _running_now_rows(running_job_runs, running_console_runs),
             "deleted": deleted,
         },
     )
@@ -1352,15 +1345,41 @@ def _console_history_row(record: ConsoleRunRecord) -> dict[str, object]:
     }
 
 
-def _ongoing_job_run_rows(records: list[JobRunRecord]) -> list[dict[str, object]]:
-    return [
-        {
-            "run": record,
-            "current_step": active_step.step_name if active_step is not None else "Starting",
-        }
-        for record in records
-        for active_step in [_active_step_run(record)]
-    ]
+def _running_now_rows(
+    job_runs: list[JobRunRecord], console_runs: list[ConsoleRunRecord]
+) -> list[dict[str, object]]:
+    now = utc_now()
+    rows: list[dict[str, object]] = []
+    for job_run in job_runs:
+        active_step = _active_step_run(job_run)
+        rows.append(
+            {
+                "kind": "job",
+                "name": job_run.job_name,
+                "detail": f"Step: {active_step.step_name}" if active_step else "Starting",
+                "mode": run_mode_label(job_run.trigger),
+                "dry_run": "dry-run" in job_run.trigger,
+                "started_at": job_run.started_at,
+                "elapsed_seconds": _duration_seconds(job_run.started_at, now),
+                "progress": _progress_label(_live_progress(active_step)),
+                "url": f"/job-runs/{job_run.id}",
+            }
+        )
+    for console_run in console_runs:
+        rows.append(
+            {
+                "kind": "console",
+                "name": console_run.command,
+                "detail": "Console command",
+                "mode": "Console",
+                "dry_run": False,
+                "started_at": console_run.started_at,
+                "elapsed_seconds": _duration_seconds(console_run.started_at, now),
+                "progress": None,
+                "url": f"/console/runs/{console_run.id}",
+            }
+        )
+    return rows
 
 
 def _job_run_status_payload(job_run: JobRunRecord, db) -> dict[str, object]:

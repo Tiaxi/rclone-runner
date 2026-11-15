@@ -166,9 +166,16 @@ async def test_jobs_page_receives_ongoing_activity():
 
             response = await main.jobs(request, None, db)
 
-            assert response.context["ongoing_job_runs"][0]["run"].job_name == "backup"
-            assert response.context["ongoing_step_runs"][0].step_name == "one"
-            assert response.context["ongoing_console_runs"][0].command == "lsd remote:"
+            job_row, console_row = response.context["running_now"]
+            assert job_row["kind"] == "job"
+            assert job_row["name"] == "backup"
+            assert job_row["detail"] == "Step: one"
+            assert job_row["url"] == f"/job-runs/{job_run.id}"
+            assert job_row["progress"] is None
+            assert job_row["elapsed_seconds"] >= 0
+            assert console_row["kind"] == "console"
+            assert console_row["name"] == "lsd remote:"
+            assert console_row["url"] == f"/console/runs/{console_run.id}"
 
 
 async def test_jobs_page_includes_last_and_next_run_context():
@@ -1474,6 +1481,9 @@ async def test_running_job_run_reports_live_progress_from_active_step_log():
             assert payload["progress"] == expected
             assert step_payload["progress"] == expected
             assert expected in page.body.decode()
+            jobs_page = await main.jobs(_request("/jobs"), None, db)
+            assert jobs_page.context["running_now"][0]["progress"] == expected
+            assert expected in jobs_page.body.decode()
 
             _finish(db, step_run)
             payload = await main.job_run_status(step_run.job_run_id, None, db)
