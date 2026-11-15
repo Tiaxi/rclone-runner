@@ -1805,7 +1805,7 @@ async def test_job_page_shows_source_measurements():
         with session_factory() as db:
             job = _create_job_with_sources(db)
             argv = main.build_rclone_argv("sync /media/a remote:a", "--exclude *.tmp", {})
-            key = size_command(argv).key
+            key = size_command(argv, {"RCLONE_CONFIG_PASS": "x"}).key
 
             page = await main.job_detail(_request(f"/jobs/{job.id}"), job.id, None, db)
             html = page.body.decode()
@@ -1911,7 +1911,7 @@ async def test_job_page_estimates_from_history_and_dry_runs():
             argv = main.build_rclone_argv("sync /media/a remote:a", "--exclude *.tmp", {})
             db.add(
                 SourceMeasurementRecord(
-                    key=size_command(argv).key,
+                    key=size_command(argv, {"RCLONE_CONFIG_PASS": "x"}).key,
                     source="/media/a",
                     status="success",
                     bytes=36 * gib,
@@ -1932,3 +1932,106 @@ async def test_job_page_estimates_from_history_and_dry_runs():
     assert "3.000 GiB to upload" in html
     assert page.context["source_speed"].explanation == "this job's last sizeable run"
     assert "Estimates assume 10.0 MiB/s, this job&#39;s last sizeable run." in html
+
+
+async def test_estimates_cap_each_step_by_its_own_bwlimit():
+    from app.core.estimates import save_expected_speed
+    from app.core.sources import size_command
+
+    gib = 1024**3
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = JobRecord(name="backup", cron="", enabled=True, common_args="", env_json="{}")
+            job.steps.append(
+                JobStepRecord(position=1, name="Fast", command="sync /a r:a --bwlimit 100M")
+            )
+            job.steps.append(
+                JobStepRecord(position=2, name="Slow", command="sync /b r:b --bwlimit 1M")
+            )
+            db.add(job)
+            save_expected_speed(db, 100)
+            for step in job.steps:
+                argv = main.build_rclone_argv(step.command, "", {})
+                db.add(
+                    SourceMeasurementRecord(
+                        key=size_command(argv).key,
+                        source="x",
+                        status="success",
+                        bytes=36 * gib,
+                        files=10,
+                        started_at=main.utc_now(),
+                        measured_at=main.utc_now(),
+                    )
+                )
+            db.commit()
+
+            context = main._sources_context(job, db)
+
+    fast, slow = context["source_rows"]
+    # 36 GiB at 100 MiB/s is about 6 minutes; at 1 MiB/s it is about 10 hours.
+    assert fast["full_estimate"] == "about 7 min"
+    assert fast["speed_note"] is None
+    assert slow["full_estimate"] == "about 10 h 15 min"
+    assert "--bwlimit" in slow["speed_note"]
+    assert context["source_totals"]["estimate"] == "about 10 h 20 min"
+
+
+async def test_runs_with_dry_run_flags_count_as_dry_runs_not_speed_samples():
+    from datetime import timedelta
+
+    from app.core.rclone_stats import RcloneTransferStats, stats_to_json
+
+    gib = 1024**3
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = _create_job_with_sources(db)
+            started = main.utc_now()
+            for argv in (["rclone", "sync", "-n", "/media/a", "remote:a"],):
+                run = JobRunRecord(
+                    job_id=job.id,
+                    job_name=job.name,
+                    trigger="schedule",
+                    status="success",
+                    started_at=started,
+                    ended_at=started + timedelta(seconds=600),
+                )
+                db.add(run)
+                db.flush()
+                db.add(
+                    JobStepRunRecord(
+                        job_run_id=run.id,
+                        step_id=job.steps[0].id,
+                        step_name="Music",
+                        argv_json=json.dumps(argv),
+                        status="success",
+                        exit_code=0,
+                        log_path=str(Path(tmpdir) / "run.log"),
+                        started_at=run.started_at,
+                        ended_at=run.ended_at,
+                        transfer_stats_json=stats_to_json(RcloneTransferStats(50 * gib, 10, 0)),
+                    )
+                )
+            db.commit()
+
+            samples = main._upload_samples(job, db)
+            dry_runs = main._latest_dry_run_stats(job, db)
+
+    assert samples == []
+    assert dry_runs[job.steps[0].id]["bytes"] == 50 * gib
+
+
+def test_dry_run_detection_reads_the_command():
+    from types import SimpleNamespace
+
+    def run(trigger, argv):
+        return SimpleNamespace(job_run=SimpleNamespace(trigger=trigger), argv_json=json.dumps(argv))
+
+    assert main._is_dry_run(run("manual-dry-run", ["rclone", "sync"]))
+    assert main._is_dry_run(run("schedule", ["rclone", "sync", "--dry-run", "a", "b"]))
+    assert main._is_dry_run(run("schedule", ["rclone", "sync", "--dry-run=true", "a", "b"]))
+    assert not main._is_dry_run(run("schedule", ["rclone", "sync", "--dry-run=false", "a", "b"]))
+    assert not main._is_dry_run(run("schedule", ["rclone", "sync", "a", "b"]))
+    # After "--", "-n" is a path.
+    assert not main._is_dry_run(run("schedule", ["rclone", "copy", "--", "-n", "b"]))

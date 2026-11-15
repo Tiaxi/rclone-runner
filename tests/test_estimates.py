@@ -49,6 +49,9 @@ def test_bwlimit_values_in_bytes_per_second():
     assert bwlimit_bytes_per_second("3M:off") == 3 * MIB
     assert bwlimit_bytes_per_second("512") == 512 * 1024
     assert bwlimit_bytes_per_second("off") is None
+    # rclone reads 0 as no limit.
+    assert bwlimit_bytes_per_second("0") is None
+    assert bwlimit_bytes_per_second("0M") is None
     assert bwlimit_bytes_per_second(None) is None
 
 
