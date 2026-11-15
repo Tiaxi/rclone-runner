@@ -93,6 +93,7 @@ HISTORY_PAGE_SIZE = 25
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     init_db()
+    runner.recover_interrupted_runs()
     with next_db() as session:
         sync_schedules(session)
     scheduler.start()
