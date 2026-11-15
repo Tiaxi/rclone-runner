@@ -1217,6 +1217,30 @@ async def test_update_job_keeps_step_ids_so_history_stays_attached(monkeypatch):
             assert removed_run.step_id is None
 
 
+async def test_update_job_matches_duplicate_step_names_in_order(monkeypatch):
+    monkeypatch.setattr(main, "sync_schedules", lambda db: None)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = _create_job(db, step_names=["same", "same"])
+            first_id, second_id = (step.id for step in job.steps)
+
+            await main.update_job(
+                _request(f"/jobs/{job.id}", "POST"),
+                job.id,
+                None,
+                None,
+                db,
+                **_job_form(steps_text="same|lsd a:\nsame|lsd b:\nsame|lsd c:"),
+            )
+
+            db.expire_all()
+            steps = db.get(JobRecord, job.id).steps
+            assert [step.command for step in steps] == ["lsd a:", "lsd b:", "lsd c:"]
+            assert [step.id for step in steps[:2]] == [first_id, second_id]
+            assert steps[2].id not in {first_id, second_id}
+
+
 async def test_job_run_rows_show_recorded_steps_when_steps_no_longer_exist():
     with tempfile.TemporaryDirectory() as tmpdir:
         session_factory = _session_factory(Path(tmpdir) / "runs.db")
