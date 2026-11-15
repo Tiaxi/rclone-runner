@@ -14,6 +14,10 @@
   --accent-dark: #23543b;
   --danger: #a33a32;
   --danger-dark: #7f2d27;
+  --button-bg: var(--accent);
+  --button-hover: var(--accent-dark);
+  --danger-bg: var(--danger);
+  --danger-hover: var(--danger-dark);
   --secondary-hover: #f1f3ed;
   --input-bg: #ffffff;
   --badge-bg: #eef2ea;
@@ -48,6 +52,10 @@ html[data-theme="dark"] {
   --accent-dark: #8fd5aa;
   --danger: #e06e65;
   --danger-dark: #c85c54;
+  --button-bg: #2f7a52;
+  --button-hover: #3a8a60;
+  --danger-bg: #a8423a;
+  --danger-hover: #bd4f46;
   --secondary-hover: #232a20;
   --input-bg: #121610;
   --badge-bg: #232a20;
@@ -146,6 +154,12 @@ a {
   margin-bottom: 24px;
 }
 
+.page-header > .button-row {
+  flex-shrink: 0;
+  justify-content: flex-end;
+  max-width: 50%;
+}
+
 h1,
 h2,
 h3 {
@@ -163,8 +177,9 @@ p {
 
 button,
 .button {
-  background: var(--accent);
-  border: 0;
+  background: var(--button-bg);
+  /* A transparent border keeps solid and outlined buttons the same height. */
+  border: 1px solid transparent;
   border-radius: 6px;
   color: #fff;
   cursor: pointer;
@@ -176,17 +191,30 @@ button,
 
 button:hover,
 .button:hover {
-  background: var(--accent-dark);
+  background: var(--button-hover);
 }
 
 button.danger,
 .button.danger {
-  background: var(--danger);
+  background: var(--danger-bg);
 }
 
 button.danger:hover,
 .button.danger:hover {
-  background: var(--danger-dark);
+  background: var(--danger-hover);
+}
+
+/* A row action that should not shout: outlined until hovered. */
+button.danger.quiet {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--danger);
+}
+
+button.danger.quiet:hover {
+  background: var(--danger-bg);
+  border-color: transparent;
+  color: #fff;
 }
 
 button.small,
@@ -325,7 +353,8 @@ td {
   margin-top: 4px;
 }
 
-.numeric {
+.numeric,
+time {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -346,12 +375,16 @@ td {
   margin-bottom: 28px;
 }
 
-.configured-jobs-table .action-column {
-  width: 260px;
+.name-column {
+  min-width: 200px;
 }
 
-.job-run-context {
-  min-width: 260px;
+.count-column {
+  width: 1%;
+}
+
+.configured-jobs-table .action-column {
+  width: 260px;
 }
 
 .job-run-context div {
@@ -504,7 +537,8 @@ textarea {
   user-select: text;
   white-space: normal;
   word-break: keep-all;
-  overflow-wrap: normal;
+  /* Break between arguments first; split one only when it is wider than the box. */
+  overflow-wrap: anywhere;
 }
 
 .executed-command {
@@ -600,7 +634,7 @@ textarea {
 
 .toast-icon {
   align-items: center;
-  background: var(--accent);
+  background: var(--button-bg);
   border-radius: 999px;
   color: #fff;
   display: inline-flex;
@@ -622,7 +656,7 @@ textarea {
 }
 
 .toast.error .toast-icon {
-  background: var(--danger);
+  background: var(--danger-bg);
 }
 
 @keyframes toast-in {
@@ -664,6 +698,7 @@ textarea {
 }
 
 .run-summary-item {
+  align-content: start;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -671,6 +706,10 @@ textarea {
   gap: 4px;
   min-height: 64px;
   padding: 10px 12px;
+}
+
+.run-summary-item.wide {
+  grid-column: 1 / -1;
 }
 
 .run-summary-item.primary {
@@ -909,6 +948,15 @@ textarea {
 
   .form-grid,
   .settings-list {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .page-header > .button-row {
+    justify-content: flex-start;
+    max-width: none;
+  }
+
+  .run-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

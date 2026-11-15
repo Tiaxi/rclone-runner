@@ -29,6 +29,7 @@
     const progress = document.querySelector("#run-progress");
     const progressItem = document.querySelector("#run-progress-item");
     const cancelForm = document.querySelector("#cancel-run-form");
+    const deleteForm = document.querySelector("#delete-run-form");
     let loading = false;
     let live = output.dataset.live === "true";
     let appendOffset = Number.parseInt(output.dataset.appendOffset || "0", 10);
@@ -111,6 +112,9 @@
         cancelForm.remove();
       }
       live = state.status === "running";
+      if (!live && deleteForm) {
+        deleteForm.hidden = false;
+      }
     }
 
     async function appendNewOutput() {

@@ -1,0 +1,8 @@
+{% macro transfer_cell(transfer) %}
+<td class="numeric">
+  {% if transfer %}
+  <div>{{ transfer.data }}</div>
+  {% if transfer.detail %}<div class="table-subtext">{{ transfer.detail }}</div>{% endif %}
+  {% else %}-{% endif %}
+</td>
+{% endmacro %}
