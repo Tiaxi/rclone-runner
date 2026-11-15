@@ -27,14 +27,19 @@ def unwritable_paths(value: Settings) -> list[Path]:
     database_path = _sqlite_path(value.database_url)
     if database_path is not None:
         paths.append(database_path.parent)
-        if database_path.exists():
-            paths.append(database_path)
+        # SQLite also writes -wal/-shm (and -journal) files next to the database.
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            candidate = database_path.with_name(database_path.name + suffix)
+            if candidate.exists():
+                paths.append(candidate)
     problems: list[Path] = []
     for path in dict.fromkeys(paths):
         target = path
         while not target.exists() and target != target.parent:
             target = target.parent
-        if not os.access(target, os.W_OK):
+        # Folders also need search (x) permission to create and open files inside them.
+        mode = os.W_OK | os.X_OK if target.is_dir() else os.W_OK
+        if not os.access(target, mode):
             problems.append(path)
     return problems
 

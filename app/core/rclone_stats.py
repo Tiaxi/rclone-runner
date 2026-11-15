@@ -109,12 +109,13 @@ def stats_from_log(path: Path) -> RcloneTransferStats | None:
         with path.open("rb") as log_file:
             size = log_file.seek(0, 2)
             start = max(0, size - STATS_TAIL_BYTES)
-            log_file.seek(start)
+            # Read from one byte earlier, so a tail that starts exactly at a line boundary
+            # keeps its first line: only text up to the first newline is dropped.
+            log_file.seek(max(0, start - 1))
             data = log_file.read()
     except OSError:
         return None
     if start > 0:
-        # Drop the partial first line.
         data = data.partition(b"\n")[2]
     return parse_rclone_transfer_stats(data.decode("utf-8", errors="replace"))
 

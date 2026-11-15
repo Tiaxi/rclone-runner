@@ -139,3 +139,45 @@ def test_runtime_warnings_flag_unwritable_rclone_config_folder(tmp_path: Path, m
         config_dir.chmod(0o755)
 
     assert any("not writable" in warning for warning in warnings)
+
+
+def test_login_throttle_caps_tracked_clients():
+    now = [0.0]
+    throttle = LoginThrottle(
+        max_failures=1, window_seconds=600, clock=lambda: now[0], max_clients=2
+    )
+
+    for client in ("10.0.0.1", "10.0.0.2", "10.0.0.3"):
+        now[0] += 1
+        throttle.record_failure(client)
+
+    assert throttle.retry_after("10.0.0.1") is None
+    assert throttle.retry_after("10.0.0.2") is not None
+    assert throttle.retry_after("10.0.0.3") is not None
+
+
+@needs_non_root
+def test_startup_permission_error_flags_unwritable_sqlite_wal_and_untraversable_folder(
+    tmp_path: Path,
+):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    database = data_dir / "rclone-runner.db"
+    database.write_bytes(b"")
+    wal = data_dir / "rclone-runner.db-wal"
+    wal.write_bytes(b"")
+    wal.chmod(0o444)
+    logs = data_dir / "logs"
+    logs.mkdir()
+    logs.chmod(0o666)
+    try:
+        message = startup_permission_error(
+            Settings(data_dir=data_dir, log_dir=logs, database_url=f"sqlite:///{database}")
+        )
+    finally:
+        logs.chmod(0o755)
+        wal.chmod(0o644)
+
+    assert message is not None
+    assert str(wal) in message
+    assert str(logs) in message
