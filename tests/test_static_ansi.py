@@ -3,7 +3,7 @@ import subprocess
 import textwrap
 from pathlib import Path
 
-from app.core.logs import read_log_chunk
+from app.core.logs import read_log_append, read_log_chunk
 
 
 def test_ansi_renderer_applies_terminal_backspace_sequences():
@@ -144,7 +144,21 @@ def test_ansi_renderer_treats_crlf_as_newline_not_global_cursor_reset():
     assert json.loads(result.stdout) == "one\ntwo\nthree"
 
 
-def test_live_log_view_trims_old_output_and_keeps_byte_offset_for_scrollback(tmp_path):
+def test_live_log_trimming_and_scrollback_reproduce_the_log_exactly(tmp_path):
+    # Multi-byte text, read in small appends so pieces split lines (and would split
+    # characters if the server did not cut at character boundaries).
+    log_path = tmp_path / "step.log"
+    content = "".join(f"päivä {index} – ok\n" for index in range(400))
+    log_path.write_text(content, encoding="utf-8")
+    segments = []
+    offset = 0
+    while True:
+        append = read_log_append(log_path, offset=offset, max_bytes=37)
+        segments.append({"text": append["text"], "start": append["start"]})
+        offset = append["offset"]
+        if not append["more"]:
+            break
+
     template = Path("app/templates/_log_viewer.html").read_text()
     start = template.index("    function trimLiveLog()")
     end = template.index("    async function pollLiveRun()")
@@ -153,39 +167,25 @@ def test_live_log_view_trims_old_output_and_keeps_byte_offset_for_scrollback(tmp
         const MAX_LIVE_LOG_CHARS = 1000;
         const output = { dataset: { nextBefore: "", hasMore: "false" } };
         function updateStatus() {}
-        const lines = [];
-        for (let i = 0; i < 300; i++) lines.push(`päivä ${i}\\n`);
-        let rawLogText = lines.join("");
-        const fullBytes = new TextEncoder().encode(rawLogText).length;
-        let appendOffset = fullBytes;
+        let segments = SEGMENTS;
         TRIM_FUNCTION
         trimLiveLog();
-        const keptBytes = new TextEncoder().encode(rawLogText).length;
         console.log(JSON.stringify({
-          length: rawLogText.length,
-          startsAtLine: rawLogText.startsWith("päivä "),
-          endsWithLast: rawLogText.endsWith("päivä 299\\n"),
-          nextBefore: Number(output.dataset.nextBefore),
-          expectedNextBefore: fullBytes - keptBytes,
+          kept: segments.map((segment) => segment.text).join(""),
+          nextBefore: output.dataset.nextBefore,
           hasMore: output.dataset.hasMore,
-          firstLine: rawLogText.split("\\n", 1)[0],
         }));
         """
-    ).replace("TRIM_FUNCTION", template[start:end])
+    )
+    script = script.replace("SEGMENTS", json.dumps(segments))
+    script = script.replace("TRIM_FUNCTION", template[start:end])
 
     result = subprocess.run(
         ["node", "-e", script], check=True, capture_output=True, cwd=Path.cwd(), text=True
     )
     state = json.loads(result.stdout)
 
-    assert state["length"] <= 1000
-    assert state["startsAtLine"] is True
-    assert state["endsWithLast"] is True
-    assert state["nextBefore"] == state["expectedNextBefore"]
+    assert len(state["kept"]) <= 1000 + 37
     assert state["hasMore"] == "true"
-    # Scrolling up loads lines ending at nextBefore: exactly the line before the kept text.
-    log_path = tmp_path / "step.log"
-    log_path.write_text("".join(f"päivä {i}\n" for i in range(300)), encoding="utf-8")
-    first_kept = int(state["firstLine"].split()[1])
-    older = read_log_chunk(log_path, before=state["nextBefore"], limit=1)
-    assert older.text == f"päivä {first_kept - 1}\n"
+    older = read_log_chunk(log_path, before=int(state["nextBefore"]), limit=1_000_000)
+    assert older.text + state["kept"] == content

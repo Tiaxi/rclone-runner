@@ -10,6 +10,7 @@
     data-append-url="{{ log_append_url }}"
     data-status-url="{{ log_status_url }}"
     data-append-offset="{{ log_append_offset }}"
+    data-chunk-start="{{ log_chunk.start }}"
     data-live="{{ 'true' if run.status == 'running' and log_status_url else 'false' }}"
     data-next-before="{{ log_chunk.next_before if log_chunk.next_before is not none else '' }}"
     data-has-more="{{ 'true' if log_chunk.has_more else 'false' }}"
@@ -31,14 +32,25 @@
     let loading = false;
     let live = output.dataset.live === "true";
     let appendOffset = Number.parseInt(output.dataset.appendOffset || "0", 10);
-    let rawLogText = output.textContent;
+    // The log on screen as pieces of text, each with the byte offset where it starts in the
+    // file. The server cuts pieces at whole characters, so trimming whole pieces keeps exact
+    // offsets without re-encoding text in the browser.
+    let segments = [
+      { text: output.textContent, start: Number.parseInt(output.dataset.chunkStart || "0", 10) },
+    ];
     // While following a live run, keep only the newest output on screen; re-rendering the
     // whole log every second makes the tab crawl during long runs. Trimmed lines can be
     // loaded again by scrolling up, and the raw log has everything.
     const MAX_LIVE_LOG_CHARS = 200000;
+    // Fetch at most this many append pages per poll when catching up with a fast log.
+    const MAX_APPENDS_PER_POLL = 20;
+
+    function logText() {
+      return segments.map((segment) => segment.text).join("");
+    }
 
     function renderLog() {
-      output.innerHTML = rcloneRunnerAnsi.render(rawLogText);
+      output.innerHTML = rcloneRunnerAnsi.render(logText());
     }
 
     function hasMore() {
@@ -59,7 +71,7 @@
       const previousHeight = output.scrollHeight;
       const response = await fetch(`${output.dataset.chunkUrl}?before=${output.dataset.nextBefore}`);
       const chunk = await response.json();
-      rawLogText = `${chunk.text}${rawLogText}`;
+      segments.unshift({ text: chunk.text, start: chunk.next_before ?? 0 });
       renderLog();
       output.dataset.nextBefore = chunk.next_before ?? "";
       output.dataset.hasMore = chunk.has_more ? "true" : "false";
@@ -106,15 +118,24 @@
         return;
       }
       const pinned = isPinnedToBottom();
-      const response = await fetch(`${output.dataset.appendUrl}?offset=${appendOffset}`);
-      const chunk = await response.json();
-      appendOffset = chunk.offset ?? appendOffset;
-      output.dataset.appendOffset = appendOffset;
-      if (chunk.text) {
-        rawLogText = `${rawLogText}${chunk.text}`;
+      let changed = false;
+      for (let page = 0; page < MAX_APPENDS_PER_POLL; page++) {
+        const response = await fetch(`${output.dataset.appendUrl}?offset=${appendOffset}`);
+        const chunk = await response.json();
+        if (chunk.text) {
+          segments.push({ text: chunk.text, start: chunk.start ?? appendOffset });
+          changed = true;
+        }
+        appendOffset = chunk.offset ?? appendOffset;
         if (pinned) {
           trimLiveLog();
         }
+        if (!chunk.more) {
+          break;
+        }
+      }
+      output.dataset.appendOffset = appendOffset;
+      if (changed) {
         renderLog();
         if (pinned) {
           output.scrollTop = output.scrollHeight;
@@ -123,19 +144,17 @@
     }
 
     function trimLiveLog() {
-      if (rawLogText.length <= MAX_LIVE_LOG_CHARS) {
+      let total = segments.reduce((sum, segment) => sum + segment.text.length, 0);
+      if (total <= MAX_LIVE_LOG_CHARS) {
         return;
       }
-      const cut = rawLogText.indexOf("\n", rawLogText.length - MAX_LIVE_LOG_CHARS);
-      if (cut === -1) {
-        return;
+      while (total > MAX_LIVE_LOG_CHARS && segments.length > 1) {
+        total -= segments.shift().text.length;
       }
-      rawLogText = rawLogText.slice(cut + 1);
-      // appendOffset is the byte offset of the end of rawLogText, so the kept text starts
-      // this many bytes before it. Older lines are loaded from there when scrolling up.
-      const keptBytes = new TextEncoder().encode(rawLogText).length;
-      output.dataset.nextBefore = String(Math.max(0, appendOffset - keptBytes));
-      output.dataset.hasMore = "true";
+      // Scrolling up loads the lines that end where the first kept piece starts.
+      const start = segments[0].start;
+      output.dataset.nextBefore = start > 0 ? String(start) : "";
+      output.dataset.hasMore = start > 0 ? "true" : "false";
       updateStatus();
     }
 
