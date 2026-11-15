@@ -35,7 +35,7 @@
         <td class="numeric">{{ row.duration }}</td>
         {{ transfer_cell(row.transfer) }}
         <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
-        <td class="action-cell">{{ delete_form("/job-runs/" ~ run.id ~ "/delete") }}</td>
+        <td class="action-cell">{% if run.status != "running" %}{{ delete_form("/job-runs/" ~ run.id ~ "/delete") }}{% endif %}</td>
       </tr>
       {% else %}
       <tr><td colspan="7">No job runs recorded.</td></tr>
@@ -57,7 +57,7 @@
         {{ transfer_cell(row.transfer) }}
         <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
         <td class="numeric">{{ run_exit_label(run) }}</td>
-        <td class="action-cell">{{ delete_form("/runs/" ~ run.id ~ "/delete") }}</td>
+        <td class="action-cell">{% if "running" not in (run.status, run.job_run.status) %}{{ delete_form("/runs/" ~ run.id ~ "/delete") }}{% endif %}</td>
       </tr>
       {% else %}
       <tr><td colspan="8">No step runs recorded.</td></tr>
@@ -74,7 +74,7 @@
         <td class="numeric">{{ row.duration }}</td>
         <td><span class="run-status {{ run.status }}">{{ run.status|capitalize }}</span></td>
         <td class="numeric">{{ run.exit_code if run.exit_code is not none else "-" }}</td>
-        <td class="action-cell">{{ delete_form("/console/runs/" ~ run.id ~ "/delete") }}</td>
+        <td class="action-cell">{% if run.status != "running" %}{{ delete_form("/console/runs/" ~ run.id ~ "/delete") }}{% endif %}</td>
       </tr>
       {% else %}
       <tr><td colspan="6">No console runs recorded.</td></tr>

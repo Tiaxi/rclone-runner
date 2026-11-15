@@ -1541,6 +1541,8 @@ def _run_status_payload(run: JobStepRunRecord) -> dict[str, object]:
         "elapsed": _format_seconds(elapsed_seconds),
         "elapsed_seconds": elapsed_seconds,
         "can_cancel": run.status == "running",
+        # Deleting is refused while the step or the job around it is still running.
+        "can_delete": "running" not in {run.status, run.job_run.status},
         "progress": _progress_label(_live_progress(run)),
         "stats_label": stats.label,
         "stats_available": stats.available,

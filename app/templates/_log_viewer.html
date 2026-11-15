@@ -112,9 +112,24 @@
         cancelForm.remove();
       }
       live = state.status === "running";
-      if (!live && deleteForm) {
-        deleteForm.hidden = false;
+    }
+
+    // Delete is hidden while the step or its job runs. A finished step of a running job stops
+    // the live log, so watch the status separately until deleting is allowed.
+    async function revealDeleteWhenAllowed() {
+      if (!deleteForm || !deleteForm.hidden || !output.dataset.statusUrl) {
+        return;
       }
+      try {
+        const response = await fetch(output.dataset.statusUrl);
+        if (response.ok && (await response.json()).can_delete) {
+          deleteForm.hidden = false;
+          return;
+        }
+      } catch {
+        // Try again on the next round.
+      }
+      window.setTimeout(revealDeleteWhenAllowed, 2000);
     }
 
     async function appendNewOutput() {
@@ -181,6 +196,7 @@
 
     updateStatus();
     renderLog();
+    revealDeleteWhenAllowed();
     requestAnimationFrame(() => {
       output.scrollTop = output.scrollHeight;
     });

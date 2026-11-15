@@ -781,3 +781,22 @@ def test_hidden_attribute_wins_over_component_display_rules():
     css = Path("app/static/styles.css").read_text()
 
     assert "[hidden] {\n  display: none !important;\n}" in css
+
+
+def test_history_hides_delete_for_runs_still_in_progress():
+    job_run, step_run, console_run = _history_fixtures("running", "success", "running")
+    step_run.job_run = SimpleNamespace(job_name="backup", trigger="manual", status="running")
+
+    for view, run, action in (
+        ("jobs", job_run, "/job-runs/3/delete"),
+        ("steps", step_run, "/runs/4/delete"),
+        ("console", console_run, "/console/runs/5/delete"),
+    ):
+        assert action not in _history_html(view, [run])
+
+
+def test_step_log_reveals_delete_from_the_servers_can_delete_flag():
+    viewer = Path("app/templates/_log_viewer.html").read_text()
+
+    assert "revealDeleteWhenAllowed();" in viewer
+    assert ".can_delete" in viewer
