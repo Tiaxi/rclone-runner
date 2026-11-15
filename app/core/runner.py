@@ -244,11 +244,10 @@ class LiveJobRunner:
     ) -> JobStepRunRecord:
         now = utc_now()
         log_path = self._step_log_path(job, step, run_stamp)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(
+        _append_log(
+            log_path,
             f"[rclone-runner] Could not start step {step.name!r}: {error}\n"
             "[rclone-runner] No steps were run.\n",
-            encoding="utf-8",
         )
         with self._session_factory() as db:
             job_run = JobRunRecord(
@@ -342,11 +341,10 @@ class LiveJobRunner:
             job_status = "failed"
             logger.exception("Job run %s failed unexpectedly", job_run_id)
             if step_run is not None:
-                with suppress(Exception):
-                    _append_log(
-                        Path(step_run.log_path),
-                        f"\n[rclone-runner] Step failed to run: {exc!r}\n",
-                    )
+                _append_log(
+                    Path(step_run.log_path),
+                    f"\n[rclone-runner] Step failed to run: {exc!r}\n",
+                )
                 self._finish_step_run(step_run.id, "failed", None)
         finally:
             self._finish_job_run(job_run_id, job_status)
@@ -451,9 +449,14 @@ def _detached_copy(step_run: JobStepRunRecord) -> JobStepRunRecord:
 
 
 def _append_log(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as log_file:
-        log_file.write(text)
+    """Add a note to a run log. Best effort: a full or unwritable disk must not stop
+    run records from being saved, or startup recovery from completing."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as log_file:
+            log_file.write(text)
+    except OSError:
+        logger.warning("Could not write to run log %s", path, exc_info=True)
 
 
 def _stamp(value: datetime) -> str:

@@ -572,6 +572,73 @@ async def test_recover_interrupted_runs_closes_stale_runs_and_notifies():
         assert "app restarted" in log_path.read_text()
 
 
+@pytest.mark.asyncio
+async def test_recover_interrupted_runs_still_commits_when_log_is_unwritable():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        unwritable_log = Path(tmpdir) / "log-is-a-directory"
+        unwritable_log.mkdir()
+        with session_factory() as db:
+            job_run = JobRunRecord(
+                job_id=1,
+                job_name="backup",
+                trigger="schedule",
+                status="running",
+                started_at=utc_now(),
+                ended_at=None,
+            )
+            db.add(job_run)
+            db.flush()
+            db.add(
+                JobStepRunRecord(
+                    job_run_id=job_run.id,
+                    step_id=1,
+                    step_name="one",
+                    argv_json="[]",
+                    status="running",
+                    exit_code=None,
+                    log_path=str(unwritable_log),
+                    started_at=job_run.started_at,
+                    ended_at=None,
+                )
+            )
+            db.commit()
+            job_run_id = job_run.id
+
+        runner = LiveJobRunner(Path(tmpdir), session_factory=session_factory)
+
+        assert runner.recover_interrupted_runs() == [job_run_id]
+        with session_factory() as db:
+            recovered = db.get(JobRunRecord, job_run_id)
+            assert recovered.status == "failed"
+            assert recovered.step_runs[0].status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_live_runner_records_invalid_command_when_log_is_unwritable():
+    job = Job(
+        id=42,
+        name="backup",
+        common_args="${MISSING}",
+        env={},
+        steps=[JobStep(id=1, name="one", command="lsd secret:")],
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        log_root = Path(tmpdir) / "logs"
+        log_root.mkdir()
+        (log_root / "job-42").write_text("a file where the log directory should be")
+        runner = LiveJobRunner(log_root, session_factory=session_factory)
+
+        failed_step = runner.start_job(job, trigger="schedule")
+
+        assert failed_step is not None
+        assert failed_step.status == "failed"
+        with session_factory() as db:
+            assert db.get(JobRunRecord, failed_step.job_run_id).status == "failed"
+
+
 def _session_factory(database_path: Path, expire_on_commit: bool = False):
     engine = create_engine(f"sqlite:///{database_path}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
