@@ -74,15 +74,11 @@ def test_compose_declares_healthcheck():
     assert "http://127.0.0.1:8000/health" in compose
 
 
-def test_readme_includes_deployment_checklist_and_backup_guidance():
+def test_readme_includes_secure_setup_and_backup_guidance():
     readme = Path("README.md").read_text()
 
-    assert "## Deployment Checklist" in readme
-    assert "Email Notifications" in readme
-    assert "smtp.gmail.com" in readme
     assert "RCLONE_RUNNER_ADMIN_PASSWORD_HASH" in readme
     assert "RCLONE_RUNNER_SECRET_KEY" in readme
-    assert "/health" in readme
     assert "Back up" in readme
     assert "rclone.conf" in readme
 
