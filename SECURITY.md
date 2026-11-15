@@ -7,6 +7,12 @@ Before exposing an instance, set a strong admin password hash, replace the defau
 secret, use HTTPS or a trusted reverse proxy, and keep `/data` plus `rclone.conf` backed up
 and private.
 
+Logging in to Rclone Runner gives full control of the container and of every configured
+remote. The console and job steps only accept `rclone` commands, but that is not a sandbox:
+rclone can run other programs and print its stored credentials. Reports that an authenticated
+admin can do this are expected behavior. Ways to act as the admin without their credentials,
+or to escape the container, are in scope.
+
 ## Reporting a Vulnerability
 
 Please do not open public issues for suspected security vulnerabilities.
