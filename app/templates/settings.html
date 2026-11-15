@@ -6,7 +6,7 @@
 <p class="notice">Deleted {{ pruned }} old log {{ "file" if pruned == 1 else "files" }}.</p>
 {% endif %}
 {% if cleared is not none %}
-<p class="notice">Cleared {{ cleared }} history {{ "record" if cleared == 1 else "records" }} and their known log files.</p>
+<p class="notice">Cleared {{ cleared }} history {{ "record" if cleared == 1 else "records" }} and their known log files.{% if kept %} Kept {{ kept }} {{ "run" if kept == 1 else "runs" }} still in progress.{% endif %}</p>
 {% endif %}
 {% if email_saved %}
 <p class="notice">Saved email notification settings.</p>

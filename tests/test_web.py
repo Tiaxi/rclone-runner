@@ -870,7 +870,7 @@ async def test_clear_history_removes_run_records_and_logs_but_keeps_jobs():
         console_log_path.write_text("console", encoding="utf-8")
         with session_factory() as db:
             job = _create_job(db)
-            step_run = _create_running_step_run(db, log_path=log_path)
+            step_run = _finish(db, _create_running_step_run(db, log_path=log_path))
             step_run.job_run.job_id = job.id
             db.add(
                 ConsoleRunRecord(
@@ -926,7 +926,7 @@ async def test_delete_individual_job_run_removes_steps_and_logs():
         log_path = Path(tmpdir) / "run.log"
         log_path.write_text("run", encoding="utf-8")
         with session_factory() as db:
-            step_run = _create_running_step_run(db, log_path=log_path)
+            step_run = _finish(db, _create_running_step_run(db, log_path=log_path))
             job_run_id = step_run.job_run_id
 
             response = await main.delete_job_run(job_run_id, None, None, db)
@@ -1038,7 +1038,7 @@ async def test_delete_individual_step_run_removes_log_only_for_that_step():
         log_path = Path(tmpdir) / "run.log"
         log_path.write_text("run", encoding="utf-8")
         with session_factory() as db:
-            step_run = _create_running_step_run(db, log_path=log_path)
+            step_run = _finish(db, _create_running_step_run(db, log_path=log_path))
             job_run_id = step_run.job_run_id
 
             response = await main.delete_run(step_run.id, None, None, db)
@@ -1315,6 +1315,81 @@ def test_console_terminal_accepts_origin_matching_forwarded_host():
         headers={"origin": "https://backup.example", "x-forwarded-host": "backup.example"},
     ) as websocket:
         assert websocket.receive_json() == {"type": "output", "data": "rclone> "}
+
+
+def _finish(db, step_run):
+    step_run.status = "success"
+    step_run.exit_code = 0
+    step_run.ended_at = main.utc_now()
+    step_run.job_run.status = "success"
+    step_run.job_run.ended_at = step_run.ended_at
+    db.commit()
+    return step_run
+
+
+async def test_running_runs_cannot_be_deleted():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        log_path = Path(tmpdir) / "run.log"
+        log_path.write_text("run", encoding="utf-8")
+        console_log = Path(tmpdir) / "console.log"
+        console_log.write_text("console", encoding="utf-8")
+        with session_factory() as db:
+            step_run = _create_running_step_run(db, log_path=log_path)
+            console_run = ConsoleRunRecord(
+                status="running",
+                command="config",
+                argv_json='["rclone", "config"]',
+                exit_code=None,
+                log_path=str(console_log),
+                started_at=main.utc_now(),
+                ended_at=None,
+            )
+            db.add(console_run)
+            db.commit()
+
+            responses = [
+                await main.delete_job_run(step_run.job_run_id, None, None, db),
+                await main.delete_run(step_run.id, None, None, db),
+                await main.delete_console_run(console_run.id, None, None, db),
+            ]
+
+            assert {response.headers["location"] for response in responses} == {
+                "/runs?delete_blocked=1"
+            }
+            assert db.get(JobRunRecord, step_run.job_run_id) is not None
+            assert db.get(JobStepRunRecord, step_run.id) is not None
+            assert db.get(ConsoleRunRecord, console_run.id) is not None
+            assert log_path.exists()
+            assert console_log.exists()
+
+            page = await main.runs(_request("/runs"), None, db, delete_blocked=True)
+            assert "still in progress" in page.body.decode()
+
+
+async def test_clear_history_keeps_runs_in_progress():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        running_log = Path(tmpdir) / "running.log"
+        finished_log = Path(tmpdir) / "finished.log"
+        running_log.write_text("running", encoding="utf-8")
+        finished_log.write_text("finished", encoding="utf-8")
+        with session_factory() as db:
+            running = _create_running_step_run(db, log_path=running_log)
+            running_ids = (running.id, running.job_run_id)
+            finished = _finish(db, _create_running_step_run(db, log_path=finished_log))
+            finished_ids = (finished.id, finished.job_run_id)
+
+            response = await main.clear_history(None, None, db)
+
+            assert response.headers["location"] == "/settings?cleared=1&kept=1"
+            db.expire_all()
+            assert db.get(JobStepRunRecord, running_ids[0]) is not None
+            assert db.get(JobRunRecord, running_ids[1]) is not None
+            assert db.get(JobStepRunRecord, finished_ids[0]) is None
+            assert db.get(JobRunRecord, finished_ids[1]) is None
+            assert running_log.exists()
+            assert not finished_log.exists()
 
 
 def _session_factory(database_path: Path):

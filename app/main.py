@@ -87,6 +87,8 @@ templates.env.globals["run_exit_label"] = lambda run: _exit_label(run.status, ru
 
 
 LOG_CHUNK_LINES = 200
+# Deleting a run that is still in progress would orphan the rclone process behind it.
+DELETE_BLOCKED_URL = "/runs?delete_blocked=1"
 HISTORY_PAGE_SIZE = 25
 
 
@@ -422,6 +424,7 @@ async def runs(
     job_page: int = 1,
     step_page: int = 1,
     console_page: int = 1,
+    delete_blocked: bool = False,
 ) -> Response:
     job_query = db.query(JobRunRecord).order_by(JobRunRecord.started_at.desc())
     step_query = db.query(JobStepRunRecord).order_by(JobStepRunRecord.started_at.desc())
@@ -454,6 +457,7 @@ async def runs(
             "job_pagination": job_pagination,
             "step_pagination": step_pagination,
             "console_pagination": console_pagination,
+            "delete_blocked": delete_blocked,
         },
     )
 
@@ -517,6 +521,8 @@ async def delete_job_run(
     db: DbSession,
 ) -> Response:
     job_run = db.get(JobRunRecord, job_run_id)
+    if job_run is not None and job_run.status == "running":
+        return RedirectResponse(DELETE_BLOCKED_URL, status_code=303)
     if job_run is not None:
         _delete_job_run(db, job_run)
     return RedirectResponse("/runs", status_code=303)
@@ -596,6 +602,8 @@ async def delete_run(
     db: DbSession,
 ) -> Response:
     run = db.get(JobStepRunRecord, run_id)
+    if run is not None and "running" in {run.status, run.job_run.status}:
+        return RedirectResponse(DELETE_BLOCKED_URL, status_code=303)
     if run is not None:
         _delete_step_run(db, run)
     return RedirectResponse("/runs", status_code=303)
@@ -673,6 +681,8 @@ async def delete_console_run(
     db: DbSession,
 ) -> Response:
     run = db.get(ConsoleRunRecord, run_id)
+    if run is not None and run.status == "running":
+        return RedirectResponse(DELETE_BLOCKED_URL, status_code=303)
     if run is not None:
         _delete_console_run(db, run)
     return RedirectResponse("/runs", status_code=303)
@@ -797,6 +807,7 @@ async def settings_page(
     db: DbSession,
     pruned: int | None = None,
     cleared: int | None = None,
+    kept: int | None = None,
     email_saved: int | None = None,
     email_test: str | None = None,
     email_error: str | None = None,
@@ -810,6 +821,7 @@ async def settings_page(
             "known_logs": len(count),
             "pruned": pruned,
             "cleared": cleared,
+            "kept": kept,
             "email_settings": load_email_notification_settings(db),
             "email_saved": email_saved,
             "email_test": email_test,
@@ -920,8 +932,9 @@ async def clear_history(
     _csrf: Annotated[None, Depends(require_csrf)],
     db: DbSession,
 ) -> Response:
-    cleared = _clear_history(db)
-    return RedirectResponse(f"/settings?cleared={cleared}", status_code=303)
+    cleared, kept = _clear_history(db)
+    query = {"cleared": cleared} | ({"kept": kept} if kept else {})
+    return RedirectResponse(f"/settings?{urlencode(query)}", status_code=303)
 
 
 def _email_settings_from_form(
@@ -1074,17 +1087,34 @@ def _prunable_logs(db) -> list[tuple[Path, datetime]]:
     return step_logs + console_logs
 
 
-def _clear_history(db) -> int:
-    logs = _prunable_logs(db)
-    deleted_records = db.query(JobRunRecord).count() + db.query(ConsoleRunRecord).count()
-    for path, _started_at in logs:
-        if path.exists():
-            path.unlink()
-    db.query(ConsoleRunRecord).delete(synchronize_session=False)
-    db.query(JobStepRunRecord).delete(synchronize_session=False)
-    db.query(JobRunRecord).delete(synchronize_session=False)
+def _clear_history(db) -> tuple[int, int]:
+    """Delete finished run records and their logs; keep runs that are still in progress."""
+    job_runs = db.query(JobRunRecord).filter(JobRunRecord.status != "running").all()
+    console_runs = db.query(ConsoleRunRecord).filter(ConsoleRunRecord.status != "running").all()
+    kept = (
+        db.query(JobRunRecord).filter_by(status="running").count()
+        + db.query(ConsoleRunRecord).filter_by(status="running").count()
+    )
+    job_run_ids = [run.id for run in job_runs]
+    step_runs = (
+        db.query(JobStepRunRecord).filter(JobStepRunRecord.job_run_id.in_(job_run_ids)).all()
+        if job_run_ids
+        else []
+    )
+    for run in [*step_runs, *console_runs]:
+        _delete_log_file(Path(run.log_path))
+    if job_run_ids:
+        db.query(JobStepRunRecord).filter(JobStepRunRecord.job_run_id.in_(job_run_ids)).delete(
+            synchronize_session=False
+        )
+        db.query(JobRunRecord).filter(JobRunRecord.id.in_(job_run_ids)).delete(
+            synchronize_session=False
+        )
+    db.query(ConsoleRunRecord).filter(ConsoleRunRecord.status != "running").delete(
+        synchronize_session=False
+    )
     db.commit()
-    return deleted_records
+    return len(job_runs) + len(console_runs), kept
 
 
 def _mark_job_run_canceled(db, job_run_id: int) -> None:

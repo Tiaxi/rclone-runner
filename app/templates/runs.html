@@ -2,6 +2,9 @@
 {% block title %}History - Rclone Runner{% endblock %}
 {% block content %}
 <h1>History</h1>
+{% if delete_blocked %}
+<p class="notice">That run is still in progress. Cancel it or let it finish before deleting it.</p>
+{% endif %}
 <section class="history-section" id="job-runs-section">
 <h2>Job runs</h2>
 <section class="table-wrap">
