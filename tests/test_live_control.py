@@ -96,12 +96,12 @@ def test_run_control_target_rates():
     assert control.target_rate() == "8M"
     control.paused = True
     assert control.target_rate() == "64K"
-    assert control.spawn_args(Path("/s.sock"))[-2:] == ["--bwlimit", "64K"]
+    assert control.spawn_args(Path("/s.sock"))[-1] == "--bwlimit=64K"
     control.paused = False
     control.limit = None
     control.configured = None
     assert control.target_rate() == "off"
-    assert "--bwlimit" not in control.spawn_args(Path("/s.sock"))
+    assert not any(arg.startswith("--bwlimit") for arg in control.spawn_args(Path("/s.sock")))
 
 
 async def _fake_rc_server(
@@ -185,8 +185,9 @@ class FakeRclone:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.touch()
         server = None
-        if self.serve and "--rc-addr" in argv:
-            socket_path = Path(argv[argv.index("--rc-addr") + 1].removeprefix("unix://"))
+        addr = next((arg for arg in argv if arg.startswith("--rc-addr=unix://")), None)
+        if self.serve and addr is not None:
+            socket_path = Path(addr.removeprefix("--rc-addr=unix://"))
             assert not socket_path.exists(), "a stale socket would stop rclone from starting"
             calls = self.received_by_socket.setdefault(socket_path.name, [])
             server = await _fake_rc_server(
@@ -224,7 +225,7 @@ async def test_runner_adds_control_flags_without_storing_them(control_dir, tmp_p
 
     argv = rclone.calls[0]
     socket_arg = f"unix://{control_dir / 'step-1.sock'}"
-    assert argv[-4:] == ["--rc", "--rc-addr", socket_arg, "--rc-no-auth"]
+    assert argv[2:5] == ["--rc", f"--rc-addr={socket_arg}", "--rc-no-auth"]
     with session_factory() as db:
         stored = json.loads(db.get(JobStepRunRecord, first.id).argv_json)
     assert stored == ["rclone", "sync", "/a", "remote:a"]
@@ -235,6 +236,7 @@ async def test_runner_adds_control_flags_without_storing_them(control_dir, tmp_p
         "limit": None,
         "limit_label": None,
         "label": "Not limited",
+        "detail": "From the job's arguments",
         "pause_label": "64 KiB/s",
         "source": "job",
     }
@@ -264,17 +266,21 @@ async def test_runner_changes_the_running_step_and_carries_settings_forward(cont
     assert [params["rate"] for _, params in rclone.received] == ["8M", "64K"]
     assert runner.control_state(job_run_id)["label"] == "Paused"
 
-    # The next step starts paused, through --bwlimit after the job's own one.
+    # The next step starts paused. Its command line has the pause rate, but the job's own
+    # --bwlimit comes later and wins there, so the runner also sends it once rclone is up.
     rclone.release.set()
     while len(rclone.calls) < 2:
         await asyncio.sleep(0.01)
     await rclone.started.wait()
-    assert rclone.calls[1][-2:] == ["--bwlimit", "64K"]
+    assert "--bwlimit=64K" in rclone.calls[1][2:6]
+    while len(rclone.received) < 3:
+        await asyncio.sleep(0.01)
+    assert rclone.received[2][1]["rate"] == "64K"
 
     await runner.resume(job_run_id)
     await runner.set_bandwidth(job_run_id, None)
     # Resuming restores the run's limit; clearing it goes back to the job's --bwlimit.
-    assert [params["rate"] for _, params in rclone.received[2:]] == ["8M", "2M"]
+    assert [params["rate"] for _, params in rclone.received[3:]] == ["8M", "2M"]
     assert runner.control_state(job_run_id)["label"] == "2 MiB/s"
 
     rclone.release.set()
@@ -399,7 +405,15 @@ async def test_a_change_after_a_step_ends_reaches_the_next_steps_rclone(
     await runner.wait_for_job_run(first.job_run_id)
 
 
-async def test_control_flags_go_before_an_option_terminator(control_dir, tmp_path):
+@pytest.mark.parametrize(
+    "command",
+    [
+        "copy -- /source remote:dest",
+        # Here "--" is the backup folder's name, not the end of the options.
+        "copy /source remote:dest --backup-dir -- -vv",
+    ],
+)
+async def test_control_flags_go_right_after_the_subcommand(control_dir, tmp_path, command):
     rclone = FakeRclone()
     runner = LiveJobRunner(
         tmp_path / "logs",
@@ -407,13 +421,13 @@ async def test_control_flags_go_before_an_option_terminator(control_dir, tmp_pat
         executor=rclone,
         control_dir=control_dir,
     )
-    first = runner.start_job(_job(commands=("copy -- /source remote:dest",)), trigger="manual")
+    first = runner.start_job(_job(commands=(command,)), trigger="manual")
     await rclone.started.wait()
 
     argv = rclone.calls[0]
-    assert argv[0:2] == ["rclone", "copy"]
-    assert argv[-3:] == ["--", "/source", "remote:dest"]
-    assert "--rc-no-auth" in argv[: argv.index("--")]
+    assert argv[:3] == ["rclone", "copy", "--rc"]
+    # The job's own arguments follow unchanged.
+    assert argv[5:] == command.split()[1:]
     rclone.release.set()
     await runner.wait_for_job_run(first.job_run_id)
 
@@ -434,6 +448,7 @@ async def test_a_pause_on_an_uncontrolled_step_is_shown_as_pending(control_dir, 
     assert state["paused"] is True
     assert state["paused_now"] is False
     assert state["label"] == "2 MiB/s (pause pending)"
+    assert state["detail"] == "Takes effect when the next step starts"
 
     rclone.release.set()
     await runner.wait_for_job_run(first.job_run_id)
@@ -445,14 +460,10 @@ async def test_real_rclone_accepts_the_control_flags(control_dir, tmp_path):
     source.mkdir()
     (source / "file.bin").write_bytes(b"x" * 4 * 1024 * 1024)
     socket_path = control_dir / "real.sock"
+    control = RunControl(paused=True)
+    job_argv = ["rclone", "copy", str(source), str(tmp_path / "dest"), "--bwlimit", "100K"]
     process = await asyncio.create_subprocess_exec(
-        "rclone",
-        "copy",
-        str(source),
-        str(tmp_path / "dest"),
-        "--bwlimit",
-        "100K",
-        *RunControl().spawn_args(socket_path),
+        *live_control.with_flags(job_argv, control.spawn_args(socket_path)),
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
