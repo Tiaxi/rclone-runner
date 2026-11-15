@@ -779,7 +779,8 @@ def test_job_delete_actions_render_in_list_and_detail():
     assert "Deleted job configuration. Run history was kept." in jobs_html
     assert 'method="post" action="/jobs/7/delete"' in jobs_html
     assert 'method="post" action="/jobs/7/delete"' in detail_html
-    assert detail_html.count('name="csrf_token"') == 5
+    # Logout, run, dry run, duplicate, delete, and the job editor.
+    assert detail_html.count('name="csrf_token"') == 6
     assert "Delete job" in detail_html
     assert 'return confirm("Delete Nightly backup? Run history will be kept.")' in jobs_html
     assert 'return confirm("Delete Nightly backup? Run history will be kept.")' in detail_html
