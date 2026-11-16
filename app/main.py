@@ -70,7 +70,7 @@ from app.core.rclone_stats import (
     step_stats_display,
     step_transfer_stats,
 )
-from app.core.retention import prune_logs
+from app.core.retention import open_files, prune_logs
 from app.core.schedule import cron_summary, normalize_cron
 from app.core.sources import (
     SizeCommand,
@@ -1308,7 +1308,7 @@ async def prune(
     _csrf: Annotated[None, Depends(require_csrf)],
     db: DbSession,
 ) -> Response:
-    deleted = prune_logs(_prunable_logs(db), keep_days=settings.retention_days)
+    deleted = prune_logs(_prunable_logs(db), keep_days=settings.retention_days, in_use=open_files())
     return RedirectResponse(f"/settings?pruned={deleted}", status_code=303)
 
 

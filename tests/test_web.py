@@ -2317,3 +2317,41 @@ async def test_log_retention_keeps_logs_of_runs_in_progress():
         assert logs["console"].exists()
         assert not logs["done"].exists()
         assert not logs["old_console"].exists()
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="needs /proc")
+async def test_log_retention_keeps_logs_of_recovered_runs_whose_process_lives_on(monkeypatch):
+    import subprocess
+    import sys
+    from datetime import timedelta
+
+    monkeypatch.setattr(settings, "retention_days", 1)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        log_path = Path(tmpdir) / "step.log"
+        with log_path.open("wb") as output:
+            # An rclone that outlived the app: it still has the log open.
+            child = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(30)"], stdout=output
+            )
+        try:
+            with session_factory() as db:
+                step_run = _create_running_step_run(db, log_path=log_path)
+                step_run.started_at = step_run.job_run.started_at = main.utc_now() - timedelta(
+                    days=2
+                )
+                db.commit()
+            # The app restarts: the run is closed out as failed, but its process lives on.
+            LiveJobRunner(Path(tmpdir), session_factory=session_factory).recover_interrupted_runs()
+            with session_factory() as db:
+                assert db.get(JobStepRunRecord, step_run.id).status == "failed"
+                response = await main.prune(None, None, db)
+            assert response.headers["location"] == "/settings?pruned=0"
+            assert log_path.exists()
+        finally:
+            child.kill()
+            child.wait()
+        with session_factory() as db:
+            response = await main.prune(None, None, db)
+        assert response.headers["location"] == "/settings?pruned=1"
+        assert not log_path.exists()
