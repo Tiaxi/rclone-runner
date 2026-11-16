@@ -28,7 +28,7 @@ from app.core.prune import (
     rclone_flags,
     run_prune,
 )
-from app.core.runner import JobRunner, LiveJobRunner
+from app.core.runner import STATS_FLAGS, JobRunner, LiveJobRunner
 from app.core.sources import size_command
 from app.db import Base, JobStepRunRecord
 
@@ -723,7 +723,7 @@ async def test_a_requested_dry_run_refuses_steps_that_turn_dry_runs_off(tmp_path
             job, trigger="manual-dry-run", dry_run=True
         )
     # It checks each step as it reaches it: the safe one ran, as a dry run.
-    assert calls == [["rclone", "sync", "--dry-run", "/b", "crypt:b"]]
+    assert calls == [["rclone", "sync", *STATS_FLAGS, "--dry-run", "/b", "crypt:b"]]
     calls.clear()
     session_factory = _session_factory(tmp_path / "runs.db")
     runner = LiveJobRunner(
@@ -738,7 +738,7 @@ async def test_a_requested_dry_run_refuses_steps_that_turn_dry_runs_off(tmp_path
     assert "turn dry runs off" in Path(refused.log_path).read_text()
     # Nothing ran for the dry run, which checks every step first; the real run ran both.
     assert len(calls) == 2
-    assert calls[0] == ["rclone", "sync", "/b", "crypt:b"]
+    assert calls[0] == ["rclone", "sync", *STATS_FLAGS, "/b", "crypt:b"]
     assert "--dry-run=false" in calls[1]
 
 
@@ -853,7 +853,10 @@ async def test_prune_counts_days_from_the_jobs_own_run_date(tmp_path, monkeypatc
     await runner.wait_for_job_run(first.job_run_id)
 
     assert result.success
-    copy = ("rclone", ["rclone", "copy", "/src", "/dest", "--backup-dir", "/versions/2020-01-01"])
+    copy = (
+        "rclone",
+        ["rclone", "copy", *STATS_FLAGS, "/src", "/dest", "--backup-dir", "/versions/2020-01-01"],
+    )
     assert calls == [copy, ("prune", date(2020, 1, 1))] * 2
     plan = plan_prune(["2020-01-01", "2026-11-15", "2026-11-16"], date(2020, 1, 1), 30, 1)
     assert "2020-01-01" not in plan.purge

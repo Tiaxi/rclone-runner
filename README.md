@@ -100,11 +100,15 @@ Music|sync /media/Music crypt:/Music
 Photos|sync /media/Photos crypt:/Photos
 ```
 
-**Common arguments** are added to every step. Add `--verbose` to see live progress:
+**Common arguments** are added to every step:
 
 ```text
---transfers=4 --verbose --bwlimit ${BW_LIMIT}
+--transfers=4 --stats 10s --bwlimit ${BW_LIMIT}
 ```
+
+Transfer steps (`sync`, `copy`, `move`, `bisync`, `delete`, `purge` and the like) log rclone's
+progress every minute and its totals at the end, which the run pages and emails show. `--stats 10s`
+updates the progress more often, `--verbose` also logs each file, and `--quiet` turns it all off.
 
 **Environment variables** go one per line:
 

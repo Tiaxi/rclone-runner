@@ -698,7 +698,10 @@ async def test_history_page_summarizes_finished_job_runs():
 
 
 async def test_history_transfer_summary_handles_empty_and_failed_runs():
-    assert main._transfer_summary(0, 0, 0, "success") == {"data": "No changes", "detail": None}
+    assert main._transfer_summary(0, 0, 0, "success") == {
+        "data": "Nothing transferred",
+        "detail": None,
+    }
     assert main._transfer_summary(0, 0, 0, "failed") == {"data": "-", "detail": None}
     assert main._transfer_summary(512, 1, 0, "failed") == {"data": "512 B", "detail": "1 file"}
 

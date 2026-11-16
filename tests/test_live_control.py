@@ -526,8 +526,8 @@ async def test_control_flags_go_right_after_the_subcommand(control_dir, tmp_path
 
     argv = rclone.calls[0]
     assert argv[:3] == ["rclone", "copy", "--rc"]
-    # The job's own arguments follow unchanged.
-    assert argv[5:] == command.split()[1:]
+    # Then the request for rclone's totals, and the job's own arguments, unchanged.
+    assert argv[5:] == ["--stats-log-level=NOTICE", "--stats=1m", *command.split()[1:]]
     rclone.release.set()
     await runner.wait_for_job_run(first.job_run_id)
 
