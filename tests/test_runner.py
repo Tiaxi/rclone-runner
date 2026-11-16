@@ -375,11 +375,107 @@ async def test_live_runner_notifies_after_terminal_job_status():
         assert first_step is not None
 
         await runner.wait_for_job_run(first_step.job_run_id)
+        await runner.wait_for_notifications()
 
         with session_factory() as db:
             job_run = db.get(JobRunRecord, first_step.job_run_id)
             assert job_run.status == "success"
         assert notified == [first_step.job_run_id]
+
+
+@pytest.mark.asyncio
+async def test_live_runner_frees_the_job_before_its_email_is_sent():
+    # A slow mail server must not make the job's next run (say, the next scheduled backup)
+    # look like it overlaps the one that has finished.
+    sending = asyncio.Event()
+    release = asyncio.Event()
+    notified = []
+
+    async def executor(argv, env, log_path):
+        return 0
+
+    async def notification_callback(job_run_id):
+        sending.set()
+        await release.wait()
+        notified.append(job_run_id)
+
+    job = Job(
+        id=42,
+        name="backup",
+        common_args="",
+        env={},
+        steps=[JobStep(id=1, name="one", command="lsd secret:")],
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        runner = LiveJobRunner(
+            Path(tmpdir),
+            session_factory=session_factory,
+            executor=executor,
+            notification_callback=notification_callback,
+        )
+        first = runner.start_job(job, trigger="schedule")
+        assert first is not None
+        await asyncio.wait_for(sending.wait(), 5)
+        with session_factory() as db:
+            assert db.get(JobRunRecord, first.job_run_id).status == "success"
+
+        second = runner.start_job(job, trigger="schedule")
+
+        assert second is not None
+        assert second.status == "running"
+        await runner.wait_for_job_run(second.job_run_id)
+        with session_factory() as db:
+            assert db.query(JobRunRecord).filter_by(status="skipped").count() == 0
+            assert db.get(JobRunRecord, second.job_run_id).status == "success"
+        release.set()
+        await runner.wait_for_notifications()
+        assert sorted(notified) == [first.job_run_id, second.job_run_id]
+
+
+@pytest.mark.asyncio
+async def test_live_runner_end_of_an_earlier_run_does_not_free_a_later_one():
+    # The earlier run's task finishing must not mark the job idle while its next run goes on.
+    finish_second = asyncio.Event()
+    calls = 0
+
+    async def executor(argv, env, log_path):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            await finish_second.wait()
+        return 0
+
+    job = Job(
+        id=42,
+        name="backup",
+        common_args="",
+        env={},
+        steps=[JobStep(id=1, name="one", command="lsd secret:")],
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        runner = LiveJobRunner(Path(tmpdir), session_factory=session_factory, executor=executor)
+        first = runner.start_job(job, trigger="manual")
+        while runner._active_runs:
+            await asyncio.sleep(0)
+        # The first run has freed the job, but its task may not have finished yet.
+        second = runner.start_job(job, trigger="manual")
+        assert second is not None
+        await runner.wait_for_job_run(first.job_run_id)
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert runner.start_job(job, trigger="manual") is None
+        finish_second.set()
+        await runner.wait_for_job_run(second.job_run_id)
+        third = runner.start_job(job, trigger="manual")
+        assert third is not None
+        await runner.wait_for_job_run(third.job_run_id)
+        with session_factory() as db:
+            assert db.get(JobRunRecord, third.job_run_id).status == "success"
 
 
 @pytest.mark.asyncio

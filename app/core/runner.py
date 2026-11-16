@@ -182,18 +182,20 @@ class LiveJobRunner:
         # Where steps' remote control sockets go; None turns live control off. It must be a
         # private directory: anyone who can open a socket there controls that rclone.
         self._control_dir = control_dir
-        self._active_job_ids: set[int] = set()
+        # Each job running now, with its run: a job runs once at a time.
+        self._active_runs: dict[int, int] = {}
         self._tasks: dict[int, asyncio.Task[None]] = {}
         self._controls: dict[int, RunControl] = {}
         self._notification_tasks: set[asyncio.Task[None]] = set()
+        self._background_tasks: set[asyncio.Task[None]] = set()
 
     def start_job(
         self, job: Job, trigger: str, dry_run: bool = False, step_id: int | None = None
     ) -> JobStepRunRecord | None:
         now = utc_now()
         selected_steps = _selected_steps(job, step_id)
-        if job.id in self._active_job_ids or not selected_steps:
-            status = "skipped" if job.id in self._active_job_ids else "success"
+        if job.id in self._active_runs or not selected_steps:
+            status = "skipped" if job.id in self._active_runs else "success"
             with self._session_factory() as db:
                 db.add(
                     JobRunRecord(
@@ -219,7 +221,7 @@ class LiveJobRunner:
             except CommandPolicyError as exc:
                 return self._record_invalid_run(job, trigger, step, run_stamp, exc)
 
-        self._active_job_ids.add(job.id)
+        job_run_id = None
         try:
             first_step, first_argv = planned_steps[0]
             first_log_path = self._step_log_path(job, first_step, run_stamp)
@@ -253,6 +255,7 @@ class LiveJobRunner:
                 db.refresh(step_run)
                 job_run_id = job_run.id
                 first_step_run = _detached_copy(step_run)
+            self._active_runs[job.id] = job_run_id
 
             # A prune-dated step counts days from the run's ${RUN_DATE} day.
             today = run_date(now, settings.timezone)
@@ -260,7 +263,7 @@ class LiveJobRunner:
                 self._run_job_background(job_run_id, job, planned_steps, run_stamp, today)
             )
         except BaseException:
-            self._active_job_ids.discard(job.id)
+            self._release_job(job.id, job_run_id)
             raise
         self._tasks[job_run_id] = task
         if self._control_dir is not None:
@@ -354,6 +357,13 @@ class LiveJobRunner:
         self._notification_tasks.add(task)
         task.add_done_callback(self._notification_tasks.discard)
 
+    async def wait_for_notifications(self) -> None:
+        """Wait until the notifications started so far have been sent or have failed."""
+        # Finished tasks leave the set only when the loop next runs callbacks, and waiting on
+        # them alone would not yield to it.
+        while pending := [task for task in self._notification_tasks if not task.done()]:
+            await asyncio.wait(pending)
+
     def _step_log_path(self, job: Job, step: JobStep, run_stamp: str) -> Path:
         return self._log_root / f"job-{job.id}" / f"{run_stamp}-step-{step.id}.log"
 
@@ -423,8 +433,8 @@ class LiveJobRunner:
 
     def _start_background(self, coroutine) -> None:
         task = asyncio.create_task(coroutine)
-        self._notification_tasks.add(task)
-        task.add_done_callback(self._notification_tasks.discard)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     async def wait_for_job_run(self, job_run_id: int) -> None:
         task = self._tasks.get(job_run_id)
@@ -471,9 +481,10 @@ class LiveJobRunner:
                 self._finish_step_run(step_run.id, "failed", None)
         finally:
             self._finish_job_run(job_run_id, job_status)
-            if self._notification_callback is not None:
-                with suppress(Exception):
-                    await self._notification_callback(job_run_id)
+            # The job is done: free it for its next run now, not after the email, which a
+            # slow mail server could hold up past the next scheduled run.
+            self._release_job(job.id, job_run_id)
+            self._notify_soon(job_run_id)
 
     async def _run_step(
         self, job_run_id: int, step_run: JobStepRunRecord, env: dict[str, str], today: date
@@ -585,8 +596,13 @@ class LiveJobRunner:
             job_run.ended_at = utc_now()
             db.commit()
 
+    def _release_job(self, job_id: int, job_run_id: int | None) -> None:
+        """Let the job run again, unless a later run of it has started meanwhile."""
+        if job_run_id is not None and self._active_runs.get(job_id) == job_run_id:
+            del self._active_runs[job_id]
+
     def _task_done(self, job_id: int, job_run_id: int, task: asyncio.Task[None]) -> None:
-        self._active_job_ids.discard(job_id)
+        self._release_job(job_id, job_run_id)
         self._tasks.pop(job_run_id, None)
         self._controls.pop(job_run_id, None)
         if not task.cancelled():
