@@ -128,6 +128,10 @@ def test_run_totals_say_when_some_steps_had_no_stats():
     assert unknown.transferred_data_label == "Not available"
     assert run_stats_display([]).transferred_data_label == "0 B"
 
+    # Steps still running: their totals are still to come.
+    assert run_stats_display([], running=1).transferred_data_label == "Pending"
+    assert run_stats_display([known], running=1).transferred_data_label == "at least 2 KiB"
+
 
 def test_read_log_tail_returns_last_lines_of_large_log(tmp_path: Path):
     log_path = tmp_path / "step.log"

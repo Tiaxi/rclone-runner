@@ -2420,3 +2420,48 @@ def test_history_totals_say_when_some_steps_had_no_stats():
         "detail": None,
     }
     assert main._unavailable_transfer_summary("failed") == {"data": "-", "detail": None}
+
+
+async def test_a_run_in_progress_does_not_report_its_totals_as_exact():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            # The first step is still transferring: nothing is known yet.
+            step_run = _create_running_step_run(db, log_path=Path(tmpdir) / "one.log")
+            job_run = step_run.job_run
+            payload = main._job_run_status_payload(job_run, db)
+            assert payload["stats"] == {
+                "transferred_data": "Pending",
+                "transferred_files": "Pending",
+                "deleted_files": "Pending",
+            }
+            page = await main.job_run_detail(_request("/"), job_run.id, None, db)
+            assert "0 B" not in page.body.decode()
+
+            # A finished step's totals are known, but the running one's are still to come.
+            step_run.status = "success"
+            step_run.exit_code = 0
+            step_run.ended_at = main.utc_now()
+            step_run.transfer_stats_json = stats_to_json(RcloneTransferStats(2048, 1, 0))
+            db.add(
+                JobStepRunRecord(
+                    job_run_id=job_run.id,
+                    step_id=2,
+                    step_name="two",
+                    argv_json="[]",
+                    status="running",
+                    exit_code=None,
+                    log_path=str(Path(tmpdir) / "two.log"),
+                    started_at=main.utc_now(),
+                    ended_at=None,
+                )
+            )
+            db.commit()
+            db.refresh(job_run)
+            payload = main._job_run_status_payload(job_run, db)
+
+    assert payload["stats"] == {
+        "transferred_data": "at least 2 KiB",
+        "transferred_files": "at least 1",
+        "deleted_files": "at least 0",
+    }

@@ -64,9 +64,9 @@ from app.core.rclone_stats import (
     RcloneTransferStats,
     RunStatsDisplay,
     format_byte_count,
+    job_run_stats_display,
     live_progress_from_log,
     pending_stats_display,
-    run_stats_display,
     step_stats_display,
     step_transfer_stats,
 )
@@ -1645,11 +1645,6 @@ def _history_row(view: str, record) -> dict[str, object]:
         return row
     if view == "jobs":
         stats = _job_run_stats(record)
-        steps_with_stats = sum(
-            _step_transfer_stats(step_run) is not None
-            for step_run in record.step_runs
-            if step_run.ended_at is not None
-        )
         row["transfer"] = (
             _transfer_summary(
                 stats.transferred_bytes,
@@ -1658,7 +1653,7 @@ def _history_row(view: str, record) -> dict[str, object]:
                 record.status,
                 partial=stats.has_unavailable,
             )
-            if steps_with_stats or not stats.has_unavailable
+            if stats.has_available
             else _unavailable_transfer_summary(record.status)
         )
     elif view == "steps":
@@ -1950,13 +1945,7 @@ def _run_status_payload(run: JobStepRunRecord) -> dict[str, object]:
 
 
 def _job_run_stats(job_run: JobRunRecord) -> RunStatsDisplay:
-    values: list[RcloneTransferStats | None] = []
-    for step_run in job_run.step_runs:
-        if step_run.status == "running" or step_run.ended_at is None:
-            continue
-        stats = _step_transfer_stats(step_run)
-        values.append(stats)
-    return run_stats_display(values)
+    return job_run_stats_display(job_run.step_runs)
 
 
 def _step_stats_display_for_run(step_run: JobStepRunRecord | None):

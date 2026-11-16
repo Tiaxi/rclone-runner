@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections import OrderedDict
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol
@@ -40,7 +41,10 @@ class RunStatsDisplay:
     transferred_data_label: str
     transferred_files_label: str
     deleted_files_label: str
+    # Some steps' totals are missing or still to come: the totals are a lower bound.
     has_unavailable: bool
+    # Whether any step's totals are known.
+    has_available: bool = True
 
 
 _DATA_TRANSFER_RE = re.compile(r"^\s*Transferred:\s+([\d.]+)\s*([A-Za-z]+)\s*/", re.MULTILINE)
@@ -231,6 +235,7 @@ class _StepRunStats(Protocol):
     transfer_stats_json: str | None
     ended_at: object
     log_path: str
+    status: str
 
 
 def step_transfer_stats(step_run: _StepRunStats) -> RcloneTransferStats | None:
@@ -300,20 +305,25 @@ def pending_stats_display(label: str = "Pending") -> StepStatsDisplay:
     )
 
 
-def run_stats_display(values: list[RcloneTransferStats | None]) -> RunStatsDisplay:
-    """Totals of a run's finished steps. None stands for a step whose log had no totals.
+def run_stats_display(
+    values: list[RcloneTransferStats | None], *, running: int = 0
+) -> RunStatsDisplay:
+    """Totals of a run's steps: values for its finished ones, None where a log had no totals,
+    and running for those still going, whose totals are still to come.
 
-    With some steps unknown the totals are only a lower bound, and say so; with all of them
-    unknown there is nothing to add up.
+    With some steps unknown the totals are only a lower bound, and say so; with none known
+    there is nothing to add up yet, or at all.
     """
     available = [value for value in values if value is not None]
-    has_unavailable = len(available) < len(values)
+    has_unavailable = len(available) < len(values) or running > 0
     transferred_bytes = sum(value.transferred_bytes for value in available)
     transferred_files = sum(value.transferred_files for value in available)
     deleted_files = sum(value.deleted_files for value in available)
     labels = [format_byte_count(transferred_bytes), str(transferred_files), str(deleted_files)]
-    if has_unavailable:
-        labels = [f"at least {label}" for label in labels] if available else [NOT_AVAILABLE] * 3
+    if has_unavailable and available:
+        labels = [f"at least {label}" for label in labels]
+    elif has_unavailable:
+        labels = ["Pending" if running else NOT_AVAILABLE] * 3
     return RunStatsDisplay(
         transferred_bytes=transferred_bytes,
         transferred_files=transferred_files,
@@ -322,7 +332,20 @@ def run_stats_display(values: list[RcloneTransferStats | None]) -> RunStatsDispl
         transferred_files_label=labels[1],
         deleted_files_label=labels[2],
         has_unavailable=has_unavailable,
+        has_available=bool(available) or not (values or running),
     )
+
+
+def job_run_stats_display(step_runs: Iterable[_StepRunStats]) -> RunStatsDisplay:
+    """Totals of a job run's step runs, each step's stats read once."""
+    values: list[RcloneTransferStats | None] = []
+    running = 0
+    for step_run in step_runs:
+        if step_run.status == "running" or step_run.ended_at is None:
+            running += 1
+        else:
+            values.append(step_transfer_stats(step_run))
+    return run_stats_display(values, running=running)
 
 
 def format_byte_count(value: int) -> str:
