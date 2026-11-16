@@ -34,6 +34,7 @@ from app.core.commands import (
     CommandPolicyError,
     build_step_argv,
     child_environment,
+    dry_run_refusal,
     effective_run_date,
     parse_console_command,
     run_variables,
@@ -350,6 +351,7 @@ async def job_detail(
 
 
 def _job_detail_context(job: JobRecord, db) -> dict[str, object]:
+    previews = _command_previews(job)
     job_runs = (
         db.query(JobRunRecord)
         .filter_by(job_id=job.id)
@@ -371,8 +373,9 @@ def _job_detail_context(job: JobRecord, db) -> dict[str, object]:
         "schedule_error": cron_error(job.cron),
         "env_lines": env_to_lines(job.env_json),
         "steps_text": _steps_to_text(job.steps),
-        "command_previews": _command_previews(job),
-        "run_warning": _run_warning(job),
+        "command_previews": previews,
+        "run_warning": _run_warning(previews),
+        "dry_run_refusal": _job_dry_run_refusal(previews),
         "job_run_rows": [_history_row("jobs", job_run) for job_run in job_runs],
         "runs": runs,
         "delete_blocked": False,
@@ -1416,17 +1419,21 @@ def _steps_to_text(steps: list[JobStepRecord]) -> str:
 
 def _job_rows(records: list[JobRecord], db) -> list[dict[str, object]]:
     latest_runs = _latest_job_runs_by_job_id(records, db)
-    return [
-        {
-            "record": record,
-            "run_warning": _run_warning(record),
-            "schedule_summary": cron_summary(record.cron),
-            "schedule_error": cron_error(record.cron),
-            "last_run": latest_runs.get(record.id),
-            "next_run": next_run_time(record.cron) if record.enabled else None,
-        }
-        for record in records
-    ]
+    rows = []
+    for record in records:
+        previews = _command_previews(record)
+        rows.append(
+            {
+                "record": record,
+                "run_warning": _run_warning(previews),
+                "dry_run_refusal": _job_dry_run_refusal(previews),
+                "schedule_summary": cron_summary(record.cron),
+                "schedule_error": cron_error(record.cron),
+                "last_run": latest_runs.get(record.id),
+                "next_run": next_run_time(record.cron) if record.enabled else None,
+            }
+        )
+    return rows
 
 
 def _latest_job_runs_by_job_id(records: list[JobRecord], db) -> dict[int, JobRunRecord]:
@@ -1450,7 +1457,7 @@ def _command_previews(job: JobRecord) -> list[dict[str, object]]:
     env = run_variables(utc_now(), settings.timezone) | parse_env_lines(env_to_lines(job.env_json))
     previews = []
     for step in job.steps:
-        deletes = None
+        deletes = refusal = None
         try:
             argv = build_step_argv(step.command, job.common_args or "", env)
             if is_prune_command(argv):
@@ -1462,6 +1469,7 @@ def _command_previews(job: JobRecord) -> list[dict[str, object]]:
         else:
             tokens = [display_argv([part]) for part in argv]
             deletes = _prune_description(argv)
+            refusal = dry_run_refusal(argv, env)
         previews.append(
             {
                 "id": step.id,
@@ -1469,9 +1477,18 @@ def _command_previews(job: JobRecord) -> list[dict[str, object]]:
                 "command": command,
                 "tokens": tokens,
                 "deletes": deletes,
+                "dry_run_refusal": refusal[0].upper() + refusal[1:] if refusal else None,
             }
         )
     return previews
+
+
+def _job_dry_run_refusal(previews: list[dict[str, object]]) -> str | None:
+    """Why the job can't be dry-run as a whole, or None if it can."""
+    for preview in previews:
+        if preview["dry_run_refusal"]:
+            return f"Step {preview['name']}: {preview['dry_run_refusal']}."
+    return None
 
 
 def _prune_description(argv: list[str]) -> str | None:
@@ -1485,11 +1502,11 @@ def _prune_description(argv: list[str]) -> str | None:
     return None if command.dry_run else command.description()
 
 
-def _run_warning(job: JobRecord) -> str:
+def _run_warning(previews: list[dict[str, object]]) -> str:
     """What else a real run of the whole job deletes, for its confirmation."""
     return "".join(
         f" Step {preview['name']} {preview['deletes']}."
-        for preview in _command_previews(job)
+        for preview in previews
         if preview["deletes"]
     )
 

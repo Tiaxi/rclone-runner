@@ -191,6 +191,7 @@ def test_command_preview_uses_common_args_and_job_environment():
                 "secret:/Musiikki",
             ],
             "deletes": None,
+            "dry_run_refusal": None,
         }
     ]
 

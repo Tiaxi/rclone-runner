@@ -13,6 +13,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import app.core.runner as runner_module
+from app.core.commands import DRY_RUN_SAFEGUARDS, CommandPolicyError
 from app.core.models import Job, JobStep, utc_now
 from app.core.runner import STATS_FLAGS, JobRunner, LiveJobRunner, subprocess_executor
 from app.db import Base, ConsoleRunRecord, JobRunRecord, JobStepRunRecord
@@ -100,7 +101,16 @@ async def test_dry_run_injects_dry_run_arg_after_rclone_operation():
 
     assert result.success
     assert calls == [
-        ["rclone", "sync", *STATS_FLAGS, "--dry-run", "--fast-list", "/source", "secret:/source"]
+        [
+            "rclone",
+            "sync",
+            *STATS_FLAGS,
+            *DRY_RUN_SAFEGUARDS,
+            "--dry-run",
+            "--fast-list",
+            "/source",
+            "secret:/source",
+        ]
     ]
 
 
@@ -131,6 +141,7 @@ async def test_dry_run_comes_first_even_when_the_common_args_name_it():
             "rclone",
             "sync",
             *STATS_FLAGS,
+            *DRY_RUN_SAFEGUARDS,
             "--dry-run",
             "--exclude",
             "--dry-run",
@@ -1233,3 +1244,562 @@ async def test_changes_that_transfer_nothing_are_not_called_no_changes(tmp_path,
         assert step_run.status == "success"
         # ...which the label doesn't deny.
         assert step_stats_display(step_transfer_stats(step_run), "success").label == label
+
+
+@pytest.mark.asyncio
+async def test_dry_run_refuses_a_command_that_ignores_dry_run(tmp_path):
+    # rclone config delete deletes the remote even with --dry-run, so a dry run must not
+    # start it. The real executor would run rclone if the refusal failed.
+    config = tmp_path / "rclone.conf"
+    config.write_text("[example]\ntype = local\n", encoding="utf-8")
+    job = Job(
+        id=5,
+        name="config",
+        common_args=f"--config {config}",
+        env={},
+        steps=[
+            JobStep(id=1, name="List", command="lsd example:", position=1),
+            JobStep(id=2, name="Delete", command="config delete example", position=2),
+        ],
+    )
+    session_factory = _session_factory(tmp_path / "runs.db")
+    runner = LiveJobRunner(tmp_path / "logs", session_factory=session_factory)
+
+    step = runner.start_job(job, trigger="manual-dry-run", dry_run=True)
+    single = runner.start_job(job, trigger="manual-step-dry-run", dry_run=True, step_id=2)
+
+    for refused in (step, single):
+        assert refused.status == "failed"
+        assert (
+            "rclone config delete can make changes even with --dry-run"
+            in Path(refused.log_path).read_text()
+        )
+    assert config.read_text() == "[example]\ntype = local\n"
+    with pytest.raises(CommandPolicyError, match="config delete"):
+        await JobRunner(tmp_path / "simple").run_job(job, trigger="manual", dry_run=True)
+    assert config.read_text() == "[example]\ntype = local\n"
+
+
+async def _refused_everywhere(tmp_path, job, *, dry_run):
+    """Start the job in both runners; each must refuse it before running anything."""
+    session_factory = _session_factory(tmp_path / "runs.db")
+    runner = LiveJobRunner(tmp_path / "logs", session_factory=session_factory)
+    trigger = "manual-dry-run" if dry_run else "schedule"
+    refused = runner.start_job(job, trigger=trigger, dry_run=dry_run)
+    assert refused.status == "failed"
+    reason = Path(refused.log_path).read_text()
+    with pytest.raises(CommandPolicyError):
+        await JobRunner(tmp_path / "simple").run_job(job, trigger=trigger, dry_run=dry_run)
+    return reason
+
+
+@pytest.mark.asyncio
+async def test_dry_run_checks_the_nested_command_the_common_arguments_select(tmp_path):
+    # "config show" with these common arguments runs rclone config delete show.
+    config = tmp_path / "rclone.conf"
+    config.write_text("[show]\ntype = local\n", encoding="utf-8")
+    job = Job(
+        id=6,
+        name="config",
+        common_args=f"--config {config} delete",
+        env={},
+        steps=[JobStep(id=1, name="Show", command="config show")],
+    )
+
+    reason = await _refused_everywhere(tmp_path, job, dry_run=True)
+
+    assert "rclone config delete can make changes even with --dry-run" in reason
+    assert config.read_text() == "[show]\ntype = local\n"
+
+
+@pytest.mark.asyncio
+async def test_dry_run_refuses_flags_that_overwrite_files(tmp_path):
+    existing = tmp_path / "existing.txt"
+    existing.write_text("keep me\n", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    job = Job(
+        id=7,
+        name="hashes",
+        common_args=f"--config {tmp_path / 'empty.conf'}",
+        env={},
+        steps=[
+            JobStep(
+                id=1,
+                name="Hash",
+                command=f"hashsum MD5 {tmp_path / 'src'} --output-file {existing}",
+            )
+        ],
+    )
+
+    reason = await _refused_everywhere(tmp_path, job, dry_run=True)
+
+    assert "--output-file writes a file even with --dry-run" in reason
+    assert existing.read_text() == "keep me\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("common", "env"),
+    [("--dry-run", {}), ("-n", {}), ("", {"RCLONE_DRY_RUN": "true"})],
+)
+async def test_a_run_that_asks_for_a_dry_run_itself_is_checked_too(tmp_path, common, env):
+    # Run now and the scheduler don't add --dry-run, but the job's own one makes it a dry run
+    # all the same, and rclone config delete ignores it.
+    config = tmp_path / "rclone.conf"
+    config.write_text("[example]\ntype = local\n", encoding="utf-8")
+    job = Job(
+        id=8,
+        name="config",
+        common_args=f"{common} --config {config}",
+        env=env,
+        steps=[JobStep(id=1, name="Delete", command="config delete example")],
+    )
+
+    reason = await _refused_everywhere(tmp_path, job, dry_run=False)
+
+    assert "rclone config delete can make changes even with --dry-run" in reason
+    assert config.read_text() == "[example]\ntype = local\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "common",
+    ["--dry-run --exclude --dry-run=false", "-n --exclude -n=false"],
+)
+async def test_a_dry_run_hidden_behind_a_flag_value_is_checked_too(tmp_path, common):
+    # rclone takes "--dry-run=false" as --exclude's value, so the --dry-run before it stays on:
+    # it is a dry run, and rclone config delete ignores dry runs.
+    config = tmp_path / "rclone.conf"
+    config.write_text("[example]\ntype = local\n", encoding="utf-8")
+    job = Job(
+        id=8,
+        name="config",
+        common_args=f"--config {config} {common}",
+        env={},
+        steps=[JobStep(id=1, name="Delete", command="config delete example")],
+    )
+
+    reason = await _refused_everywhere(tmp_path, job, dry_run=False)
+
+    assert "rclone config delete can make changes even with --dry-run" in reason
+    assert config.read_text() == "[example]\ntype = local\n"
+
+
+@pytest.mark.asyncio
+async def test_bisync_is_not_dry_run_since_it_writes_its_working_files(tmp_path):
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    listing = workdir / "listing.lst-dry"
+    listing.write_text("earlier\n", encoding="utf-8")
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    job = Job(
+        id=9,
+        name="bisync",
+        common_args=f"--config {tmp_path / 'empty.conf'}",
+        env={},
+        steps=[
+            JobStep(
+                id=1,
+                name="Sync",
+                command=f"bisync {tmp_path / 'a'} {tmp_path / 'b'} --resync --workdir {workdir}",
+            )
+        ],
+    )
+
+    reason = await _refused_everywhere(tmp_path, job, dry_run=True)
+
+    assert "rclone bisync can make changes even with --dry-run" in reason
+    assert [path.name for path in workdir.iterdir()] == ["listing.lst-dry"]
+    assert listing.read_text() == "earlier\n"
+
+
+@pytest.mark.asyncio
+async def test_a_dry_run_in_a_short_flag_group_with_a_value_is_checked_too(tmp_path):
+    # rclone reads "-nf- *.tmp" as -n, then -f with the value "- *.tmp": a dry run.
+    config = tmp_path / "rclone.conf"
+    config.write_text("[example]\ntype = local\n", encoding="utf-8")
+    job = Job(
+        id=8,
+        name="config",
+        common_args=f"--config {config} '-nf- *.tmp'",
+        env={},
+        steps=[JobStep(id=1, name="Delete", command="config delete example")],
+    )
+
+    reason = await _refused_everywhere(tmp_path, job, dry_run=False)
+
+    assert "rclone config delete can make changes even with --dry-run" in reason
+    assert config.read_text() == "[example]\ntype = local\n"
+
+
+@pytest.mark.asyncio
+async def test_a_prune_dry_run_refuses_flags_that_write_files(tmp_path):
+    # prune-dated lists with rclone lsf, which gets the common arguments.
+    existing = tmp_path / "existing"
+    existing.write_text("keep me\n", encoding="utf-8")
+    job = Job(
+        id=10,
+        name="prune",
+        common_args=f"--config {tmp_path / 'empty.conf'} --cpuprofile {existing}",
+        env={},
+        steps=[
+            JobStep(
+                id=1,
+                name="Prune",
+                command=f"prune-dated {tmp_path / 'versions'} --keep-days 30 --keep-min 1",
+            )
+        ],
+    )
+
+    reason = await _refused_everywhere(tmp_path, job, dry_run=True)
+
+    assert "--cpuprofile writes a file even with --dry-run" in reason
+    assert existing.read_text() == "keep me\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "common", "env"),
+    [
+        ("sync /a r:a", "--log-file /tmp/rclone.log", {"RCLONE_DRY_RUN": "false"}),
+        ("sync /a r:a", "--dry-run=false --log-file /tmp/rclone.log", {}),
+        ("bisync /a r:a", "", {"RCLONE_DRY_RUN": "false"}),
+        ("bisync /a r:a", "-n=false", {}),
+    ],
+)
+async def test_runs_that_turn_dry_runs_off_run_as_usual(tmp_path, command, common, env):
+    # A real run that says so plainly is no dry run, whatever it does.
+    calls = []
+
+    async def executor(argv, env, log_path):
+        calls.append(argv)
+        return 0
+
+    job = Job(
+        id=11,
+        name="backup",
+        common_args=common,
+        env=env,
+        steps=[JobStep(id=1, name="Sync", command=command)],
+    )
+    session_factory = _session_factory(tmp_path / "runs.db")
+    runner = LiveJobRunner(tmp_path / "logs", session_factory=session_factory, executor=executor)
+    first = runner.start_job(job, trigger="schedule")
+    await runner.wait_for_job_run(first.job_run_id)
+    result = await JobRunner(tmp_path / "simple", executor=executor).run_job(
+        job, trigger="schedule"
+    )
+
+    assert first.status == "running"
+    assert result.success
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_dry_run_turns_off_seafiles_library_creation(tmp_path):
+    # With create_library on, rclone creates a missing Seafile library just by listing it.
+    calls = []
+
+    async def executor(argv, env, log_path):
+        calls.append(argv)
+        return 0
+
+    async def prune(argv, env, log_path, today):
+        calls.append(argv)
+        return 0
+
+    job = Job(
+        id=12,
+        name="seafile",
+        common_args="",
+        env={"RCLONE_CONFIG_S_CREATE_LIBRARY": "true"},
+        steps=[
+            JobStep(id=1, name="List", command="lsf s:new-library", position=1),
+            JobStep(
+                id=2,
+                name="Prune",
+                command="prune-dated s:lib/versions --keep-days 30 --keep-min 1",
+                position=2,
+            ),
+        ],
+    )
+    session_factory = _session_factory(tmp_path / "runs.db")
+    runner = LiveJobRunner(
+        tmp_path / "logs", session_factory=session_factory, executor=executor, prune=prune
+    )
+    first = runner.start_job(job, trigger="manual-dry-run", dry_run=True)
+    await runner.wait_for_job_run(first.job_run_id)
+    await JobRunner(tmp_path / "simple", executor=executor, prune=prune).run_job(
+        job, trigger="manual-dry-run", dry_run=True
+    )
+
+    listing, pruning = calls[:2]
+    assert listing[:3] == ["rclone", "lsf", "--seafile-create-library=false"]
+    # prune-dated's rclone flags come last, and go to its rclone lsf.
+    assert pruning[-1] == "--seafile-create-library=false"
+    assert calls[2:] == calls[:2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "common",
+    ["--seafile-create-library=true", "--seafile-create-library true"],
+)
+async def test_a_dry_run_refuses_settings_that_would_create_a_seafile_library(tmp_path, common):
+    # The job's own flag comes later than the dry run's and would win; so would a connection
+    # string's setting.
+    for index, command in enumerate(("lsf s:new-library", "lsf s,create_library=true:new-library")):
+        job = Job(
+            id=13,
+            name="seafile",
+            common_args=common if "," not in command else "",
+            env={},
+            steps=[JobStep(id=1, name="List", command=command)],
+        )
+        (tmp_path / str(index)).mkdir()
+        reason = await _refused_everywhere(tmp_path / str(index), job, dry_run=True)
+        assert "create_library can create data on the remote" in reason
+
+
+@pytest.mark.asyncio
+async def test_a_real_prune_run_that_turns_dry_runs_off_runs(tmp_path):
+    calls = []
+
+    async def prune(argv, env, log_path, today):
+        calls.append(argv)
+        return 0
+
+    job = Job(
+        id=14,
+        name="prune",
+        common_args="--log-file /tmp/rclone.log",
+        env={},
+        steps=[
+            JobStep(
+                id=1,
+                name="Prune",
+                command="prune-dated r:versions --keep-days 30 --keep-min 1 --dry-run=false",
+            )
+        ],
+    )
+    session_factory = _session_factory(tmp_path / "runs.db")
+    runner = LiveJobRunner(tmp_path / "logs", session_factory=session_factory, prune=prune)
+    first = runner.start_job(job, trigger="schedule")
+    await runner.wait_for_job_run(first.job_run_id)
+    result = await JobRunner(tmp_path / "simple", prune=prune).run_job(job, trigger="schedule")
+
+    assert first.status == "running"
+    assert result.success
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which("rclone") is None, reason="needs the rclone binary")
+async def test_a_real_dry_run_creates_no_seafile_library(tmp_path):
+    import subprocess
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    requests = []
+
+    class Seafile(BaseHTTPRequestHandler):
+        """Just enough of Seafile's API for rclone to log in and list its libraries."""
+
+        def _reply(self, body):
+            data = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            requests.append(("GET", self.path))
+            if self.path.startswith("/api2/server-info"):
+                return self._reply({"version": "9.0.0"})
+            return self._reply([] if self.path.startswith("/api2/repos") else {})
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            requests.append(("POST", self.path))
+            if self.path.startswith("/api2/auth-token"):
+                return self._reply({"token": "t"})
+            return self._reply({"repo_id": "r1", "repo_name": "new-library"})
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Seafile)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    password = subprocess.run(
+        ["rclone", "obscure", "x"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    config = tmp_path / "rclone.conf"
+    config.write_text(
+        f"[s]\ntype = seafile\nurl = http://127.0.0.1:{server.server_port}\n"
+        f"user = u@example.com\npass = {password}\ncreate_library = true\n",
+        encoding="utf-8",
+    )
+    job = Job(
+        id=15,
+        name="seafile",
+        common_args=f"--config {config}",
+        env={},
+        steps=[JobStep(id=1, name="List", command="lsf s:new-library")],
+    )
+    session_factory = _session_factory(tmp_path / "runs.db")
+    runner = LiveJobRunner(tmp_path / "logs", session_factory=session_factory)
+    try:
+        first = runner.start_job(job, trigger="manual-dry-run", dry_run=True)
+        await runner.wait_for_job_run(first.job_run_id)
+    finally:
+        server.shutdown()
+
+    assert ("GET", "/api2/repos/") in requests  # rclone did look for the library...
+    assert ("POST", "/api2/repos/") not in requests  # ...and didn't create it.
+
+    # An alias naming a connection string with create_library: refused before rclone starts.
+    requests.clear()
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + "\n[a]\ntype = alias\nremote = s,create_library=true:new-library\n",
+        encoding="utf-8",
+    )
+    job.steps = [JobStep(id=1, name="List", command="lsf a:")]
+    refused = runner.start_job(job, trigger="manual-dry-run", dry_run=True)
+    assert refused.status == "failed"
+    assert "create_library" in Path(refused.log_path).read_text()
+    assert requests == []
+
+    # Spelled bare, or built from another value: refused too.
+    for remote in ("s,create_library:new-library", "s,%(option)s=true:new-library"):
+        config.write_text(
+            config.read_text(encoding="utf-8").split("\n[a]")[0]
+            + f"\n[a]\ntype = alias\noption = create_library\nremote = {remote}\n",
+            encoding="utf-8",
+        )
+        refused = runner.start_job(job, trigger="manual-dry-run", dry_run=True)
+        assert refused.status == "failed"
+        assert requests == []
+
+
+@pytest.mark.asyncio
+async def test_a_prune_run_is_checked_as_its_rclone_reads_its_flags(tmp_path):
+    # prune-dated leaves --exclude out of its rclone lsf, with the value that follows it: so
+    # "--dry-run=false" goes, and rclone gets --dry-run. It's a dry run, and --cpuprofile would
+    # overwrite the file.
+    existing = tmp_path / "existing"
+    existing.write_text("keep me\n", encoding="utf-8")
+    job = Job(
+        id=16,
+        name="prune",
+        common_args=f"--dry-run --exclude --dry-run=false --cpuprofile={existing}",
+        env={},
+        steps=[
+            JobStep(
+                id=1,
+                name="Prune",
+                command=f"prune-dated {tmp_path / 'versions'} --keep-days 30 --keep-min 1",
+            )
+        ],
+    )
+
+    reason = await _refused_everywhere(tmp_path, job, dry_run=False)
+
+    assert "--cpuprofile writes a file even with --dry-run" in reason
+    assert existing.read_text() == "keep me\n"
+
+
+@pytest.mark.parametrize("where", ["config", "environment"])
+def test_a_dry_run_refuses_a_remote_that_names_seafile_library_creation(tmp_path, where):
+    # An alias's remote is a connection string, whose create_library beats the dry run's flag.
+    from app.core.commands import build_step_argv, dry_run_refusal
+
+    config = tmp_path / "rclone.conf"
+    env = {}
+    if where == "config":
+        config.write_text(
+            "[s]\ntype = seafile\n\n[a]\ntype = alias\nremote = s,create_library=true:lib\n",
+            encoding="utf-8",
+        )
+    else:
+        config.write_text("", encoding="utf-8")
+        env = {"RCLONE_CONFIG_A_TYPE": "alias", "RCLONE_CONFIG_A_REMOTE": "s,create_library=true:"}
+    argv = build_step_argv("lsf a:", f"--config {config}", env)
+
+    assert "create_library can create data on the remote" in dry_run_refusal(argv, env)
+    # A config whose create_library is a plain setting is beaten by the flag: no refusal.
+    config.write_text("[s]\ntype = seafile\ncreate_library = true\n", encoding="utf-8")
+    assert dry_run_refusal(build_step_argv("lsf s:", f"--config {config}", {}), {}) is None
+
+
+_UNSAFE_ALIAS = "[s]\ntype = seafile\n\n[a]\ntype = alias\nremote = s,create_library=true:lib\n"
+
+
+def test_every_config_a_dry_run_may_read_is_checked(tmp_path):
+    from app.core.commands import build_step_argv, dry_run_refusal
+
+    def refusal(common, env):
+        env = {"HOME": str(tmp_path / "nohome"), "XDG_CONFIG_HOME": str(tmp_path / "noxdg")} | env
+        return dry_run_refusal(build_step_argv("lsf a:", common, env), env)
+
+    actual = tmp_path / "actual.conf"
+    actual.write_text(_UNSAFE_ALIAS, encoding="utf-8")
+    (tmp_path / "empty.conf").write_text("", encoding="utf-8")
+    # rclone takes "--config=empty.conf" as --exclude's value, and reads actual.conf.
+    common = f"--dry-run --config {actual} --exclude --config={tmp_path / 'empty.conf'}"
+    assert "create_library" in refusal(common, {})
+
+    # Without --config or RCLONE_CONFIG, rclone also looks in ~/.config, XDG_CONFIG_HOME or not.
+    home = tmp_path / "home"
+    (home / ".config" / "rclone").mkdir(parents=True)
+    (home / ".config" / "rclone" / "rclone.conf").write_text(_UNSAFE_ALIAS, encoding="utf-8")
+    assert "create_library" in refusal("", {"HOME": str(home)})
+
+    # The whole file, however long.
+    padded = tmp_path / "padded.conf"
+    padded.write_text("# padding\n" * 200_000 + _UNSAFE_ALIAS, encoding="utf-8")
+    assert padded.stat().st_size > 1024 * 1024
+    assert "create_library" in refusal(f"--config {padded}", {})
+
+    # A config without it is fine.
+    assert refusal(f"--config {tmp_path / 'empty.conf'}", {}) is None
+
+
+@pytest.mark.parametrize(
+    "alias",
+    [
+        # A bare parameter means true.
+        "[a]\ntype = alias\nremote = s,create_library:lib\n",
+        # The config can build the value from another, which the check can't follow.
+        "[a]\ntype = alias\noption = create_library\nremote = s,%(option)s=true:lib\n",
+        "[a]\ntype = alias\nx = create\nremote = s,%(x)s_library=true:lib\n",
+    ],
+)
+def test_a_dry_run_refuses_library_creation_however_the_config_spells_it(tmp_path, alias):
+    from app.core.commands import build_step_argv, dry_run_refusal
+
+    config = tmp_path / "rclone.conf"
+    config.write_text("[s]\ntype = seafile\n\n" + alias, encoding="utf-8")
+    env = {"HOME": str(tmp_path / "nohome")}
+    argv = build_step_argv("lsf a:", f"--config {config}", env)
+
+    assert "create_library" in dry_run_refusal(argv, env)
+
+
+def test_a_dry_run_refuses_a_bare_library_creation_parameter_in_the_environment(tmp_path):
+    from app.core.commands import build_step_argv, dry_run_refusal
+
+    env = {
+        "HOME": str(tmp_path / "nohome"),
+        "RCLONE_CONFIG_A_TYPE": "alias",
+        "RCLONE_CONFIG_A_REMOTE": "s,create_library:lib",
+    }
+    argv = build_step_argv("lsf a:", f"--config {tmp_path / 'empty.conf'}", env)
+
+    assert "create_library" in dry_run_refusal(argv, env)
+    # The option as a remote's own setting is beaten by the dry run's flag: no refusal.
+    env = {"HOME": str(tmp_path / "nohome"), "RCLONE_CONFIG_S_CREATE_LIBRARY": "true"}
+    argv = build_step_argv("lsf s:", f"--config {tmp_path / 'empty.conf'}", env)
+    assert dry_run_refusal(argv, env) is None

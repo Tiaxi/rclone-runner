@@ -722,8 +722,8 @@ async def test_a_requested_dry_run_refuses_steps_that_turn_dry_runs_off(tmp_path
         await JobRunner(tmp_path / "simple", executor=executor, prune=prune).run_job(
             job, trigger="manual-dry-run", dry_run=True
         )
-    # It checks each step as it reaches it: the safe one ran, as a dry run.
-    assert calls == [["rclone", "sync", *STATS_FLAGS, "--dry-run", "/b", "crypt:b"]]
+    # It checks every step before running any.
+    assert calls == []
     calls.clear()
     session_factory = _session_factory(tmp_path / "runs.db")
     runner = LiveJobRunner(

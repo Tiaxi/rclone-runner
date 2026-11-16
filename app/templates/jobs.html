@@ -91,7 +91,7 @@
             </form>
             <form method="post" action="/jobs/{{ job.id }}/dry-run">
               {{ csrf_field()|safe }}
-              <button class="secondary small" type="submit">Dry run</button>
+              <button class="secondary small" type="submit"{% if item.dry_run_refusal %} disabled title="{{ item.dry_run_refusal }}"{% endif %}>Dry run</button>
             </form>
             <form method="post" action="/jobs/{{ job.id }}/delete" onsubmit='return confirm({{ ("Delete " ~ job.name ~ "? Run history will be kept.")|tojson }})'>
               {{ csrf_field()|safe }}
