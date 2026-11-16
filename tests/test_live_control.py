@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import shutil
 import tempfile
 from datetime import datetime
@@ -91,7 +92,9 @@ def test_live_control_skips_commands_with_their_own_remote_control():
 
 
 def test_run_control_target_rates():
-    control = RunControl(job_limit=job_bandwidth(["rclone", "sync", "--bwlimit", "2M"], {}))
+    control = RunControl(
+        job_limit=job_bandwidth(["rclone", "sync", "--bwlimit", "2M"], {}), job_limit_known=True
+    )
     assert control.target_rate() == "2M"
     assert control.target_rate(for_new_process=True) is None
     control.limit = "8M"
@@ -109,9 +112,17 @@ def test_run_control_target_rates():
 
 
 async def _fake_rc_server(
-    socket_path: Path, received: list, *, status=200, chunked=False, delay=0.0
+    socket_path: Path,
+    received: list,
+    *,
+    status=200,
+    chunked=False,
+    delay=0.0,
+    options: dict | None = None,
+    option_calls: list | None = None,
 ):
-    """A stand-in for rclone's remote control API that records each call."""
+    """A stand-in for rclone's remote control API that records each core/bwlimit call, and
+    answers options/get and options/set from options, recording those in option_calls."""
 
     async def handle(reader, writer):
         head = await reader.readuntil(b"\r\n\r\n")
@@ -122,10 +133,20 @@ async def _fake_rc_server(
             if line.lower().startswith("content-length")
         )
         params = json.loads(await reader.readexactly(length))
-        received.append((lines[0].split()[1], params))
-        # rclone answers only once its transfers' current reads pass the old limit.
-        await asyncio.sleep(delay)
-        reply = {"rate": params.get("rate", "2Mi")} if status == 200 else {"error": "bad bwlimit"}
+        path = lines[0].split()[1]
+        if path.startswith("/options/"):
+            if option_calls is not None:
+                option_calls.append((path, params))
+            if path == "/options/set" and options is not None:
+                options.update(params.get("main", {}))
+            reply = {"main": dict(options or {})} if path == "/options/get" else {}
+        else:
+            received.append((path, params))
+            # rclone answers only once its transfers' current reads pass the old limit.
+            await asyncio.sleep(delay)
+            reply = (
+                {"rate": params.get("rate", "2Mi")} if status == 200 else {"error": "bad bwlimit"}
+            )
         payload = json.dumps(reply).encode()
         if chunked:
             body = f"{len(payload):x}\r\n".encode() + payload + b"\r\n0\r\n\r\n"
@@ -172,14 +193,31 @@ class _Both:
             target.append(item)
 
 
+def _fake_bwlimit(argv, env):
+    """The --bwlimit option as rclone would read it: the command's last, else the
+    environment's (the container's, then the job's)."""
+    value = None
+    for index, arg in enumerate(argv):
+        if arg == "--bwlimit" and index + 1 < len(argv):
+            value = argv[index + 1]
+        elif arg.startswith("--bwlimit="):
+            value = arg.split("=", 1)[1]
+    return value or (os.environ | env).get("RCLONE_BWLIMIT", "off")
+
+
 class FakeRclone:
     """An executor that serves the remote control socket from its arguments, like rclone."""
 
-    def __init__(self, serve: bool = True, delay: float = 0.0):
+    def __init__(self, serve: bool = True, delay: float = 0.0, bwlimit: str | None = None):
         self.serve = serve
         self.delay = delay
+        # What rclone answers for its --bwlimit option, when not what _fake_bwlimit reads.
+        self.bwlimit = bwlimit
         self.calls: list[list[str]] = []
         self.received: list[tuple[str, dict]] = []
+        # options/get and options/set calls, and the options rclone read at its start.
+        self.option_calls: list[tuple[str, dict]] = []
+        self.options: dict = {}
         self.received_by_socket: dict[str, list] = {}
         self.started = asyncio.Event()
         self.release = asyncio.Event()
@@ -194,14 +232,23 @@ class FakeRclone:
             socket_path = Path(addr.removeprefix("--rc-addr=unix://"))
             assert not socket_path.exists(), "a stale socket would stop rclone from starting"
             calls = self.received_by_socket.setdefault(socket_path.name, [])
+            self.options = {"BwLimit": self.bwlimit or _fake_bwlimit(argv, env), "Transfers": 4}
             server = await _fake_rc_server(
-                socket_path, _Both(self.received, calls), delay=self.delay
+                socket_path,
+                _Both(self.received, calls),
+                delay=self.delay,
+                options=self.options,
+                option_calls=self.option_calls,
             )
         self.started.set()
         await self.release.wait()
         self.release.clear()
         self.started.clear()
         if server is not None:
+            # Take new connections no more, and let one already arriving be answered, before
+            # closing: asyncio's server mishandles a connection accepted as it closes.
+            socket_path.unlink(missing_ok=True)
+            await asyncio.sleep(0.05)
             server.close()
             await server.wait_closed()
         return 0
@@ -483,7 +530,7 @@ async def test_real_rclone_accepts_the_control_flags(control_dir, tmp_path):
 def test_job_bandwidth_reads_the_command_then_the_environment():
     sync = ["rclone", "sync", "a", "b"]
     from_env = job_bandwidth(sync, {"RCLONE_BWLIMIT": "8M"})
-    assert (from_env.value, from_env.source) == ("8M", "environment")
+    assert from_env.value == "8M"
     # A --bwlimit in the command wins over the environment, as in rclone.
     assert job_bandwidth([*sync, "--bwlimit=2m"], {"RCLONE_BWLIMIT": "8M"}).value == "2m"
     assert job_bandwidth(sync, {}) is None
@@ -503,7 +550,6 @@ def test_job_bandwidth_follows_timetables():
         ["rclone", "sync", "a", "b"],
         {"RCLONE_BWLIMIT": "Mon-08:00,512 Fri-23:59,10M:1M Sat-10:00,1M Sunday-20:00,off"},
     )
-    assert weekly.source == "environment"
     assert weekly.rate_at(datetime(2026, 11, 18, 12)) == "512"  # Wednesday
     assert weekly.rate_at(datetime(2026, 11, 21, 9)) == "10M:1M"  # Saturday morning
     assert weekly.rate_at(datetime(2026, 11, 22, 21)) == "off"  # Sunday evening
@@ -522,18 +568,18 @@ def test_pause_rate_reads_transfers_from_the_environment_too():
 @pytest.mark.parametrize(
     ("env", "now", "restored", "detail"),
     [
-        ({"RCLONE_BWLIMIT": "8M"}, None, "8M", "From the job's RCLONE_BWLIMIT"),
+        ({"RCLONE_BWLIMIT": "8M"}, None, "8M", "The job's own limit"),
         (
             {"RCLONE_BWLIMIT": "08:00,512k 23:00,off"},
             datetime(2026, 11, 16, 9),
             "512k",
-            "Now, by the timetable in the job's RCLONE_BWLIMIT",
+            "Now, by the job's timetable",
         ),
         (
             {"RCLONE_BWLIMIT": "08:00,512k 23:00,off"},
             datetime(2026, 11, 16, 23, 30),
             "off",
-            "Now, by the timetable in the job's RCLONE_BWLIMIT",
+            "Now, by the job's timetable",
         ),
     ],
 )
@@ -667,12 +713,12 @@ async def test_a_pause_carried_into_a_step_keeps_its_environment_timetable(
     await runner.wait_for_job_run(first.job_run_id)
 
 
-async def test_a_pause_on_a_timetable_step_is_held_across_its_slot_changes(
-    control_dir, tmp_path, monkeypatch
-):
-    # rclone puts its timetable's rate back when the timetable moves to another slot, which
-    # would end a pause unseen: the runner sends the pause again.
-    monkeypatch.setattr(runner_module, "HOLD_OVERRIDE_SECONDS", 0.01)
+async def test_the_runner_follows_a_timetable_in_rclones_place(control_dir, tmp_path, monkeypatch):
+    # rclone would put its timetable's rate back at each change of slot, ending a pause
+    # unseen. The runner replaces it with a single rate and sets each slot's rate itself.
+    clock = [datetime(2026, 11, 16, 7, 59)]
+    monkeypatch.setattr(live_control, "_now", lambda: clock[0])
+    monkeypatch.setattr(runner_module, "FOLLOW_TIMETABLE_SECONDS", 0.01)
     rclone = FakeRclone()
     runner = LiveJobRunner(
         tmp_path / "logs",
@@ -684,15 +730,153 @@ async def test_a_pause_on_a_timetable_step_is_held_across_its_slot_changes(
     job.env = {"RCLONE_BWLIMIT": "08:00,512k 23:00,off"}
     first = runner.start_job(job, trigger="manual")
     await rclone.started.wait()
-    await runner.pause(first.job_run_id)
-    while len(rclone.received) < 3:
+    while not rclone.option_calls[1:]:
         await asyncio.sleep(0.01)
-    assert {params["rate"] for _, params in rclone.received} == {"64K"}
+    assert rclone.option_calls == [
+        ("/options/get", {"blocks": "main"}),
+        ("/options/set", {"main": {"BwLimit": "off"}}),
+    ]
+    assert rclone.received == []  # rclone already has the rate in force.
 
-    await runner.resume(first.job_run_id)
-    sent = len(rclone.received)
+    async def sent_rates(count):
+        while len(rclone.received) < count:
+            await asyncio.sleep(0.01)
+        return [params["rate"] for _, params in rclone.received]
+
+    clock[0] = datetime(2026, 11, 16, 8, 0)  # The next slot.
+    assert await sent_rates(1) == ["512k"]
+    await runner.pause(first.job_run_id)
+    clock[0] = datetime(2026, 11, 16, 23, 0)  # Another slot while paused: still paused.
     await asyncio.sleep(0.1)
-    # Once resumed, rclone follows its timetable by itself again.
-    assert len(rclone.received) == sent
+    assert await sent_rates(2) == ["512k", "64K"]
+    await runner.resume(first.job_run_id)
+    assert await sent_rates(3) == ["512k", "64K", "off"]
+    assert len(rclone.option_calls) == 2
     rclone.release.set()
     await runner.wait_for_job_run(first.job_run_id)
+
+
+async def test_the_limit_put_back_is_rclones_own_reading_of_the_step(control_dir, tmp_path):
+    # rclone takes "--bwlimit=2M" after --exclude as the pattern to exclude, and keeps the
+    # environment's 8M: putting back 2M would change the step's limit.
+    rclone = FakeRclone(bwlimit="8Mi")  # What rclone answers, in its own spelling.
+    runner = LiveJobRunner(
+        tmp_path / "logs",
+        _session_factory(tmp_path / "runs.db"),
+        executor=rclone,
+        control_dir=control_dir,
+    )
+    job = _job("--exclude --bwlimit=2M")
+    job.env = {"RCLONE_BWLIMIT": "8M"}
+    first = runner.start_job(job, trigger="manual")
+    await rclone.started.wait()
+    while not runner._controls[first.job_run_id].job_limit_known:
+        await asyncio.sleep(0.01)
+
+    await runner.pause(first.job_run_id)
+    await runner.resume(first.job_run_id)
+
+    assert [params["rate"] for _, params in rclone.received] == ["64K", "8Mi"]
+    rclone.release.set()
+    await runner.wait_for_job_run(first.job_run_id)
+
+
+async def test_a_resume_before_rclone_has_told_its_limit_waits_for_it(
+    control_dir, tmp_path, monkeypatch
+):
+    # Until rclone has said what its own limit is, resuming has nothing to put back; once it
+    # has, the runner sets it.
+    rclone = FakeRclone()
+    real_read = runner_module.read_rclone_options
+    answer = asyncio.Event()
+
+    async def slow_read(socket_path, stop=None):
+        await answer.wait()
+        return await real_read(socket_path, stop)
+
+    monkeypatch.setattr(runner_module, "read_rclone_options", slow_read)
+    runner = LiveJobRunner(
+        tmp_path / "logs",
+        _session_factory(tmp_path / "runs.db"),
+        executor=rclone,
+        control_dir=control_dir,
+    )
+    job = _job()
+    job.env = {"RCLONE_BWLIMIT": "8M"}
+    first = runner.start_job(job, trigger="manual")
+    await rclone.started.wait()
+    await runner.pause(first.job_run_id)
+    await runner.resume(first.job_run_id)
+    assert [params["rate"] for _, params in rclone.received] == ["64K"]
+
+    answer.set()
+    while len(rclone.received) < 2:
+        await asyncio.sleep(0.01)
+    assert [params["rate"] for _, params in rclone.received] == ["64K", "8M"]
+    rclone.release.set()
+    await runner.wait_for_job_run(first.job_run_id)
+
+
+@pytest.mark.skipif(shutil.which("rclone") is None, reason="needs the rclone binary")
+async def test_real_rclone_tells_its_own_limit_and_the_runner_takes_over_its_timetable(
+    control_dir, tmp_path, monkeypatch
+):
+    # rclone reads "--bwlimit=2M" after --exclude as the pattern to exclude, and the
+    # timetable from RCLONE_BWLIMIT; the runner learns that from rclone itself.
+    monkeypatch.setattr(live_control, "_now", lambda: datetime(2026, 11, 16, 12))
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "file.bin").write_bytes(b"x" * 4 * 1024 * 1024)
+    config = tmp_path / "rclone.conf"
+    config.touch()
+    job = _job(f"--config {config} --exclude --bwlimit=2M", (f"copy {source} {tmp_path / 'd'}",))
+    job.env = {"RCLONE_BWLIMIT": "00:00,100K;23:59,200K", "TZ": "UTC"}
+    runner = LiveJobRunner(
+        tmp_path / "logs", _session_factory(tmp_path / "runs.db"), control_dir=control_dir
+    )
+    first = runner.start_job(job, trigger="manual")
+    control = runner._controls[first.job_run_id]
+    try:
+        while not (control.job_limit_known and control.socket_path):
+            await asyncio.sleep(0.05)
+        assert control.job_limit.is_timetable
+        assert control.job_limit.rate_now() == "100Ki"
+        socket_path = control.socket_path
+        for _ in range(100):
+            options = await live_control.read_rclone_options(socket_path)
+            if options["BwLimit"] == "100Ki":
+                break  # Taken over: rclone has a single rate, and no timetable of its own.
+            await asyncio.sleep(0.05)
+        assert options["BwLimit"] == "100Ki"
+
+        await runner.pause(first.job_run_id)
+        assert (await rc_call(socket_path, "core/bwlimit", {}))["rate"] == "64Ki"
+        await runner.resume(first.job_run_id)
+        assert (await rc_call(socket_path, "core/bwlimit", {}))["rate"] == "100Ki"
+    finally:
+        runner.cancel_job_run(first.job_run_id)
+        await runner.wait_for_job_run(first.job_run_id)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("+8M", 8 * 1024**2),
+        ("1_024K", 1024 * 1024),
+        ("0x1p3M", 8 * 1024**2),
+        ("1e3", 1000 * 1024),
+        ("8MiB:1M", None),  # A pair: each side separately.
+    ],
+)
+def test_rates_read_numbers_as_rclones_go_parser_does(value, expected):
+    if expected is None:
+        assert job_bandwidth(["rclone", "sync", f"--bwlimit={value}"], {}).value == value
+        return
+    assert live_control.rate_bytes_per_second(value) == expected
+    assert job_bandwidth(["rclone", "sync", f"--bwlimit={value}"], {}).value == value
+
+
+@pytest.mark.parametrize("value", ["1__024K", "_8M", "8_M", "0x1M", "-8M", "8.8.8M"])
+def test_rates_rclone_rejects_are_not_read(value):
+    with pytest.raises(RateError):
+        live_control.rate_bytes_per_second(value)

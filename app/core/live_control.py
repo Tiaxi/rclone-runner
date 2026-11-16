@@ -148,7 +148,30 @@ _DAYS = {
 _HHMM = re.compile(r"^([0-9]{2}):([0-9]{2})$", re.ASCII)
 # rclone's size suffixes (fs/sizesuffix.go): binary multiples; a bare number is KiB.
 _MULTIPLIERS = {letter: 1024**power for power, letter in enumerate("kmgtpe", start=1)}
-_NUMBER = re.compile(r"^(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$", re.ASCII)
+_DECIMAL = re.compile(
+    r"^(?:[0-9](?:_?[0-9])*(?:\.(?:[0-9](?:_?[0-9])*)?)?|\.[0-9](?:_?[0-9])*)"
+    r"(?:[eE][+-]?[0-9](?:_?[0-9])*)?$",
+    re.ASCII,
+)
+_HEX = re.compile(
+    r"^0[xX](?:_?[0-9a-fA-F])*(?:\.(?:[0-9a-fA-F](?:_?[0-9a-fA-F])*)?)?[pP][+-]?[0-9](?:_?[0-9])*$",
+    re.ASCII,
+)
+
+
+def _go_float(text: str) -> float:
+    """A number as Go's strconv.ParseFloat reads it, which rclone's sizes use: decimal or
+    hexadecimal (0x1p3), an optional sign, underscores between digits, inf and nan."""
+    body = text[1:] if text[:1] in "+-" else text
+    if body.lower() in {"inf", "infinity", "nan"}:
+        value = float(body)
+    elif _DECIMAL.match(body):
+        value = float(body.replace("_", ""))
+    elif _HEX.match(body) and any(char not in "_." for char in body[2 : body.lower().index("p")]):
+        value = float.fromhex(body.replace("_", ""))
+    else:
+        raise RateError(f"{text!r} is not a number")
+    return -value if text.startswith("-") else value
 
 
 def rate_bytes_per_second(value: str) -> float | None:
@@ -171,9 +194,12 @@ def rate_bytes_per_second(value: str) -> float | None:
         number, multiplier = value[:-2], _MULTIPLIERS.get(value[-2].lower())
     else:
         number, multiplier = value[:-1], _MULTIPLIERS.get(last.lower())
-    if multiplier is None or not _NUMBER.match(number):
+    if multiplier is None:
         raise RateError(f"{value!r} is not a bandwidth limit rclone takes")
-    return float(number) * multiplier
+    amount = _go_float(number)
+    if amount < 0:
+        raise RateError(f"{value!r} is negative")
+    return amount * multiplier
 
 
 def _check_rate_pair(value: str) -> None:
@@ -184,16 +210,15 @@ def _check_rate_pair(value: str) -> None:
 
 @dataclass(frozen=True)
 class JobBandwidth:
-    """A step's own bandwidth limit, as rclone reads it: the last --bwlimit in its command,
-    else RCLONE_BWLIMIT in its environment.
+    """A step's own bandwidth limit: a single rate, or a timetable such as
+    "Sun-08:00,512Ki Mon-08:00,512Ki ..." that rclone follows by itself.
 
-    It may be a timetable, such as "08:00,512k 23:00,off" or "Mon-08:00,1M;Sat-00:00,off",
-    which rclone follows by itself but which its remote control can't set: only the rate in
-    force now can be put back, and it is the job's own text for it, which rclone reads again.
+    For a running step it is rclone's own reading of its --bwlimit or RCLONE_BWLIMIT, so it
+    is what rclone does, flag values, units and all. Its remote control can't take a
+    timetable: the runner sets the rate in force at each moment instead (see runner.py).
     """
 
     value: str
-    source: str  # "arguments" or "environment"
     # rclone's time slots, in the order given: (weekday from Sunday, HHMM, rate). A single
     # rate has none.
     slots: tuple[tuple[int, int, str], ...] = field(default=())
@@ -234,28 +259,51 @@ def _minutes(day_hhmm: int) -> int:
     return (day_hhmm // 10000) * 24 * 60 + (day_hhmm // 100 % 100) * 60 + day_hhmm % 100
 
 
-def job_bandwidth(argv: list[str], env: dict[str, str]) -> JobBandwidth | None:
-    """The bandwidth limit a step starts with, from its command or environment, or None.
+def parse_bandwidth(value: str | None, env: dict[str, str]) -> JobBandwidth | None:
+    """A --bwlimit value as rclone reads it, or None when unset, off or unreadable.
 
-    env is the step's whole environment (the container's and the job's): rclone reads
-    RCLONE_BWLIMIT from it when the command has no --bwlimit, and its local time from TZ.
+    env is the step's whole environment, where rclone finds its local time zone (TZ).
     """
-    value = _flag_value(argv, "--bwlimit")
-    source = "arguments"
-    if value is None:
-        value = env.get("RCLONE_BWLIMIT")
-        source = "environment"
-    if not value:
+    if not value or value.lower() == "off":
         return None
     try:
         if " " not in value and "," not in value:
             _check_rate_pair(value)
-            return JobBandwidth(value=value, source=source)
+            return JobBandwidth(value=value)
         slots = _parse_timetable(value)
     except RateError, ValueError:
         logger.warning("Could not read the bandwidth limit %r", value)
         return None
-    return JobBandwidth(value=value, source=source, slots=slots, timezone=_rclone_timezone(env))
+    return JobBandwidth(value=value, slots=slots, timezone=_rclone_timezone(env))
+
+
+def job_bandwidth(argv: list[str], env: dict[str, str]) -> JobBandwidth | None:
+    """The bandwidth limit a step's command and environment set, for estimates before it
+    runs: its last --bwlimit, else RCLONE_BWLIMIT.
+
+    With rclone's flag list loaded, a "--bwlimit=2M" that is another flag's value (as in
+    "--exclude --bwlimit=2M") or follows "--" doesn't count, as in rclone.
+    """
+    from app.core import sources
+
+    value = None
+    if sources.flags_available() and len(argv) > 1:
+        flags, _paths = sources.split_command(argv)
+        for flag in flags:
+            name, has_value, inline = flag[0].partition("=")
+            if name == "--bwlimit":
+                value = inline if has_value else (flag[1] if len(flag) > 1 else None)
+    else:
+        value = _flag_value(argv, "--bwlimit")
+    if value is None:
+        value = env.get("RCLONE_BWLIMIT")
+    return parse_bandwidth(value, env)
+
+
+def may_set_bwlimit(argv: list[str], env: dict[str, str]) -> bool:
+    """Whether a step might have a bandwidth limit of its own: any argument mentioning
+    --bwlimit, wherever it is, or RCLONE_BWLIMIT in its environment."""
+    return "RCLONE_BWLIMIT" in env or any(arg.partition("=")[0] == "--bwlimit" for arg in argv[2:])
 
 
 def _parse_timetable(value: str) -> tuple[tuple[int, int, str], ...]:
@@ -305,14 +353,19 @@ def _rclone_timezone(env: dict[str, str]) -> tzinfo | None:
 
 
 def pause_rate(argv: list[str], env: dict[str, str] | None = None) -> str:
-    """The throttle for pausing this command: a little per parallel transfer."""
+    """The throttle for pausing this command: a little per parallel transfer. A first guess:
+    the runner corrects it from rclone's own reading once rclone is up."""
     transfers = RCLONE_DEFAULT_TRANSFERS
     value = _flag_value(argv, "--transfers")
     if value is None:
         value = (env or {}).get("RCLONE_TRANSFERS")
     if value is not None and value.isascii() and value.isdigit():
-        transfers = max(1, int(value))
-    return f"{PAUSE_RATE_PER_TRANSFER * transfers}K"
+        transfers = int(value)
+    return pause_rate_for(transfers)
+
+
+def pause_rate_for(transfers: int) -> str:
+    return f"{PAUSE_RATE_PER_TRANSFER * max(1, transfers)}K"
 
 
 def supports_live_control(argv: list[str]) -> bool:
@@ -329,8 +382,10 @@ class RunControl:
     limit: str | None = None
     paused: bool = False
     socket_path: Path | None = None
-    # The current step's own limit, put back when a pause or the run's limit ends.
+    # The current step's own limit, put back when a pause or the run's limit ends, once
+    # known: rclone tells it when it is up (see runner.py), unless the step has none.
     job_limit: JobBandwidth | None = None
+    job_limit_known: bool = False
     pause_rate: str = f"{PAUSE_RATE_PER_TRANSFER * RCLONE_DEFAULT_TRANSFERS}K"
     # The one task sending limit changes to one step's rclone, so they arrive in order, and
     # the socket it sends to: a new step needs a new task.
@@ -340,49 +395,59 @@ class RunControl:
     def spawn_args(self, socket_path: Path) -> list[str]:
         args = ["--rc", f"--rc-addr=unix://{socket_path}", "--rc-no-auth"]
         rate = self.target_rate(for_new_process=True)
-        # Only for a job without a limit of its own: a --bwlimit here would replace one from
-        # RCLONE_BWLIMIT, timetable and all, and one in the job's arguments comes later and
-        # wins anyway. The runner also sends the rate through the socket once rclone is up.
-        if rate is not None and self.job_limit is None:
+        # Only for a step known to have no limit of its own: a --bwlimit here would replace
+        # one from RCLONE_BWLIMIT, and hide the step's own from rclone's answer about it.
+        # The runner also sends the rate through the socket once rclone is up.
+        if rate is not None and self.job_limit_known and self.job_limit is None:
             args.append(f"--bwlimit={rate}")
         return args
 
     @property
     def configured(self) -> str | None:
-        """The rate the job's own setting gives now, or None without one."""
+        """The rate the job's own setting gives now, or None without one or not known yet."""
         if self.job_limit is None:
             return None
         return self.job_limit.rate_now()
 
     def target_rate(self, for_new_process: bool = False) -> str | None:
+        """The rate the step's rclone should have; None when nothing needs setting: a new
+        process starts with the job's own limit, and until rclone has told it, it isn't
+        known what to put back."""
         if self.paused:
             return self.pause_rate
         if self.limit is not None:
             return self.limit
-        # A new process already starts with the job's own --bwlimit or RCLONE_BWLIMIT.
-        return None if for_new_process else (self.configured or "off")
+        if for_new_process or not self.job_limit_known:
+            return None
+        return self.configured or "off"
 
     def _job_limit_detail(self) -> str:
+        if not self.job_limit_known:
+            return "The job's own limit"
         if self.job_limit is None:
             return "The job sets no limit"
-        where = "arguments" if self.job_limit.source == "arguments" else "RCLONE_BWLIMIT"
         if self.job_limit.is_timetable:
-            return f"Now, by the timetable in the job's {where}"
-        return f"From the job's {where}"
+            return "Now, by the job's timetable"
+        return "The job's own limit"
 
     def state(self) -> dict[str, object]:
         available = self.socket_path is not None
         # A pause only takes effect on a step rclone runs with our control socket; on any
         # other step it waits for the next one.
         paused_now = self.paused and available
+        current = self.limit or self.configured
+        # Until rclone has said what its own limit is, it isn't known.
+        current_label = (
+            rate_label(current) if current or self.job_limit_known else "As the job sets"
+        )
         if paused_now:
             label = "Paused"
             detail = f"Throttled to {rate_label(self.pause_rate)}; connections stay open"
         elif self.paused:
-            label = f"{rate_label(self.limit or self.configured)} (pause pending)"
+            label = f"{current_label} (pause pending)"
             detail = "Takes effect when the next step starts"
         else:
-            label = rate_label(self.limit or self.configured)
+            label = current_label
             detail = "Set for this run" if self.limit is not None else self._job_limit_detail()
         return {
             "available": available,
@@ -399,6 +464,26 @@ class RunControl:
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+async def read_rclone_options(socket_path: Path, stop: asyncio.Event | None = None) -> dict:
+    """rclone's main options as it reads them from its flags and environment, waiting
+    briefly for it to start, but not once stop is set: then rclone has gone."""
+    for attempt in range(CONNECT_ATTEMPTS):
+        try:
+            reply = await rc_call(socket_path, "options/get", {"blocks": "main"})
+            return reply.get("main") or {}
+        except FileNotFoundError, ConnectionRefusedError:
+            if attempt == CONNECT_ATTEMPTS - 1 or (stop is not None and stop.is_set()):
+                raise
+            await asyncio.sleep(CONNECT_RETRY_SECONDS)
+    return {}
+
+
+async def set_rclone_bwlimit_option(socket_path: Path, rate: str) -> None:
+    """Replace rclone's --bwlimit option with a single rate, so its own timetable no longer
+    changes the limit each time it moves to another slot."""
+    await rc_call(socket_path, "options/set", {"main": {"BwLimit": rate}})
 
 
 async def set_rclone_bandwidth(socket_path: Path, rate: str) -> None:
