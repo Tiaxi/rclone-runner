@@ -70,7 +70,7 @@ from app.core.rclone_stats import (
     step_stats_display,
     step_transfer_stats,
 )
-from app.core.retention import prune_logs
+from app.core.retention import open_files, prune_logs
 from app.core.schedule import cron_summary, normalize_cron
 from app.core.sources import (
     SizeCommand,
@@ -1308,7 +1308,7 @@ async def prune(
     _csrf: Annotated[None, Depends(require_csrf)],
     db: DbSession,
 ) -> Response:
-    deleted = prune_logs(_prunable_logs(db), keep_days=settings.retention_days)
+    deleted = prune_logs(_prunable_logs(db), keep_days=settings.retention_days, in_use=open_files())
     return RedirectResponse(f"/settings?pruned={deleted}", status_code=303)
 
 
@@ -1499,11 +1499,28 @@ def _delete_job_configuration(db, job: JobRecord) -> None:
 
 
 def _prunable_logs(db) -> list[tuple[Path, datetime]]:
+    """Logs that retention may delete: those of finished runs only.
+
+    A running process still writes to its log, and deleting it would lose the rest of its
+    output. Every step log of a job run in progress is kept too, so its page stays complete.
+    """
     step_logs = [
-        (Path(item.log_path), item.started_at) for item in db.query(JobStepRunRecord).all()
+        (Path(item.log_path), item.started_at)
+        for item in db.query(JobStepRunRecord)
+        .join(JobStepRunRecord.job_run)
+        .filter(
+            JobStepRunRecord.status != "running",
+            JobStepRunRecord.ended_at.is_not(None),
+            JobRunRecord.status != "running",
+            JobRunRecord.ended_at.is_not(None),
+        )
+        .all()
     ]
     console_logs = [
-        (Path(item.log_path), item.started_at) for item in db.query(ConsoleRunRecord).all()
+        (Path(item.log_path), item.started_at)
+        for item in db.query(ConsoleRunRecord)
+        .filter(ConsoleRunRecord.status != "running", ConsoleRunRecord.ended_at.is_not(None))
+        .all()
     ]
     return step_logs + console_logs
 

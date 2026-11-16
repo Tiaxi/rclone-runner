@@ -795,6 +795,9 @@ async def test_settings_prune_reports_deleted_count():
         with session_factory() as db:
             step_run = _create_running_step_run(db, log_path=log_path)
             step_run.started_at = step_run.started_at.replace(year=2020)
+            for record in (step_run, step_run.job_run):
+                record.status = "success"
+                record.ended_at = step_run.started_at
             db.commit()
 
             response = await main.prune(None, None, db)
@@ -2229,3 +2232,126 @@ async def test_job_forms_report_refused_weekday_schedules(monkeypatch, cron):
     for page in (response, update):
         assert page.status_code == 400
         assert "Invalid cron schedule" in page.body.decode()
+
+
+async def test_log_retention_keeps_logs_of_runs_in_progress():
+    from datetime import timedelta
+
+    from app.core.retention import prune_logs
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        session_factory = _session_factory(root / "runs.db")
+        long_ago = main.utc_now() - timedelta(days=2)
+        logs = {name: root / f"{name}.log" for name in ("active", "earlier", "done", "console")}
+        logs["old_console"] = root / "old_console.log"
+        for path in logs.values():
+            path.write_text("output", encoding="utf-8")
+        with session_factory() as db:
+            running = JobRunRecord(
+                job_id=1,
+                job_name="slow",
+                trigger="manual",
+                status="running",
+                started_at=long_ago,
+                ended_at=None,
+            )
+            finished = JobRunRecord(
+                job_id=2,
+                job_name="quick",
+                trigger="manual",
+                status="success",
+                started_at=long_ago,
+                ended_at=long_ago,
+            )
+            db.add_all([running, finished])
+            db.flush()
+
+            def step_run(job_run, log, status):
+                ended_at = None if status == "running" else long_ago
+                return JobStepRunRecord(
+                    job_run_id=job_run.id,
+                    step_id=None,
+                    step_name=log,
+                    argv_json="[]",
+                    status=status,
+                    exit_code=0 if ended_at else None,
+                    log_path=str(logs[log]),
+                    started_at=long_ago,
+                    ended_at=ended_at,
+                )
+
+            db.add_all(
+                [
+                    # A step still running, and one that finished earlier in the same run.
+                    step_run(running, "active", "running"),
+                    step_run(running, "earlier", "success"),
+                    step_run(finished, "done", "success"),
+                    ConsoleRunRecord(
+                        status="running",
+                        command="ncdu",
+                        argv_json="[]",
+                        exit_code=None,
+                        log_path=str(logs["console"]),
+                        started_at=long_ago,
+                        ended_at=None,
+                    ),
+                    ConsoleRunRecord(
+                        status="success",
+                        command="lsd r:",
+                        argv_json="[]",
+                        exit_code=0,
+                        log_path=str(logs["old_console"]),
+                        started_at=long_ago,
+                        ended_at=long_ago,
+                    ),
+                ]
+            )
+            db.commit()
+
+            deleted = prune_logs(main._prunable_logs(db), keep_days=1)
+
+        assert deleted == 2
+        assert logs["active"].exists()
+        assert logs["earlier"].exists()
+        assert logs["console"].exists()
+        assert not logs["done"].exists()
+        assert not logs["old_console"].exists()
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="needs /proc")
+async def test_log_retention_keeps_logs_of_recovered_runs_whose_process_lives_on(monkeypatch):
+    import subprocess
+    import sys
+    from datetime import timedelta
+
+    monkeypatch.setattr(settings, "retention_days", 1)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        log_path = Path(tmpdir) / "step.log"
+        with log_path.open("wb") as output:
+            # An rclone that outlived the app: it still has the log open.
+            child = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(30)"], stdout=output
+            )
+        try:
+            with session_factory() as db:
+                step_run = _create_running_step_run(db, log_path=log_path)
+                step_run.started_at = step_run.job_run.started_at = main.utc_now() - timedelta(
+                    days=2
+                )
+                db.commit()
+            # The app restarts: the run is closed out as failed, but its process lives on.
+            LiveJobRunner(Path(tmpdir), session_factory=session_factory).recover_interrupted_runs()
+            with session_factory() as db:
+                assert db.get(JobStepRunRecord, step_run.id).status == "failed"
+                response = await main.prune(None, None, db)
+            assert response.headers["location"] == "/settings?pruned=0"
+            assert log_path.exists()
+        finally:
+            child.kill()
+            child.wait()
+        with session_factory() as db:
+            response = await main.prune(None, None, db)
+        assert response.headers["location"] == "/settings?pruned=1"
+        assert not log_path.exists()
