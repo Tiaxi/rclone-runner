@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -121,6 +122,77 @@ async def test_flag_lists_load_in_a_thread(monkeypatch):
 def test_parse_size_output():
     result = parse_size_output('{"count":38201,"bytes":442721468416,"sizeless":0}')
     assert (result.files, result.bytes) == (38201, 442721468416)
+
+
+def test_size_command_keeps_filters_given_as_grouped_short_flags():
+    # -f'- *.tmp' reaches rclone as the single argument "-f- *.tmp".
+    assert _size("copy /src /dst", "-f'- *.tmp'").argv == [
+        "rclone",
+        "size",
+        "--json",
+        "-f",
+        "- *.tmp",
+        "--",
+        "/src",
+    ]
+    # -f ends the group, so it takes the next argument, which must not pass for the source.
+    command = _size("copy /src /dst", "-vf '- *.tmp'")
+    assert command.source == "/src"
+    assert command.argv == ["rclone", "size", "--json", "-f", "- *.tmp", "--", "/src"]
+    assert _size("copy /src /dst", "-Lf='+ *.flac'").argv == [
+        "rclone",
+        "size",
+        "--json",
+        "-L",
+        "-f=+ *.flac",
+        "--",
+        "/src",
+    ]
+    # A letter after "=" is part of the value; -n is dropped, -L kept.
+    assert _size("copy /src /dst", "-Ln=false").argv == [
+        "rclone",
+        "size",
+        "--json",
+        "-L",
+        "--",
+        "/src",
+    ]
+
+
+def test_split_command_reads_short_flag_groups_as_rclone_does():
+    def flags(*args):
+        return sources.split_command(["rclone", "sync", *args, "/a", "r:a"])
+
+    assert flags("-vn") == ([["-v"], ["-n"]], ["/a", "r:a"])
+    assert flags("-vn=false") == ([["-v"], ["-n=false"]], ["/a", "r:a"])
+    assert flags("-vfx") == ([["-v"], ["-f", "x"]], ["/a", "r:a"])
+    assert flags("-f", "- *.tmp") == ([["-f", "- *.tmp"]], ["/a", "r:a"])
+    # A letter rclone doesn't list: the rest of the group stays together, unread.
+    assert flags("-vZf") == ([["-v"], ["-Zf"]], ["/a", "r:a"])
+
+
+@pytest.mark.real_rclone
+@pytest.mark.skipif(shutil.which("rclone") is None, reason="needs the rclone binary")
+@pytest.mark.parametrize("common", ["-f'- *.tmp'", "-vf '- *.tmp'", "-f='- *.tmp'"])
+def test_real_rclone_size_keeps_grouped_short_filters(tmp_path, common):
+    sources.load_flags()
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "keep.txt").write_bytes(b"x" * 5)
+    (source / "omit.tmp").write_bytes(b"x" * 100)
+
+    config = tmp_path / "rclone.conf"
+    config.touch()
+    step = f"copy {source} {tmp_path / 'dst'}"
+    command = size_command(build_rclone_argv(step, f"--config {config} {common}", {}))
+
+    # Only the command's own flags: RCLONE_* settings from the environment would add theirs.
+    env = {key: value for key, value in os.environ.items() if not key.startswith("RCLONE_")}
+    output = subprocess.run(
+        command.argv, capture_output=True, text=True, check=True, env=env
+    ).stdout
+    assert command.source == str(source)
+    assert parse_size_output(output) == sources.SourceSize(bytes=5, files=1)
 
 
 @pytest.mark.real_rclone
