@@ -471,7 +471,11 @@ async def test_live_runner_end_of_an_earlier_run_does_not_free_a_later_one():
         assert runner.start_job(job, trigger="manual") is None
         finish_second.set()
         await runner.wait_for_job_run(second.job_run_id)
-        assert runner.start_job(job, trigger="manual") is not None
+        third = runner.start_job(job, trigger="manual")
+        assert third is not None
+        await runner.wait_for_job_run(third.job_run_id)
+        with session_factory() as db:
+            assert db.get(JobRunRecord, third.job_run_id).status == "success"
 
 
 @pytest.mark.asyncio
