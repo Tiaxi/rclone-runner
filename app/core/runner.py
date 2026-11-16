@@ -38,7 +38,7 @@ from app.core.live_control import (
 )
 from app.core.models import Job, JobRunResult, JobStep, StepRunResult, utc_now
 from app.core.prune import is_prune_command, may_turn_off_dry_run, run_prune
-from app.core.rclone_stats import STATS_UNAVAILABLE_JSON, stats_from_log, stats_to_json
+from app.core.rclone_stats import STATS_UNAVAILABLE_JSON, stats_to_json, step_stats_from_log
 from app.db import ConsoleRunRecord, JobRunRecord, JobStepRunRecord
 
 logger = logging.getLogger(__name__)
@@ -52,6 +52,24 @@ Executor = Callable[[list[str], dict[str, str], Path], Awaitable[int]]
 PruneExecutor = Callable[[list[str], dict[str, str], Path, date], Awaitable[int]]
 NotificationCallback = Callable[[int], Awaitable[None]]
 
+
+# Subcommands whose transfer totals the run pages, history and emails show. rclone prints them
+# only at its INFO level (-v) unless asked for them at NOTICE, the level it logs at by default,
+# and delete, deletefile and purge print none at all without --stats.
+STATS_SUBCOMMANDS = {
+    "bisync",
+    "copy",
+    "copyto",
+    "delete",
+    "deletefile",
+    "move",
+    "moveto",
+    "purge",
+    "sync",
+}
+# Each with the environment variable that sets it instead: then the flag, which would win, is
+# left out.
+STATS_FLAGS = {"--stats-log-level=NOTICE": "RCLONE_STATS_LOG_LEVEL", "--stats=1m": "RCLONE_STATS"}
 
 OUTPUT_READ_SIZE = 64 * 1024
 # How long a live control request waits for rclone to confirm before returning anyway.
@@ -141,7 +159,9 @@ class JobRunner:
                 if is_prune_command(argv):
                     exit_code = await self._prune(argv, job.env, log_path, today)
                 else:
-                    exit_code = await self._executor(argv, job.env, log_path)
+                    exit_code = await self._executor(
+                        _process_argv(argv, job.env), job.env, log_path
+                    )
                 step_ended_at = utc_now()
                 step_runs.append(
                     StepRunResult(
@@ -152,7 +172,7 @@ class JobRunner:
                         ended_at=step_ended_at,
                         exit_code=exit_code,
                         log_path=log_path,
-                        transfer_stats=stats_from_log(log_path),
+                        transfer_stats=step_stats_from_log(argv, log_path),
                     )
                 )
                 if exit_code != 0:
@@ -566,8 +586,10 @@ class LiveJobRunner:
             if control is not None:
                 control.job_limit = None
             return await self._prune(argv, env, log_path, today)
+        # The stored argv stays the job's own command, so it can be copied and rerun as is.
+        process_argv = _process_argv(argv, env)
         if control is None or self._control_dir is None:
-            return await self._executor(argv, env, log_path)
+            return await self._executor(process_argv, env, log_path)
         # The step's own limit, to put back after a pause or the run's limit, is what rclone
         # makes of its --bwlimit or RCLONE_BWLIMIT; it tells once it is up (_follow_step).
         # Only a step that can't have one is known to have none from the start.
@@ -579,12 +601,11 @@ class LiveJobRunner:
             # No socket to ask: for the panel's label only, read the limit from the command.
             control.job_limit = job_bandwidth(argv, rclone_env)
             control.job_limit_known = True
-            return await self._executor(argv, env, log_path)
+            return await self._executor(process_argv, env, log_path)
         socket_path = self._control_dir / f"step-{step_run.id}.sock"
         # rclone refuses to start when a socket from a killed process is still there.
         socket_path.unlink(missing_ok=True)
-        # The stored argv stays the job's own command, so it can be copied and rerun as is.
-        spawn_argv = with_flags(argv, control.spawn_args(socket_path))
+        spawn_argv = with_flags(process_argv, control.spawn_args(socket_path))
         control.socket_path = socket_path
         if control.target_rate(for_new_process=True) is not None:
             # A step with a limit of its own gets the run's setting only through the socket
@@ -652,7 +673,7 @@ class LiveJobRunner:
             step_run.status = status
             step_run.exit_code = exit_code
             step_run.ended_at = utc_now()
-            stats = stats_from_log(Path(step_run.log_path))
+            stats = step_stats_from_log(json.loads(step_run.argv_json), Path(step_run.log_path))
             step_run.transfer_stats_json = (
                 stats_to_json(stats) if stats is not None else STATS_UNAVAILABLE_JSON
             )
@@ -743,6 +764,20 @@ def _run_stamp(value: datetime) -> str:
     """A name for one run's logs: its start time, then a random part, so two runs of a job
     started at the same moment still write and delete separate logs."""
     return f"{value.strftime('%Y%m%dT%H%M%S%fZ')}-{secrets.token_hex(4)}"
+
+
+def _process_argv(argv: list[str], env: dict[str, str]) -> list[str]:
+    """The command to start for a step: its own, asking rclone to log its transfer totals.
+
+    The flags go right after the subcommand, so a --stats-log-level or --stats of the job's own
+    comes later and wins; one set in the environment is left alone, since the flag would beat
+    it.
+    """
+    if len(argv) < 2 or argv[1] not in STATS_SUBCOMMANDS:
+        return argv
+    rclone_env = child_environment(env)
+    flags = [flag for flag, variable in STATS_FLAGS.items() if variable not in rclone_env]
+    return with_flags(argv, flags) if flags else argv
 
 
 def _step_log_path(log_root: Path, job: Job, step: JobStep, run_stamp: str) -> Path:

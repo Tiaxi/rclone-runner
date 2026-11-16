@@ -93,7 +93,7 @@
         <td>
           {% if row.dry_run %}
           <div class="numeric">{{ row.next_estimate or "-" }}</div>
-          <div class="table-subtext">{% if row.dry_run.bytes is none %}Upload size not available from the dry run of {{ local_time(row.dry_run.at) }}{% else %}{{ "No changes" if not row.dry_run.bytes else format_bytes(row.dry_run.bytes) ~ " to upload" }} in the dry run of {{ local_time(row.dry_run.at) }}{% endif %}</div>
+          <div class="table-subtext">{% if row.dry_run.bytes is none %}Upload size not available from the dry run of {{ local_time(row.dry_run.at) }}{% else %}{{ "Nothing to upload" if not row.dry_run.bytes else format_bytes(row.dry_run.bytes) ~ " to upload" }} in the dry run of {{ local_time(row.dry_run.at) }}{% endif %}</div>
           {% else %}
           <span class="muted">Needs a dry run</span>
           {% endif %}

@@ -14,6 +14,7 @@ STATS_TAIL_BYTES = 1024 * 1024
 # Stored for a finished step whose log had no stats, so the log is not parsed again.
 STATS_UNAVAILABLE_JSON = "null"
 NOT_AVAILABLE = "Not available"
+NOTHING_TRANSFERRED = "Nothing transferred"
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +22,22 @@ class RcloneTransferStats:
     transferred_bytes: int
     transferred_files: int
     deleted_files: int = 0
+    # Files moved or renamed on the remote itself, and folders removed: changes that
+    # transfer nothing.
+    renamed_files: int = 0
+    deleted_dirs: int = 0
+
+    @property
+    def counted_nothing(self) -> bool:
+        """Whether rclone counted nothing. Not that nothing changed: it doesn't count a
+        directory moved in one go, a folder made, or a modification time updated."""
+        return not (
+            self.transferred_bytes
+            or self.transferred_files
+            or self.deleted_files
+            or self.renamed_files
+            or self.deleted_dirs
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +66,10 @@ class RunStatsDisplay:
 
 _DATA_TRANSFER_RE = re.compile(r"^\s*Transferred:\s+([\d.]+)\s*([A-Za-z]+)\s*/", re.MULTILINE)
 _FILE_TRANSFER_RE = re.compile(r"^\s*Transferred:\s+([0-9,]+)\s*/\s*([0-9,]+)", re.MULTILINE)
-_DELETED_RE = re.compile(r"^\s*Deleted:\s+([0-9,]+)\s+\(files\)", re.MULTILINE)
+_DELETED_RE = re.compile(
+    r"^\s*Deleted:\s+([0-9,]+)\s+\(files\)(?:,\s+([0-9,]+)\s+\(dirs\))?", re.MULTILINE
+)
+_RENAMED_RE = re.compile(r"^\s*Renamed:\s+([0-9,]+)", re.MULTILINE)
 
 _BYTE_MULTIPLIERS = {
     "B": 1,
@@ -82,13 +102,22 @@ def parse_rclone_transfer_stats(text: str) -> RcloneTransferStats | None:
 
     deleted_matches = list(_DELETED_RE.finditer(text))
     deleted_files = _parse_count(deleted_matches[-1].group(1)) if deleted_matches else 0
-    if deleted_files is None:
+    deleted_dirs = (
+        _parse_count(deleted_matches[-1].group(2))
+        if deleted_matches and deleted_matches[-1].group(2)
+        else 0
+    )
+    renamed_matches = list(_RENAMED_RE.finditer(text))
+    renamed_files = _parse_count(renamed_matches[-1].group(1)) if renamed_matches else 0
+    if deleted_files is None or deleted_dirs is None or renamed_files is None:
         return None
 
     return RcloneTransferStats(
         transferred_bytes=transferred_bytes,
         transferred_files=transferred_files,
         deleted_files=deleted_files,
+        renamed_files=renamed_files,
+        deleted_dirs=deleted_dirs,
     )
 
 
@@ -105,6 +134,8 @@ def stats_from_json(value: str | None) -> RcloneTransferStats | None:
             transferred_bytes=int(raw["transferred_bytes"]),
             transferred_files=int(raw["transferred_files"]),
             deleted_files=int(raw.get("deleted_files", 0)),
+            renamed_files=int(raw.get("renamed_files", 0)),
+            deleted_dirs=int(raw.get("deleted_dirs", 0)),
         )
     except KeyError, TypeError, ValueError, json.JSONDecodeError:
         return None
@@ -113,6 +144,27 @@ def stats_from_json(value: str | None) -> RcloneTransferStats | None:
 def stats_from_log(path: Path) -> RcloneTransferStats | None:
     text = _read_log_tail(path, STATS_TAIL_BYTES)
     return None if text is None else parse_rclone_transfer_stats(text)
+
+
+# Subcommands whose totals of zero don't show that nothing changed: a move to a destination
+# that doesn't exist yet may just rename the source directory, which rclone doesn't count.
+_UNCOUNTED_CHANGES = {"move", "moveto"}
+
+
+def step_stats_from_log(argv: list[str], path: Path) -> RcloneTransferStats | None:
+    """A step's totals from its log, or None when there are none or they can't be trusted."""
+    return _trusted(argv, stats_from_log(path))
+
+
+def _trusted(argv: list[str], stats: RcloneTransferStats | None) -> RcloneTransferStats | None:
+    if (
+        stats is not None
+        and len(argv) > 1
+        and argv[1] in _UNCOUNTED_CHANGES
+        and stats.counted_nothing
+    ):
+        return None
+    return stats
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,15 +288,22 @@ class _StepRunStats(Protocol):
     ended_at: object
     log_path: str
     status: str
+    argv_json: str
 
 
 def step_transfer_stats(step_run: _StepRunStats) -> RcloneTransferStats | None:
-    """Stats for a step run: stored when it finished, or parsed from older runs' logs."""
+    """Stats for a step run: stored when it finished, or parsed from older runs' logs. Either
+    way, totals that can't be trusted for its command (see _UNCOUNTED_CHANGES) are None."""
+    try:
+        argv = json.loads(step_run.argv_json)
+    except TypeError, ValueError:
+        argv = []
+    argv = argv if isinstance(argv, list) else []
     if step_run.transfer_stats_json is not None:
-        return stats_from_json(step_run.transfer_stats_json)
+        return _trusted(argv, stats_from_json(step_run.transfer_stats_json))
     if step_run.ended_at is None:
         return None
-    return stats_from_log(Path(step_run.log_path))
+    return step_stats_from_log(argv, Path(step_run.log_path))
 
 
 def step_stats_display(
@@ -255,12 +314,11 @@ def step_stats_display(
         # --stats-log-level NOTICE), and a failed or canceled step may have stopped first: a
         # log without them says nothing about what changed.
         return _unavailable_display()
-    if status not in {"failed", "canceled"} and not (
-        stats.transferred_bytes or stats.transferred_files or stats.deleted_files
-    ):
-        # Totals of zero, as rclone printed them: confirmed to have changed nothing. A failed
+    if status not in {"failed", "canceled"} and stats.counted_nothing:
+        # Totals of zero, as rclone printed them: it transferred nothing. That is all they
+        # tell: rclone doesn't count a folder made or a modification time updated. A failed
         # or canceled step keeps its numbers.
-        label = "No changes"
+        label = NOTHING_TRANSFERRED
         return StepStatsDisplay(
             stats=stats,
             label=label,
@@ -269,12 +327,18 @@ def step_stats_display(
             transferred_files_label=label,
             deleted_files_label=label,
         )
+    label = (
+        f"{format_byte_count(stats.transferred_bytes)}, "
+        f"{stats.transferred_files} files, {stats.deleted_files} deleted"
+    )
+    if stats.renamed_files:
+        label += f", {stats.renamed_files} renamed"
+    if stats.deleted_dirs:
+        folders = "folder" if stats.deleted_dirs == 1 else "folders"
+        label += f", {stats.deleted_dirs} {folders} removed"
     return StepStatsDisplay(
         stats=stats,
-        label=(
-            f"{format_byte_count(stats.transferred_bytes)}, "
-            f"{stats.transferred_files} files, {stats.deleted_files} deleted"
-        ),
+        label=label,
         available=True,
         transferred_data_label=format_byte_count(stats.transferred_bytes),
         transferred_files_label=str(stats.transferred_files),

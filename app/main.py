@@ -1692,9 +1692,10 @@ def _transfer_summary(
     """A history row's transfer cell, from rclone's totals; partial when some steps' logs
     had none, so the totals are only a lower bound."""
     if not (transferred_bytes or transferred_files or deleted_files) and not partial:
-        # rclone reported totals of zero: a successful run had nothing to do. A failed or
-        # canceled one only stopped before doing anything.
-        return {"data": "No changes" if status == "success" else "-", "detail": None}
+        # rclone reported totals of zero: a successful run transferred nothing (rclone doesn't
+        # count folders made or modification times updated). A failed or canceled one only
+        # stopped before transferring anything.
+        return {"data": "Nothing transferred" if status == "success" else "-", "detail": None}
     files = f"{transferred_files} file{'' if transferred_files == 1 else 's'}"
     detail = f"{files}, {deleted_files} deleted" if deleted_files else files
     if partial:

@@ -1,5 +1,7 @@
 import asyncio
+import json
 import os
+import shutil
 import signal
 import sys
 import tempfile
@@ -12,7 +14,7 @@ from sqlalchemy.orm import sessionmaker
 
 import app.core.runner as runner_module
 from app.core.models import Job, JobStep, utc_now
-from app.core.runner import JobRunner, LiveJobRunner, subprocess_executor
+from app.core.runner import STATS_FLAGS, JobRunner, LiveJobRunner, subprocess_executor
 from app.db import Base, ConsoleRunRecord, JobRunRecord, JobStepRunRecord
 from app.main import run_mode_label
 
@@ -97,7 +99,9 @@ async def test_dry_run_injects_dry_run_arg_after_rclone_operation():
         )
 
     assert result.success
-    assert calls == [["rclone", "sync", "--dry-run", "--fast-list", "/source", "secret:/source"]]
+    assert calls == [
+        ["rclone", "sync", *STATS_FLAGS, "--dry-run", "--fast-list", "/source", "secret:/source"]
+    ]
 
 
 @pytest.mark.asyncio
@@ -123,7 +127,16 @@ async def test_dry_run_comes_first_even_when_the_common_args_name_it():
         )
 
     assert calls == [
-        ["rclone", "sync", "--dry-run", "--exclude", "--dry-run", "/source", "secret:/source"]
+        [
+            "rclone",
+            "sync",
+            *STATS_FLAGS,
+            "--dry-run",
+            "--exclude",
+            "--dry-run",
+            "/source",
+            "secret:/source",
+        ]
     ]
 
 
@@ -153,7 +166,7 @@ async def test_can_run_one_selected_step():
 
     assert result.success
     assert [step.step_name for step in result.step_runs] == ["second"]
-    assert calls == [["rclone", "sync", "/second", "secret:/second"]]
+    assert calls == [["rclone", "sync", *STATS_FLAGS, "/second", "secret:/second"]]
 
 
 def test_run_mode_labels_distinguish_dry_runs():
@@ -240,7 +253,8 @@ async def test_live_runner_stores_parsed_transfer_stats_when_step_finishes():
         with session_factory() as db:
             finished = db.get(JobStepRunRecord, first_step.id)
             assert finished.transfer_stats_json == (
-                '{"deleted_files": 2, "transferred_bytes": 1572864, "transferred_files": 7}'
+                '{"deleted_dirs": 1, "deleted_files": 2, "renamed_files": 0, '
+                '"transferred_bytes": 1572864, "transferred_files": 7}'
             )
 
 
@@ -1032,3 +1046,190 @@ async def test_simple_runs_started_in_the_same_second_keep_separate_logs(monkeyp
         second = await runner.run_job(job, trigger="manual")
 
     assert first.step_runs[0].log_path != second.step_runs[0].log_path
+
+
+@pytest.mark.asyncio
+async def test_transfer_steps_ask_rclone_for_its_totals_without_storing_it(tmp_path):
+    calls = []
+
+    async def executor(argv, env, log_path):
+        calls.append(argv)
+        return 0
+
+    job = Job(
+        id=1,
+        name="backup",
+        common_args="--fast-list",
+        env={},
+        steps=[
+            JobStep(id=1, name="copy", command="copy /a r:a --stats-log-level INFO", position=1),
+            JobStep(id=2, name="list", command="lsf r:a", position=2),
+        ],
+    )
+    session_factory = _session_factory(tmp_path / "runs.db")
+    runner = LiveJobRunner(tmp_path / "logs", session_factory=session_factory, executor=executor)
+    first = runner.start_job(job, trigger="manual")
+    await runner.wait_for_job_run(first.job_run_id)
+    result = await JobRunner(tmp_path / "simple", executor=executor).run_job(job, trigger="manual")
+
+    copy = ["rclone", "copy", "--fast-list", "/a", "r:a", "--stats-log-level", "INFO"]
+    listing = ["rclone", "lsf", "--fast-list", "r:a"]
+    # Right after the subcommand, so the job's own --stats-log-level comes later and wins.
+    assert calls == [[*copy[:2], *STATS_FLAGS, *copy[2:]], listing] * 2
+    # The stored command stays the job's own, to copy and rerun as is.
+    with session_factory() as db:
+        stored = [json.loads(run.argv_json) for run in db.query(JobStepRunRecord).all()]
+    assert stored == [copy, listing]
+    assert [step_run.argv for step_run in result.step_runs] == [copy, listing]
+
+    # One set in the environment would lose to the flag, so then it is left out.
+    calls.clear()
+    job.env = {"RCLONE_STATS_LOG_LEVEL": "DEBUG"}
+    await JobRunner(tmp_path / "simple", executor=executor).run_job(job, trigger="manual")
+    assert calls[0] == [*copy[:2], "--stats=1m", *copy[2:]]
+    calls.clear()
+    job.env = {"RCLONE_STATS_LOG_LEVEL": "DEBUG", "RCLONE_STATS": "10s"}
+    await JobRunner(tmp_path / "simple", executor=executor).run_job(job, trigger="manual")
+    assert calls[0] == copy
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which("rclone") is None, reason="needs the rclone binary")
+@pytest.mark.parametrize(("command", "deleted"), [("delete", 2), ("purge", 2), ("deletefile", 1)])
+async def test_deleting_steps_report_their_totals_without_verbose_logging(
+    tmp_path, command, deleted
+):
+    # rclone's delete, deletefile and purge log no totals at all without --stats.
+    target = tmp_path / "old"
+    (target / "sub").mkdir(parents=True)
+    (target / "a.txt").write_text("a", encoding="utf-8")
+    (target / "sub" / "b.txt").write_text("b", encoding="utf-8")
+    config = tmp_path / "rclone.conf"
+    config.touch()
+    path = target / "a.txt" if command == "deletefile" else target
+    job = Job(
+        id=1,
+        name="tidy",
+        common_args=f"--config {config}",
+        env={},
+        steps=[JobStep(id=1, name=command, command=f"{command} {path}")],
+    )
+    session_factory = _session_factory(tmp_path / "runs.db")
+    runner = LiveJobRunner(tmp_path / "logs", session_factory=session_factory)
+
+    first = runner.start_job(job, trigger="manual")
+    await runner.wait_for_job_run(first.job_run_id)
+
+    with session_factory() as db:
+        step_run = db.get(JobStepRunRecord, first.id)
+        assert step_run.status == "success"
+        stored = json.loads(step_run.transfer_stats_json)
+        assert (stored["deleted_files"], stored["transferred_bytes"]) == (deleted, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which("rclone") is None, reason="needs the rclone binary")
+async def test_a_copy_without_verbose_logging_reports_its_totals(tmp_path):
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "a.txt").write_text("a", encoding="utf-8")
+    (source / "b.txt").write_text("b", encoding="utf-8")
+    config = tmp_path / "rclone.conf"
+    config.touch()
+    job = Job(
+        id=1,
+        name="backup",
+        common_args=f"--config {config}",
+        env={},
+        steps=[JobStep(id=1, name="copy", command=f"copy {source} {tmp_path / 'dst'}")],
+    )
+    session_factory = _session_factory(tmp_path / "runs.db")
+    runner = LiveJobRunner(tmp_path / "logs", session_factory=session_factory)
+
+    first = runner.start_job(job, trigger="manual")
+    await runner.wait_for_job_run(first.job_run_id)
+
+    with session_factory() as db:
+        step_run = db.get(JobStepRunRecord, first.id)
+        assert step_run.status == "success"
+        stored = json.loads(step_run.transfer_stats_json)
+        assert (stored["transferred_files"], stored["transferred_bytes"]) == (2, 2)
+
+
+def _rename_case(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "dst").mkdir()
+    (tmp_path / "src" / "new").write_text("abc", encoding="utf-8")
+    (tmp_path / "dst" / "old").write_text("abc", encoding="utf-8")
+
+    def changed():
+        return sorted(path.name for path in (tmp_path / "dst").iterdir()) == ["new"]
+
+    return f"sync {tmp_path / 'src'} {tmp_path / 'dst'} --track-renames", changed
+
+
+def _empty_folders_case(tmp_path):
+    (tmp_path / "tree" / "sub").mkdir(parents=True)
+    return f"purge {tmp_path / 'tree'}", lambda: not (tmp_path / "tree").exists()
+
+
+def _create_folders_case(tmp_path):
+    (tmp_path / "src" / "empty").mkdir(parents=True)
+    command = f"copy {tmp_path / 'src'} {tmp_path / 'dst'} --create-empty-src-dirs"
+    return command, lambda: (tmp_path / "dst" / "empty").is_dir()
+
+
+def _modtime_case(tmp_path):
+    import os
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "dst").mkdir()
+    (tmp_path / "src" / "a").write_text("abc", encoding="utf-8")
+    (tmp_path / "dst" / "a").write_text("abc", encoding="utf-8")
+    os.utime(tmp_path / "dst" / "a", (1_000_000_000, 1_000_000_000))
+
+    def changed():
+        source, destination = (tmp_path / side / "a" for side in ("src", "dst"))
+        return abs(destination.stat().st_mtime - source.stat().st_mtime) < 1
+
+    return f"sync {tmp_path / 'src'} {tmp_path / 'dst'}", changed
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which("rclone") is None, reason="needs the rclone binary")
+@pytest.mark.parametrize(
+    ("case", "label"),
+    [
+        (_rename_case, "0 B, 0 files, 0 deleted, 1 renamed"),
+        (_empty_folders_case, "0 B, 0 files, 0 deleted, 2 folders removed"),
+        # rclone counts neither a folder made nor a modification time updated: its totals
+        # tell only that nothing was transferred, not that nothing changed.
+        (_create_folders_case, "Nothing transferred"),
+        (_modtime_case, "Nothing transferred"),
+    ],
+)
+async def test_changes_that_transfer_nothing_are_not_called_no_changes(tmp_path, case, label):
+    from app.core.rclone_stats import step_stats_display, step_transfer_stats
+
+    command, changed = case(tmp_path)
+    config = tmp_path / "rclone.conf"
+    config.touch()
+    job = Job(
+        id=1,
+        name="job",
+        common_args=f"--config {config}",
+        env={},
+        steps=[JobStep(id=1, name="step", command=command)],
+    )
+    session_factory = _session_factory(tmp_path / "runs.db")
+    runner = LiveJobRunner(tmp_path / "logs", session_factory=session_factory)
+
+    first = runner.start_job(job, trigger="manual")
+    await runner.wait_for_job_run(first.job_run_id)
+
+    assert changed()  # rclone did change something...
+    with session_factory() as db:
+        step_run = db.get(JobStepRunRecord, first.id)
+        assert step_run.status == "success"
+        # ...which the label doesn't deny.
+        assert step_stats_display(step_transfer_stats(step_run), "success").label == label

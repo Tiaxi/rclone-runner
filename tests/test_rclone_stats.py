@@ -14,7 +14,9 @@ from app.core.rclone_stats import (
     parse_rclone_transfer_stats,
     run_stats_display,
     stats_from_log,
+    stats_to_json,
     step_stats_display,
+    step_stats_from_log,
     step_transfer_stats,
 )
 
@@ -92,10 +94,16 @@ def test_stored_unavailable_marker_skips_log_parsing(tmp_path: Path):
     log_path = tmp_path / "step.log"
     log_path.write_text(DRY_RUN_SUMMARY, encoding="utf-8")
     step_run = SimpleNamespace(
-        transfer_stats_json=STATS_UNAVAILABLE_JSON, ended_at=object(), log_path=str(log_path)
+        transfer_stats_json=STATS_UNAVAILABLE_JSON,
+        ended_at=object(),
+        log_path=str(log_path),
+        argv_json='["rclone", "sync", "a", "b"]',
     )
     legacy_step_run = SimpleNamespace(
-        transfer_stats_json=None, ended_at=object(), log_path=str(log_path)
+        transfer_stats_json=None,
+        ended_at=object(),
+        log_path=str(log_path),
+        argv_json='["rclone", "sync", "a", "b"]',
     )
 
     assert step_transfer_stats(step_run) is None
@@ -241,10 +249,11 @@ def test_live_progress_waits_for_a_complete_line(tmp_path: Path):
     assert live_progress_from_log(log_path).percent == "35%"
 
 
-def test_step_stats_display_reports_zero_totals_as_no_changes():
+def test_step_stats_display_reports_zero_totals_as_nothing_transferred():
     zero = RcloneTransferStats(transferred_bytes=0, transferred_files=0, deleted_files=0)
 
-    assert step_stats_display(zero, "success").label == "No changes"
+    # Not "No changes": rclone doesn't count folders made or modification times updated.
+    assert step_stats_display(zero, "success").label == "Nothing transferred"
     # A failed step that printed zero totals did report them; keep the numbers.
     assert step_stats_display(zero, "failed").label == "0 B, 0 files, 0 deleted"
 
@@ -270,3 +279,80 @@ def test_a_copy_without_verbose_logging_is_not_reported_as_no_changes(tmp_path: 
     stats = stats_from_log(log_path)
     assert stats is None
     assert step_stats_display(stats, "success").label == "Not available"
+
+
+def test_totals_of_zero_from_a_move_are_not_taken_as_no_changes(tmp_path: Path):
+    # A move to a destination that doesn't exist yet may just rename the source directory,
+    # which rclone counts as nothing transferred.
+    log_path = tmp_path / "step.log"
+    log_path.write_text(
+        "Transferred:   \t          0 B / 0 B, -, 0 B/s, ETA -\nElapsed time:  0.0s\n",
+        encoding="utf-8",
+    )
+    assert step_stats_from_log(["rclone", "sync", "a", "b"], log_path).transferred_bytes == 0
+    assert step_stats_from_log(["rclone", "move", "a", "b"], log_path) is None
+    assert step_stats_from_log(["rclone", "moveto", "a", "b"], log_path) is None
+    legacy = SimpleNamespace(
+        transfer_stats_json=None,
+        ended_at=object(),
+        log_path=str(log_path),
+        argv_json='["rclone", "move", "a", "b"]',
+    )
+    assert step_transfer_stats(legacy) is None
+    # Totals stored before this check was made are read the same way.
+    stored = SimpleNamespace(
+        transfer_stats_json=stats_to_json(RcloneTransferStats(0, 0, 0)),
+        ended_at=object(),
+        log_path=str(log_path),
+        argv_json='["rclone", "move", "--dry-run", "a", "b"]',
+    )
+    assert step_transfer_stats(stored) is None
+    stored.argv_json = '["rclone", "sync", "a", "b"]'
+    assert step_transfer_stats(stored).transferred_bytes == 0
+
+
+@pytest.mark.skipif(shutil.which("rclone") is None, reason="needs the rclone binary")
+@pytest.mark.parametrize("existing_destination", [False, True])
+async def test_a_moved_directory_is_not_reported_as_no_changes(tmp_path, existing_destination):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.core.models import Job, JobStep
+    from app.core.runner import LiveJobRunner
+    from app.db import Base, JobStepRunRecord
+
+    source = tmp_path / "src"
+    (source / "sub").mkdir(parents=True)
+    (source / "a.txt").write_text("a", encoding="utf-8")
+    (source / "sub" / "b.txt").write_text("b", encoding="utf-8")
+    destination = tmp_path / "dst"
+    if existing_destination:
+        destination.mkdir()
+    config = tmp_path / "rclone.conf"
+    config.touch()
+    job = Job(
+        id=1,
+        name="move",
+        common_args=f"--config {config}",
+        env={},
+        steps=[JobStep(id=1, name="move", command=f"move {source} {destination}")],
+    )
+    engine = create_engine(f"sqlite:///{tmp_path / 'runs.db'}")
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    runner = LiveJobRunner(tmp_path / "logs", session_factory=session_factory)
+
+    first = runner.start_job(job, trigger="manual")
+    await runner.wait_for_job_run(first.job_run_id)
+
+    assert sorted(path.name for path in destination.iterdir()) == ["a.txt", "sub"]
+    with session_factory() as db:
+        step_run = db.get(JobStepRunRecord, first.id)
+        stats = step_transfer_stats(step_run)
+    if existing_destination:
+        # Moved file by file, and counted.
+        assert stats.transferred_files == 2
+    else:
+        # Renamed in one go, which rclone doesn't count: no claim of no changes.
+        assert stats is None
+        assert step_stats_display(stats, "success").label == "Not available"
