@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import shutil
 import tempfile
 import warnings
 from pathlib import Path
@@ -27,6 +28,7 @@ from app.db import (
     JobStepRecord,
     JobStepRunRecord,
     SourceMeasurementRecord,
+    record_to_job,
 )
 from app.main import login_form
 
@@ -1776,6 +1778,12 @@ class FakeMeasurer:
         return len(commands)
 
 
+def _step_digest(job, step):
+    """The configuration digest the runner records for a step run of this job."""
+    argv = next(argv for row, argv, _size in main._step_commands(job) if row.id == step.id)
+    return main.step_config_digest(argv, record_to_job(job).env)
+
+
 def _create_job_with_sources(db):
     job = JobRecord(
         name="backup",
@@ -1907,6 +1915,7 @@ async def test_job_page_estimates_from_history_and_dry_runs():
                     JobStepRunRecord(
                         job_run_id=run.id,
                         step_id=step_id,
+                        config_digest=_step_digest(job, job.steps[0]),
                         step_name="Music",
                         argv_json="[]",
                         status="success",
@@ -2012,6 +2021,7 @@ async def test_runs_with_dry_run_flags_count_as_dry_runs_not_speed_samples():
                     JobStepRunRecord(
                         job_run_id=run.id,
                         step_id=job.steps[0].id,
+                        config_digest=_step_digest(job, job.steps[0]),
                         step_name="Music",
                         argv_json=json.dumps(argv),
                         status="success",
@@ -2086,6 +2096,7 @@ async def test_a_dry_run_stays_found_behind_many_ordinary_runs():
                     JobStepRunRecord(
                         job_run_id=run.id,
                         step_id=step_id,
+                        config_digest=_step_digest(job, job.steps[0]),
                         step_name="Music",
                         argv_json="[]",
                         status="success",
@@ -2386,6 +2397,7 @@ async def test_a_dry_run_without_stats_gives_no_next_sync_estimate():
                 JobStepRunRecord(
                     job_run_id=run.id,
                     step_id=job.steps[0].id,
+                    config_digest=_step_digest(job, job.steps[0]),
                     step_name="Music",
                     argv_json="[]",
                     status="success",
@@ -2503,6 +2515,219 @@ async def test_estimates_are_capped_by_a_bwlimit_from_the_jobs_environment():
 
     # rclone reads RCLONE_BWLIMIT like --bwlimit: 36 GiB at 1 MiB/s is about 10 hours.
     assert slow["full_estimate"] == "about 10 h 15 min"
+
+
+DRY_RUN_TOTALS = (
+    "Transferred:   \t   123 B / 123 B, 100%, 0 B/s, ETA -\nTransferred:            1 / 1, 100%\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("change", "kept"),
+    [
+        (lambda job: _set_command(job, "copy", "copy /different /elsewhere"), False),
+        (lambda job: setattr(job, "common_args", "--exclude '*.tmp'"), False),
+        (
+            lambda job: setattr(job, "env_json", json.dumps({"RCLONE_CONFIG_DEST_TYPE": "s3"})),
+            False,
+        ),
+        # Another rclone.conf may give the same remote name another meaning.
+        (lambda job: setattr(job, "env_json", json.dumps({"XDG_CONFIG_HOME": "/other"})), False),
+        # How fast it runs says nothing about what it would transfer.
+        (lambda job: setattr(job, "env_json", json.dumps({"RCLONE_BWLIMIT": "1M"})), True),
+        # Another step's edit says nothing about this one's next sync.
+        (lambda job: _set_command(job, "list", "lsf /other"), True),
+    ],
+)
+async def test_next_sync_estimates_come_only_from_dry_runs_of_the_current_configuration(
+    change, kept
+):
+    from app.core.estimates import save_expected_speed
+
+    async def executor(argv, env, log_path):
+        log_path.write_text(DRY_RUN_TOTALS, encoding="utf-8")
+        return 0
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        runner = LiveJobRunner(Path(tmpdir), session_factory=session_factory, executor=executor)
+        with session_factory() as db:
+            job = JobRecord(name="backup", cron="", enabled=True, common_args="", env_json="{}")
+            job.steps.append(JobStepRecord(position=1, name="copy", command="copy /old /dest"))
+            job.steps.append(JobStepRecord(position=2, name="list", command="lsf /dest"))
+            db.add(job)
+            save_expected_speed(db, 10)
+            db.commit()
+            first = runner.start_job(record_to_job(job), trigger="manual-dry-run", dry_run=True)
+            await runner.wait_for_job_run(first.job_run_id)
+
+            db.expire_all()
+            (copy, _listing) = main._sources_context(job, db)["source_rows"]
+            assert copy["dry_run"]["bytes"] == 123
+
+            # Edit the job the way the job form does: step names keep their IDs.
+            change(job)
+            db.commit()
+            db.expire_all()
+            (copy, _listing) = main._sources_context(job, db)["source_rows"]
+
+    if kept:
+        assert copy["dry_run"]["bytes"] == 123
+    else:
+        # The run history stays; only the estimate goes.
+        assert copy["dry_run"] is None
+        assert copy["next_estimate"] is None
+
+
+def _set_command(job, name, command):
+    steps_text = "\n".join(
+        f"{step.name}|{command if step.name == name else step.command}"
+        for step in sorted(job.steps, key=lambda step: step.position)
+    )
+    from sqlalchemy.orm import object_session
+
+    main._replace_steps(object_session(job), job, steps_text)
+
+
+@pytest.mark.parametrize(
+    ("command", "kept"),
+    [
+        # A new day is a new folder to copy to: what the dry run measured is gone.
+        ("copy /source/${RUN_DATE} /dest/${RUN_DATE}", False),
+        # A dated --backup-dir doesn't change what the next sync uploads.
+        ("copy /source /dest --backup-dir /versions/${RUN_DATE}", True),
+    ],
+)
+async def test_next_sync_estimates_follow_paths_that_change_with_the_run_date(
+    monkeypatch, command, kept
+):
+    from datetime import UTC, datetime
+
+    import app.core.runner as runner_module
+
+    async def executor(argv, env, log_path):
+        log_path.write_text(DRY_RUN_TOTALS, encoding="utf-8")
+        return 0
+
+    day = [datetime(2026, 11, 15, 12, tzinfo=UTC)]
+    monkeypatch.setattr(runner_module, "utc_now", lambda: day[0])
+    monkeypatch.setattr(main, "utc_now", lambda: day[0])
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        runner = LiveJobRunner(Path(tmpdir), session_factory=session_factory, executor=executor)
+        with session_factory() as db:
+            job = JobRecord(name="backup", cron="", enabled=True, common_args="", env_json="{}")
+            job.steps.append(JobStepRecord(position=1, name="copy", command=command))
+            db.add(job)
+            db.commit()
+            first = runner.start_job(record_to_job(job), trigger="manual-dry-run", dry_run=True)
+            await runner.wait_for_job_run(first.job_run_id)
+            db.expire_all()
+            assert main._sources_context(job, db)["source_rows"][0]["dry_run"]["bytes"] == 123
+
+            day[0] = datetime(2026, 11, 16, 12, tzinfo=UTC)
+            db.expire_all()
+            (row,) = main._sources_context(job, db)["source_rows"]
+
+    assert (row["dry_run"] is not None) is kept
+
+
+async def test_a_dry_run_counts_for_the_step_without_its_dry_run_flag():
+    # Taking --dry-run out of a step to make it real changes nothing it would transfer.
+    async def executor(argv, env, log_path):
+        log_path.write_text(DRY_RUN_TOTALS, encoding="utf-8")
+        return 0
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        runner = LiveJobRunner(Path(tmpdir), session_factory=session_factory, executor=executor)
+        with session_factory() as db:
+            job = JobRecord(name="backup", cron="", enabled=True, common_args="", env_json="{}")
+            job.steps.append(
+                JobStepRecord(position=1, name="copy", command="copy /old /dest --dry-run -v")
+            )
+            db.add(job)
+            db.commit()
+            first = runner.start_job(record_to_job(job), trigger="manual")
+            await runner.wait_for_job_run(first.job_run_id)
+
+            _set_command(job, "copy", "copy /old /dest")
+            db.commit()
+            db.expire_all()
+            (row,) = main._sources_context(job, db)["source_rows"]
+
+    assert row["dry_run"]["bytes"] == 123
+
+
+async def test_dry_runs_saved_by_the_simple_runner_give_estimates():
+    from app.core.runner import JobRunner
+    from app.db import save_job_run
+
+    async def executor(argv, env, log_path):
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(DRY_RUN_TOTALS, encoding="utf-8")
+        return 0
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = JobRecord(name="backup", cron="", enabled=True, common_args="", env_json="{}")
+            job.steps.append(JobStepRecord(position=1, name="copy", command="copy /old /dest"))
+            db.add(job)
+            db.commit()
+            result = await JobRunner(Path(tmpdir), executor=executor).run_job(
+                record_to_job(job), trigger="manual-dry-run", dry_run=True
+            )
+            save_job_run(db, result)
+            (row,) = main._sources_context(job, db)["source_rows"]
+
+    assert row["dry_run"]["bytes"] == 123
+
+
+@pytest.mark.skipif(shutil.which("rclone") is None, reason="needs the rclone binary")
+async def test_a_dry_run_with_a_backup_dir_says_nothing_of_one_without():
+    # Replacing a file moves the old one aside, which rclone counts: 3 B to copy plus 9 B to
+    # move make 12 B with --backup-dir, 3 B without it.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "src").mkdir()
+        (root / "dst").mkdir()
+        (root / "src" / "a").write_text("abc", encoding="utf-8")
+        (root / "dst" / "a").write_text("123456789", encoding="utf-8")
+        config = root / "rclone.conf"
+        config.touch()
+        session_factory = _session_factory(root / "runs.db")
+        runner = LiveJobRunner(root / "logs", session_factory=session_factory)
+        with session_factory() as db:
+            job = JobRecord(
+                name="backup",
+                cron="",
+                enabled=True,
+                common_args=f"--config {config}",
+                env_json="{}",
+            )
+            job.steps.append(
+                JobStepRecord(
+                    position=1,
+                    name="copy",
+                    command=f"copy {root / 'src'} {root / 'dst'} --backup-dir {root / 'old'}",
+                )
+            )
+            db.add(job)
+            db.commit()
+
+            async def dry_run():
+                first = runner.start_job(record_to_job(job), trigger="manual-dry-run", dry_run=True)
+                await runner.wait_for_job_run(first.job_run_id)
+                db.expire_all()
+                return main._sources_context(job, db)["source_rows"][0]["dry_run"]
+
+            assert (await dry_run())["bytes"] == 12
+            _set_command(job, "copy", f"copy {root / 'src'} {root / 'dst'}")
+            db.commit()
+            db.expire_all()
+            assert main._sources_context(job, db)["source_rows"][0]["dry_run"] is None
+            assert (await dry_run())["bytes"] == 3
 
 
 async def test_job_pages_disable_dry_runs_of_commands_that_ignore_dry_run():

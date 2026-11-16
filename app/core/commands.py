@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import shlex
@@ -157,6 +159,151 @@ def _local(started_at: datetime, timezone: str) -> datetime:
     if started_at.tzinfo is None:
         started_at = started_at.replace(tzinfo=UTC)
     return started_at.astimezone(ZoneInfo(timezone))
+
+
+def step_config_digest(argv: list[str], env: dict[str, str]) -> str:
+    """Identifies what a dry run of a step measures: its command as run, ${RUN_DATE} and all
+    expanded, so dated paths count as new ones, and the job's environment, which can name
+    remotes, set any rclone option or pick another rclone.conf (XDG_CONFIG_HOME).
+
+    Arguments that change how a step runs but not what it would transfer are left out, so that
+    a new --bwlimit or dropping --dry-run don't count as a change; so are the RCLONE_*
+    variables setting them. Of --backup-dir and --suffix only whether they are given counts:
+    rclone counts moving a replaced file aside as transferred, and their value is often dated.
+    An argument is left out only where it can't be another flag's value (after "--exclude",
+    "--progress" is the pattern to exclude), and nothing after a "--": when unsure, it counts.
+    A digest keeps secrets out of the run history. A dry run tells what the next sync uploads
+    only while this stays the same.
+    """
+    kept: list[str] = []
+    args = argv[1:]
+    index = 0
+    previous_takes_value = False  # Whether the argument before may take this one as its value.
+    while index < len(args):
+        arg = args[index]
+        index += 1
+        if arg == "--":
+            kept.extend(args[index - 1 :])
+            break
+        name, has_value, _value = arg.partition("=")
+        if not previous_takes_value and name in _NAME_ONLY_FLAGS:
+            # Whether it is given counts, not its value, which is often dated; an empty one
+            # turns it off.
+            if not has_value:
+                _value = args[index] if index < len(args) else ""
+                index += 1
+            kept.append(name if _value else f"{name}=")
+            previous_takes_value = False
+            continue
+        if not previous_takes_value and _ignored_flag(name):
+            if not has_value and name in _IGNORED_WITH_VALUES:
+                index += 1
+            previous_takes_value = False
+            continue
+        kept.append(arg)
+        previous_takes_value = arg.startswith("-") and arg != "-" and not has_value
+    settings = sorted(
+        (str(key), ("set" if value else "") if _flag_of(key) in _NAME_ONLY_FLAGS else str(value))
+        for key, value in env.items()
+        if not (key.startswith("RCLONE_") and _ignored_flag(_flag_of(key)))
+    )
+    payload = json.dumps([argv[0] if argv else "", kept, settings])
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _flag_of(variable: str) -> str:
+    """The flag an RCLONE_* environment variable sets, as rclone maps them."""
+    return "--" + variable[7:].lower().replace("_", "-")
+
+
+# Flags whose value doesn't change what a step transfers, but whether they are given does:
+# rclone counts moving a replaced file aside as transferred. A --backup-dir is often dated.
+_NAME_ONLY_FLAGS = {"--backup-dir", "--suffix"}
+# Flags that change how a step runs but not what it would transfer: its speed, logging and
+# output, and dry runs. Short ones may come grouped (-vP).
+_IGNORED_FLAGS = {
+    "--suffix-keep-extension",
+    "--bwlimit",
+    "--bwlimit-file",
+    "--transfers",
+    "--checkers",
+    "--dry-run",
+    "--interactive",
+    "--progress",
+    "--verbose",
+    "--quiet",
+    "--cpuprofile",
+    "--memprofile",
+    "--use-json-log",
+    # rclone 1.75's switches for its remote control, logging, stats and dumps.
+    "--dump-bodies",
+    "--dump-headers",
+    "--log-file-compress",
+    "--log-systemd",
+    "--rc",
+    "--rc-enable-metrics",
+    "--rc-no-auth",
+    "--rc-serve",
+    "--rc-serve-no-modtime",
+    "--rc-web-gui",
+    "--rc-web-gui-force-update",
+    "--rc-web-gui-no-open-browser",
+    "--rc-web-gui-update",
+    "--stats-one-line",
+    "--stats-one-line-date",
+}
+_IGNORED_SHORT = set("nivPq")
+# Those that take the next argument as their value when not given one with "=". Only flags
+# listed here or above are left out: another one may take a value, which may look like a flag
+# that matters (--stats-one-line-date-format --size-only), so it counts, with what follows.
+_IGNORED_WITH_VALUES = {
+    "--bwlimit",
+    "--bwlimit-file",
+    "--transfers",
+    "--checkers",
+    "--cpuprofile",
+    "--memprofile",
+    "--log-file",
+    "--log-level",
+    "--log-format",
+    "--log-file-max-size",
+    "--log-file-max-age",
+    "--log-file-max-backups",
+    "--stats",
+    "--stats-log-level",
+    "--stats-file-name-length",
+    "--stats-unit",
+    "--stats-one-line-date-format",
+    "--dump",
+    "--rc-addr",
+    "--rc-user",
+    "--rc-pass",
+    "--rc-htpasswd",
+    "--rc-realm",
+    "--rc-cert",
+    "--rc-key",
+    "--rc-client-ca",
+    "--rc-baseurl",
+    "--rc-template",
+    "--rc-files",
+    "--rc-allow-origin",
+    "--rc-user-from-header",
+    "--rc-min-tls-version",
+    "--rc-salt",
+    "--rc-job-expire-duration",
+    "--rc-job-expire-interval",
+    "--rc-max-header-bytes",
+    "--rc-server-read-timeout",
+    "--rc-server-write-timeout",
+    "--rc-web-fetch-url",
+    "--rc-response-header",
+}
+
+
+def _ignored_flag(name: str) -> bool:
+    if name.startswith("--"):
+        return name in _IGNORED_FLAGS or name in _IGNORED_WITH_VALUES
+    return len(name) > 1 and name[0] == "-" and set(name[1:]) <= _IGNORED_SHORT
 
 
 def child_environment(extra: dict[str, str] | None = None) -> dict[str, str]:

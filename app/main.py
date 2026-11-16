@@ -38,6 +38,7 @@ from app.core.commands import (
     effective_run_date,
     parse_console_command,
     run_variables,
+    step_config_digest,
 )
 from app.core.estimates import (
     SAMPLE_RUNS,
@@ -553,13 +554,22 @@ def _is_dry_run(step_run: JobStepRunRecord) -> bool:
 
 
 def _latest_dry_run_stats(job: JobRecord, db) -> dict[int, dict[str, object]]:
-    """What each step's latest successful dry run said it would transfer."""
-    step_ids = {step.id for step in job.steps}
+    """What each step's latest successful dry run of its current configuration said it would
+    transfer. A dry run before the step's command, the common arguments or the job's
+    environment changed (or one too old to tell) says nothing about the next sync."""
+    job_env = record_to_job(job).env
+    # The commands a run started now would run, as the runner records them.
+    digests = {
+        step.id: step_config_digest(argv, job_env)
+        for step, argv, _size in _step_commands(job)
+        if argv is not None
+    }
+    step_ids = set(digests)
     latest: dict[int, dict[str, object]] = {}
     for step_run in _recent_successful_step_runs(job, db):
         if step_run.step_id not in step_ids or step_run.step_id in latest:
             continue
-        if not _is_dry_run(step_run):
+        if step_run.config_digest != digests[step_run.step_id] or not _is_dry_run(step_run):
             continue
         stats = _step_transfer_stats(step_run)
         # bytes and files are None when the dry run's log had no totals: it can't tell how
