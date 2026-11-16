@@ -353,7 +353,11 @@ def plan_prune(names: Iterable[str], today: date, keep_days: int, keep_min: int)
         else:
             dated[day] = name
     newest_first = sorted(dated, reverse=True)
-    cutoff = today - timedelta(days=keep_days)
+    try:
+        cutoff = today - timedelta(days=keep_days)
+    except OverflowError:
+        # Further back than any date: nothing is old enough to purge.
+        cutoff = date.min
     # Always keep the newest folders, so a clock far ahead can't make everything look old.
     candidates = newest_first[max(keep_min, 0) :]
     purge = sorted(day for day in candidates if day < cutoff)

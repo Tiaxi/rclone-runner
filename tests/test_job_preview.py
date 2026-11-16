@@ -814,3 +814,20 @@ def test_command_preview_fills_in_run_variables():
     (preview,) = _command_previews(job)
 
     assert re.search(r"crypt:versions/\d{4}-\d{2}-\d{2}( |$)", preview["command"])
+
+
+def test_command_preview_flags_a_prune_step_whose_run_date_is_not_a_date():
+    job = JobRecord(
+        name="backup", cron="", common_args="", env_json=json.dumps({"RUN_DATE": "latest"})
+    )
+    job.steps = [
+        JobStepRecord(position=1, name="Copy", command="copy /a r:a --backup-dir r:v/${RUN_DATE}"),
+        JobStepRecord(
+            position=2, name="Prune", command="prune-dated r:v --keep-days 7 --keep-min 2"
+        ),
+    ]
+
+    copy, prune = _command_previews(job)
+
+    assert copy["command"].endswith("r:v/latest")
+    assert prune["command"].startswith("Invalid command: prune-dated counts days from ${RUN_DATE}")

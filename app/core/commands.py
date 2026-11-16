@@ -74,15 +74,38 @@ def run_variables(started_at: datetime, timezone: str) -> dict[str, str]:
     """Variables for ${...} in job steps, fixed for the whole run, in the app's time zone.
 
     For example ``--backup-dir remote:versions/${RUN_DATE}`` keeps each day's replaced and
-    deleted files apart. A job's own environment line with the same name wins.
+    deleted files apart. A job's own environment line with the same name wins, for
+    prune-dated too (see effective_run_date).
     """
     local = _local(started_at, timezone)
     return {"RUN_DATE": local.strftime("%Y-%m-%d"), "RUN_TIME": local.strftime("%H-%M-%S")}
 
 
 def run_date(started_at: datetime, timezone: str) -> date:
-    """The run's date in the app's time zone, as ${RUN_DATE} gives it."""
+    """The run's start date in the app's time zone, as ${RUN_DATE} gives it by default."""
     return _local(started_at, timezone).date()
+
+
+_RUN_DATE_FORMAT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def effective_run_date(env: dict[str, str]) -> date:
+    """The date ${RUN_DATE} stands for in this run: its start date, or the job's own RUN_DATE.
+
+    prune-dated counts days from it, so that it can't pick the folder a backup with
+    --backup-dir .../${RUN_DATE} has just written as an old one. Raises CommandPolicyError
+    unless it is a YYYY-MM-DD date.
+    """
+    value = env.get("RUN_DATE", "")
+    if _RUN_DATE_FORMAT.fullmatch(value):
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            pass
+    raise CommandPolicyError(
+        f"{prune.PRUNE_COMMAND} counts days from ${{RUN_DATE}}, which must be a date such as "
+        f"2026-11-16; the job sets RUN_DATE={value!r}"
+    )
 
 
 def _local(started_at: datetime, timezone: str) -> datetime:

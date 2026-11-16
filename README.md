@@ -114,7 +114,9 @@ BW_LIMIT=8M
 
 `${RUN_DATE}` (`2026-11-15`) and `${RUN_TIME}` (`05-00-00`) are set when a run starts. For
 example, `--backup-dir crypt:versions/${RUN_DATE}/Music` keeps each day's replaced and deleted
-files in their own folder.
+files in their own folder. An environment line such as `RUN_DATE=2026-11-01` sets it for the job
+instead, and `prune-dated` then counts days from that date too, so it must be a `YYYY-MM-DD`
+date in a job with a `prune-dated` step.
 
 ### Pruning dated backup folders
 

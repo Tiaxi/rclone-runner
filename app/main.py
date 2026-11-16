@@ -33,6 +33,7 @@ from app.config import runtime_warnings, settings, startup_permission_error
 from app.core.commands import (
     CommandPolicyError,
     build_step_argv,
+    effective_run_date,
     parse_console_command,
     run_variables,
 )
@@ -1445,6 +1446,8 @@ def _command_previews(job: JobRecord) -> list[dict[str, object]]:
         deletes = None
         try:
             argv = build_step_argv(step.command, job.common_args or "", env)
+            if is_prune_command(argv):
+                effective_run_date(env)  # A run refuses the step unless ${RUN_DATE} is a date.
             command = display_argv(argv)
         except CommandPolicyError as exc:
             command = f"Invalid command: {exc}"

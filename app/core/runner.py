@@ -15,6 +15,7 @@ from app.core.commands import (
     CommandPolicyError,
     build_step_argv,
     child_environment,
+    effective_run_date,
     run_date,
     run_variables,
 )
@@ -120,14 +121,10 @@ class JobRunner:
         status = "success"
         try:
             run_stamp = _run_stamp(started_at)
-            today = run_date(started_at, settings.timezone)
+            env = _expansion_env(job, started_at)
+            today = _run_day(env, started_at)
             for step in _selected_steps(job, step_id):
-                argv = _step_argv(
-                    step.command,
-                    _common_args(job, dry_run),
-                    _expansion_env(job, started_at),
-                    dry_run,
-                )
+                argv = _step_argv(step.command, _common_args(job, dry_run), env, dry_run)
                 step_started_at = utc_now()
                 log_path = _step_log_path(self._log_root, job, step, run_stamp)
                 if is_prune_command(argv):
@@ -258,7 +255,7 @@ class LiveJobRunner:
             self._active_runs[job.id] = job_run_id
 
             # A prune-dated step counts days from the run's ${RUN_DATE} day.
-            today = run_date(now, settings.timezone)
+            today = _run_day(env, now)
             task = asyncio.create_task(
                 self._run_job_background(job_run_id, job, planned_steps, run_stamp, today)
             )
@@ -670,8 +667,19 @@ def _expansion_env(job: Job, started_at: datetime) -> dict[str, str]:
     return run_variables(started_at, settings.timezone) | job.env
 
 
+def _run_day(env: dict[str, str], started_at: datetime) -> date:
+    """The day prune-dated counts from: the run's ${RUN_DATE}. A job whose own RUN_DATE is not
+    a date can't have prune-dated steps (_step_argv refuses them), so then nothing uses it."""
+    try:
+        return effective_run_date(env)
+    except CommandPolicyError:
+        return run_date(started_at, settings.timezone)
+
+
 def _step_argv(command: str, common_args: str, env: dict[str, str], dry_run: bool) -> list[str]:
     argv = build_step_argv(command, common_args, env)
+    if is_prune_command(argv):
+        effective_run_date(env)  # Refuses a ${RUN_DATE} that isn't a date.
     if dry_run and may_turn_off_dry_run(argv):
         # rclone uses the last value given, so the step's own --dry-run=false would beat the
         # one a dry run adds and make it a real run.
