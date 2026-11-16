@@ -888,3 +888,35 @@ async def test_prune_steps_refuse_a_run_date_that_is_not_a_date(tmp_path, run_da
     first = runner.start_job(job, trigger="schedule")
     await runner.wait_for_job_run(first.job_run_id)
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("today", "keep_days"),
+    [(date(1, 1, 1), 30), (date(1, 1, 30), 30), (date(2026, 11, 16), 10**9)],
+)
+def test_plan_keeps_everything_when_the_cutoff_is_before_any_date(today, keep_days):
+    plan = plan_prune(["0001-01-01", "2026-11-15", "2026-11-16"], today, keep_days, 1)
+
+    assert plan.purge == []
+    assert plan.cutoff == date.min
+
+
+@needs_rclone
+async def test_a_run_dated_at_the_start_of_the_calendar_prunes_nothing(versions, tmp_path):
+    # RUN_DATE=0001-01-01 is a valid date; counting 30 days back from it must not crash the
+    # run after its copy step has run.
+    job = _prune_job(versions, tmp_path)
+    job.env = job.env | {"RUN_DATE": "0001-01-01"}
+    before = _left(versions)
+    session_factory = _session_factory(tmp_path / "runs.db")
+    runner = LiveJobRunner(tmp_path / "logs", session_factory=session_factory)
+
+    first = runner.start_job(job, trigger="manual")
+    await runner.wait_for_job_run(first.job_run_id)
+    result = await JobRunner(tmp_path / "simple").run_job(job, trigger="manual")
+
+    with session_factory() as db:
+        steps = db.query(JobStepRunRecord).order_by(JobStepRunRecord.id).all()
+        assert [step.status for step in steps] == ["success", "success"]
+    assert result.success
+    assert _left(versions) == before
