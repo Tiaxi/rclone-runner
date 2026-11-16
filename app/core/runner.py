@@ -22,10 +22,17 @@ from app.core.commands import (
 from app.core.live_control import (
     RcError,
     RunControl,
-    configured_rate,
+    job_bandwidth,
+    may_set_bwlimit,
     normalize_rate,
+    parse_bandwidth,
     pause_rate,
+    pause_rate_for,
+    rc_call,
+    read_rclone_options,
+    same_rate,
     set_rclone_bandwidth,
+    set_rclone_bwlimit_option,
     supports_live_control,
     with_flags,
 )
@@ -50,6 +57,10 @@ OUTPUT_READ_SIZE = 64 * 1024
 # How long a live control request waits for rclone to confirm before returning anyway.
 APPLY_WAIT_SECONDS = 3.0
 TERMINATE_TIMEOUT_SECONDS = 5
+# How often the runner checks the rate of a step whose timetable it follows in rclone's place:
+# rclone checks its own each minute.
+FOLLOW_TIMETABLE_SECONDS = 5.0
+FOLLOW_STOP_SECONDS = 1.0
 
 
 async def subprocess_executor(argv: list[str], env: dict[str, str], log_path: Path) -> int:
@@ -428,10 +439,70 @@ class LiveJobRunner:
         except RcError as exc:
             logger.warning("Could not apply the run's bandwidth setting to a new step: %s", exc)
 
-    def _start_background(self, coroutine) -> None:
+    async def _follow_step(
+        self,
+        control: RunControl,
+        socket_path: Path,
+        env: dict[str, str],
+        step_ended: asyncio.Event,
+    ) -> None:
+        """Learn the step's own limit and transfers from its rclone, and keep its limit right.
+
+        rclone's own reading of its --bwlimit and RCLONE_BWLIMIT is what it does, flag values
+        and units and all. Until it has told it, nothing is sent to the step (see
+        RunControl.target_rate), so rclone keeps the limit its own setting gives.
+
+        A timetable there would put its rate back at each change of slot, ending a pause
+        unseen, so the runner takes it over. rclone's ticker changes the limit only when its
+        timetable's rate differs from the one it last applied, which is the limit rclone has
+        now: replacing the timetable with that rate leaves it nothing to change. The runner
+        then sets each slot's rate itself, unless paused or limited, and checks that rclone
+        has the rate it should, in case a slot changed while it was taking over.
+        """
+        try:
+            options = await read_rclone_options(socket_path, step_ended)
+            if options is None:
+                return  # The step ended first.
+            transfers = options.get("Transfers")
+            if isinstance(transfers, int) and transfers > 0:
+                control.pause_rate = pause_rate_for(transfers)
+            if not control.job_limit_known:
+                control.job_limit = parse_bandwidth(options.get("BwLimit"), env)
+            timetable = control.job_limit is not None and control.job_limit.is_timetable
+            if timetable:
+                current = await rc_call(socket_path, "core/bwlimit", {})
+                await set_rclone_bwlimit_option(socket_path, str(current.get("rate", "off")))
+        except (OSError, RcError) as exc:
+            if not step_ended.is_set():
+                logger.warning("Could not read the running rclone's bandwidth limit: %s", exc)
+            return
+        control.job_limit_known = True
+        # Set what the step should have, if it isn't what rclone has now: the run may have
+        # been paused or limited meanwhile, or the timetable moved on.
+        await self._keep_rate(control, socket_path)
+        while timetable and not step_ended.is_set():
+            with suppress(TimeoutError):
+                await asyncio.wait_for(step_ended.wait(), FOLLOW_TIMETABLE_SECONDS)
+            if not step_ended.is_set():
+                await self._keep_rate(control, socket_path)
+
+    async def _keep_rate(self, control: RunControl, socket_path: Path) -> None:
+        """Send the step's rate to its rclone if rclone has another one."""
+        target = control.target_rate()
+        if target is None:
+            return
+        try:
+            current = await rc_call(socket_path, "core/bwlimit", {})
+        except OSError, RcError:
+            return  # Gone, or the step ended: the next step starts with the setting.
+        if not same_rate(target, current):
+            await self._apply_quietly(control)
+
+    def _start_background(self, coroutine) -> asyncio.Task[None]:
         task = asyncio.create_task(coroutine)
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
+        return task
 
     async def wait_for_job_run(self, job_run_id: int) -> None:
         task = self._tasks.get(job_run_id)
@@ -493,13 +564,21 @@ class LiveJobRunner:
             # Not an rclone process with a control socket: bandwidth changes and pauses wait
             # for the next step.
             if control is not None:
-                control.configured = None
+                control.job_limit = None
             return await self._prune(argv, env, log_path, today)
         if control is None or self._control_dir is None:
             return await self._executor(argv, env, log_path)
-        control.configured = configured_rate(argv)
-        control.pause_rate = pause_rate(argv)
+        # The step's own limit, to put back after a pause or the run's limit, is what rclone
+        # makes of its --bwlimit or RCLONE_BWLIMIT; it tells once it is up (_follow_step).
+        # Only a step that can't have one is known to have none from the start.
+        rclone_env = child_environment(env)
+        control.job_limit = None
+        control.job_limit_known = not may_set_bwlimit(argv, rclone_env)
+        control.pause_rate = pause_rate(argv, rclone_env)
         if not supports_live_control(argv):
+            # No socket to ask: for the panel's label only, read the limit from the command.
+            control.job_limit = job_bandwidth(argv, rclone_env)
+            control.job_limit_known = True
             return await self._executor(argv, env, log_path)
         socket_path = self._control_dir / f"step-{step_run.id}.sock"
         # rclone refuses to start when a socket from a killed process is still there.
@@ -508,13 +587,24 @@ class LiveJobRunner:
         spawn_argv = with_flags(argv, control.spawn_args(socket_path))
         control.socket_path = socket_path
         if control.target_rate(for_new_process=True) is not None:
-            # The job's own --bwlimit comes after ours on the command line and wins, so send
-            # the run's setting through the socket as soon as rclone is listening.
+            # A step with a limit of its own gets the run's setting only through the socket
+            # (see spawn_args): send it as soon as rclone is listening.
             self._start_background(self._apply_quietly(control))
+        # Stopped by this event, not cancelled: a call to rclone it is making then ends as
+        # rclone does, instead of being cut off halfway.
+        step_ended = asyncio.Event()
+        follow = self._start_background(
+            self._follow_step(control, socket_path, rclone_env, step_ended)
+        )
         try:
             return await self._executor(spawn_argv, env, log_path)
         finally:
             control.socket_path = None
+            step_ended.set()
+            # It stops within a moment once rclone has gone; don't leave it behind.
+            _done, pending = await asyncio.wait({follow}, timeout=FOLLOW_STOP_SECONDS)
+            for task in pending:
+                task.cancel()
             socket_path.unlink(missing_ok=True)
 
     def _get_first_step_run(self, job_run_id: int) -> JobStepRunRecord:
@@ -609,6 +699,8 @@ async def _send_latest_rate(control: RunControl, socket_path: Path) -> None:
     """Send limit changes to one rclone until it has the latest, one call at a time."""
     sent = None
     while control.socket_path == socket_path and (rate := control.target_rate()) != sent:
+        if rate is None:
+            return  # Nothing to set until rclone has told the step's own limit.
         await set_rclone_bandwidth(socket_path, rate)
         sent = rate
 

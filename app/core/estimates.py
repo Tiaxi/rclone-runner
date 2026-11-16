@@ -15,6 +15,7 @@ from statistics import median
 
 from sqlalchemy.orm import Session
 
+from app.core.live_control import RateError, rate_bytes_per_second
 from app.db import SettingRecord
 
 EXPECTED_SPEED_KEY = "expected_upload_speed"
@@ -77,19 +78,16 @@ def observed_speed(samples: list[tuple[int, float]]) -> tuple[float, int] | None
 
 
 def bwlimit_bytes_per_second(rate: str | None) -> float | None:
-    """The upload limit of a single --bwlimit value in bytes per second, or None if unlimited."""
+    """The upload limit of a single --bwlimit value in bytes per second, or None if unlimited
+    or not a rate rclone takes."""
     if rate is None:
         return None
-    upload = rate.split(":", 1)[0]
-    if upload.lower() == "off":
+    try:
+        value = rate_bytes_per_second(rate.split(":", 1)[0])
+    except RateError:
         return None
-    unit = upload[-1].upper()
-    if unit.isdigit():
-        value = float(upload) * _UNIT_BYTES["K"]  # rclone reads a bare number as KiB/s
-    else:
-        value = float(upload[:-1]) * _UNIT_BYTES[unit]
     # rclone reads a limit of 0 as no limit.
-    return value if value > 0 else None
+    return value if value else None
 
 
 def choose_speed(
