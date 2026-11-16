@@ -1,5 +1,9 @@
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from app.core.notifications import read_log_tail
 from app.core.rclone_stats import (
@@ -8,6 +12,7 @@ from app.core.rclone_stats import (
     RcloneTransferStats,
     live_progress_from_log,
     parse_rclone_transfer_stats,
+    run_stats_display,
     stats_from_log,
     step_stats_display,
     step_transfer_stats,
@@ -97,11 +102,35 @@ def test_stored_unavailable_marker_skips_log_parsing(tmp_path: Path):
     assert step_transfer_stats(legacy_step_run).transferred_files == 134
 
 
-def test_missing_stats_label_depends_on_step_status():
-    assert step_stats_display(None, "success").label == "No changes"
-    assert step_stats_display(None).label == "No changes"
+def test_missing_stats_are_not_available_whatever_the_status():
+    # rclone prints no totals without -v (or --stats-log-level NOTICE), even after copying.
+    assert step_stats_display(None, "success").label == "Not available"
+    assert step_stats_display(None).label == "Not available"
     assert step_stats_display(None, "failed").label == "Not available"
     assert step_stats_display(None, "canceled").transferred_data_label == "Not available"
+
+
+def test_run_totals_say_when_some_steps_had_no_stats():
+    known = RcloneTransferStats(transferred_bytes=2048, transferred_files=1, deleted_files=0)
+    zero = RcloneTransferStats(transferred_bytes=0, transferred_files=0, deleted_files=0)
+
+    complete = run_stats_display([known, zero])
+    assert not complete.has_unavailable
+    assert complete.transferred_data_label == "2 KiB"
+
+    partial = run_stats_display([known, None])
+    assert partial.has_unavailable
+    assert partial.transferred_data_label == "at least 2 KiB"
+    assert partial.transferred_files_label == "at least 1"
+
+    unknown = run_stats_display([None, None])
+    assert unknown.has_unavailable
+    assert unknown.transferred_data_label == "Not available"
+    assert run_stats_display([]).transferred_data_label == "0 B"
+
+    # Steps still running: their totals are still to come.
+    assert run_stats_display([], running=1).transferred_data_label == "Pending"
+    assert run_stats_display([known], running=1).transferred_data_label == "at least 2 KiB"
 
 
 def test_read_log_tail_returns_last_lines_of_large_log(tmp_path: Path):
@@ -218,3 +247,26 @@ def test_step_stats_display_reports_zero_totals_as_no_changes():
     assert step_stats_display(zero, "success").label == "No changes"
     # A failed step that printed zero totals did report them; keep the numbers.
     assert step_stats_display(zero, "failed").label == "0 B, 0 files, 0 deleted"
+
+
+@pytest.mark.skipif(shutil.which("rclone") is None, reason="needs the rclone binary")
+def test_a_copy_without_verbose_logging_is_not_reported_as_no_changes(tmp_path: Path):
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "a.txt").write_text("a", encoding="utf-8")
+    (source / "b.txt").write_text("b", encoding="utf-8")
+    config = tmp_path / "rclone.conf"
+    config.touch()
+    log_path = tmp_path / "step.log"
+    with log_path.open("wb") as log_file:
+        subprocess.run(
+            ["rclone", "copy", "--config", str(config), str(source), str(tmp_path / "dst")],
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            check=True,
+        )
+
+    assert sorted(path.name for path in (tmp_path / "dst").iterdir()) == ["a.txt", "b.txt"]
+    stats = stats_from_log(log_path)
+    assert stats is None
+    assert step_stats_display(stats, "success").label == "Not available"

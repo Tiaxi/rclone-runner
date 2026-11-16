@@ -20,7 +20,7 @@ from app.core.logs import read_log_chunk
 from app.core.rclone_stats import (
     RcloneTransferStats,
     RunStatsDisplay,
-    run_stats_display,
+    job_run_stats_display,
     step_stats_display,
     step_transfer_stats,
 )
@@ -408,13 +408,7 @@ def _step_row_html(step, first: bool = False) -> str:
 
 
 def _job_run_stats(run: JobRunRecord) -> RunStatsDisplay:
-    values: list[RcloneTransferStats | None] = []
-    for step in run.step_runs:
-        if step.status == "running" or step.ended_at is None:
-            continue
-        stats = _step_transfer_stats(step)
-        values.append(stats)
-    return run_stats_display(values)
+    return job_run_stats_display(run.step_runs)
 
 
 def _step_transfer_stats(step) -> RcloneTransferStats | None:
