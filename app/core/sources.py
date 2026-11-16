@@ -170,8 +170,13 @@ def _global_flags() -> frozenset[str]:
 
 
 def split_command(argv: list[str]) -> tuple[list[list[str]], list[str]]:
-    """Split an rclone command after its subcommand into flags (with values) and paths."""
-    takes_value = _flags_with_values(argv[1])
+    """Split an rclone command after its subcommand into flags (with values) and paths.
+
+    Short flags come out one by one, as rclone reads them (see _split_short): "-vf x" gives
+    ["-v"] and ["-f", "x"].
+    """
+    subcommand = argv[1]
+    takes_value = _flags_with_values(subcommand)
     flags: list[list[str]] = []
     paths: list[str] = []
     args = iter(argv[2:])
@@ -179,16 +184,51 @@ def split_command(argv: list[str]) -> tuple[list[list[str]], list[str]]:
         if arg == "--":
             paths.extend(args)
             break
-        if arg.startswith("-") and arg != "-":
+        if arg.startswith("--"):
             flag = [arg]
             if "=" not in arg and arg in takes_value:
                 value = next(args, None)
                 if value is not None:
                     flag.append(value)
             flags.append(flag)
+        elif arg.startswith("-") and arg != "-":
+            flags.extend(_split_short(arg, args, subcommand))
         else:
             paths.append(arg)
     return flags, paths
+
+
+def _split_short(arg: str, args, subcommand: str) -> list[list[str]]:
+    """A group of short flags, one flag each, read as rclone's flag parser (pflag) does.
+
+    Each letter is a flag. "=value" after a letter is its value. A letter that takes a value
+    takes the rest of the group ("-f- *.tmp", from -f'- *.tmp'), or the next argument when it
+    ends the group ("-vf x"). Letters rclone doesn't list are kept together, unread: what
+    follows them can't be told apart.
+    """
+    takes_value = _flags_with_values(subcommand)
+    known = _flags("global").names | _flags(subcommand).names
+    flags: list[list[str]] = []
+    letters = arg[1:]
+    while letters:
+        name = f"-{letters[0]}"
+        rest = letters[1:]
+        if name not in known:
+            flags.append([f"-{letters}"])
+            break
+        if rest.startswith("="):
+            flags.append([f"{name}{rest}"])
+            break
+        if name in takes_value:
+            if rest:
+                flags.append([name, rest])
+            else:
+                value = next(args, None)
+                flags.append([name] if value is None else [name, value])
+            break
+        flags.append([name])
+        letters = rest
+    return flags
 
 
 def size_command(argv: list[str], env: dict[str, str] | None = None) -> SizeCommand | None:
