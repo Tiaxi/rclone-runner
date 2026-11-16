@@ -15,9 +15,12 @@ from app.core.commands import (
     CommandPolicyError,
     build_step_argv,
     child_environment,
+    dry_run_refusal,
     effective_run_date,
+    requests_dry_run,
     run_date,
     run_variables,
+    with_dry_run_safeguards,
 )
 from app.core.live_control import (
     RcError,
@@ -152,15 +155,20 @@ class JobRunner:
             run_stamp = _run_stamp(started_at)
             env = _expansion_env(job, started_at)
             today = _run_day(env, started_at)
-            for step in _selected_steps(job, step_id):
-                argv = _step_argv(step.command, _common_args(job, dry_run), env, dry_run)
+            # Check every step before running any.
+            planned_steps = [
+                (step, _step_argv(step.command, _common_args(job, dry_run), env, dry_run))
+                for step in _selected_steps(job, step_id)
+            ]
+            for step, argv in planned_steps:
                 step_started_at = utc_now()
                 log_path = _step_log_path(self._log_root, job, step, run_stamp)
+                process_argv = with_dry_run_safeguards(argv, env)
                 if is_prune_command(argv):
-                    exit_code = await self._prune(argv, job.env, log_path, today)
+                    exit_code = await self._prune(process_argv, job.env, log_path, today)
                 else:
                     exit_code = await self._executor(
-                        _process_argv(argv, job.env), job.env, log_path
+                        _process_argv(process_argv, job.env), job.env, log_path
                     )
                 step_ended_at = utc_now()
                 step_runs.append(
@@ -578,6 +586,8 @@ class LiveJobRunner:
         self, job_run_id: int, step_run: JobStepRunRecord, env: dict[str, str], today: date
     ) -> int:
         argv = json.loads(step_run.argv_json)
+        # The stored argv stays the job's own command, so it can be copied and rerun as is.
+        process_argv = with_dry_run_safeguards(argv, env)
         log_path = Path(step_run.log_path)
         control = self._controls.get(job_run_id)
         if is_prune_command(argv):
@@ -585,9 +595,8 @@ class LiveJobRunner:
             # for the next step.
             if control is not None:
                 control.job_limit = None
-            return await self._prune(argv, env, log_path, today)
-        # The stored argv stays the job's own command, so it can be copied and rerun as is.
-        process_argv = _process_argv(argv, env)
+            return await self._prune(process_argv, env, log_path, today)
+        process_argv = _process_argv(process_argv, env)
         if control is None or self._control_dir is None:
             return await self._executor(process_argv, env, log_path)
         # The step's own limit, to put back after a pause or the run's limit, is what rclone
@@ -807,6 +816,12 @@ def _step_argv(command: str, common_args: str, env: dict[str, str], dry_run: boo
     argv = build_step_argv(command, common_args, env)
     if is_prune_command(argv):
         effective_run_date(env)  # Refuses a ${RUN_DATE} that isn't a date.
+    # A dry run asked for in the command or its environment counts too: it is still meant to
+    # change nothing.
+    if dry_run or requests_dry_run(argv, env):
+        refusal = dry_run_refusal(argv, env)
+        if refusal is not None:
+            raise CommandPolicyError(refusal)
     if dry_run and may_turn_off_dry_run(argv):
         # rclone uses the last value given, so the step's own --dry-run=false would beat the
         # one a dry run adds and make it a real run.

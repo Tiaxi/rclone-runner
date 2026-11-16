@@ -143,7 +143,14 @@ that folder is left alone.
   connection string options in the path (`remote,opt=x:`): set those in the remote's config.
 - A dry run lists what it would purge and deletes nothing. So does `--dry-run` in the step.
   For any step, a dry run refuses to start if the step or the common arguments contain
-  `--dry-run=false` (or `-n=false`), since that would make it a real run.
+  `--dry-run=false` (or `-n=false`), since that would make it a real run. It also refuses
+  rclone commands that make changes even with `--dry-run`, such as `config delete`, `gendocs`
+  or `test`, and those not known to respect it, and flags that write a file, such as
+  `--output-file`, `--combined` or `--log-file`. Transfers, deletions and listings can be
+  dry-run, except `bisync`, which writes its listings even in a dry run. The same goes for any
+  run with `--dry-run` or `-n` in its arguments, or `RCLONE_DRY_RUN` in its environment. A dry
+  run changes none of the files and remotes the command works on; rclone may still update its
+  own state, such as refreshed login tokens in `rclone.conf` or a backend's cache.
 - A failed purge stops the step and fails the run. The step runs only if the steps before it
   succeed, and a folder that doesn't exist yet counts as nothing to prune.
 - The common arguments, and any other flags in the step, go to `rclone lsf` and `rclone purge`.

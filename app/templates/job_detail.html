@@ -14,7 +14,7 @@
     </form>
     <form method="post" action="/jobs/{{ job.id }}/dry-run">
       {{ csrf_field()|safe }}
-      <button class="secondary" type="submit">Dry run</button>
+      <button class="secondary" type="submit"{% if dry_run_refusal %} disabled title="{{ dry_run_refusal }}"{% endif %}>Dry run</button>
     </form>
     <form method="post" action="/jobs/{{ job.id }}/duplicate">
       {{ csrf_field()|safe }}

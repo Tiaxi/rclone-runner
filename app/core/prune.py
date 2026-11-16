@@ -127,7 +127,8 @@ class PruneCommand:
 
     @property
     def dry_run(self) -> bool:
-        return dry_run_requested(self.rclone_flags)
+        # As rclone gets the flags: --exclude --dry-run=false, say, goes with its value.
+        return dry_run_requested(rclone_flags(self.rclone_flags))
 
     def target(self, name: str) -> str:
         return f"{self.path.rstrip('/')}/{name}"

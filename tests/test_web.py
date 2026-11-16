@@ -2503,3 +2503,31 @@ async def test_estimates_are_capped_by_a_bwlimit_from_the_jobs_environment():
 
     # rclone reads RCLONE_BWLIMIT like --bwlimit: 36 GiB at 1 MiB/s is about 10 hours.
     assert slow["full_estimate"] == "about 10 h 15 min"
+
+
+async def test_job_pages_disable_dry_runs_of_commands_that_ignore_dry_run():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = JobRecord(name="tidy", cron="", enabled=True, common_args="", env_json="{}")
+            job.steps.append(JobStepRecord(position=1, name="List", command="lsd remote:"))
+            job.steps.append(
+                JobStepRecord(position=2, name="Forget", command="config delete remote")
+            )
+            db.add(job)
+            db.commit()
+
+            page = await main.job_detail(_request(f"/jobs/{job.id}"), job.id, None, db)
+            html = page.body.decode()
+            listing = await main.jobs(_request("/jobs"), None, db)
+
+    reason = "A dry run can&#39;t start: rclone config delete can make changes even with --dry-run"
+    previews = {preview["name"]: preview for preview in page.context["command_previews"]}
+    assert previews["List"]["dry_run_refusal"] is None
+    assert previews["Forget"]["dry_run_refusal"] == reason.replace("&#39;", "'")
+    assert f'disabled title="{reason}">Dry run step</button>' in html
+    assert html.count("disabled title=") == 2  # The step's button and the job's.
+    assert f'disabled title="Step Forget: {reason}.">Dry run</button>' in html
+    assert listing.context["jobs"][0]["dry_run_refusal"] == (
+        f"Step Forget: {reason.replace('&#39;', chr(39))}."
+    )

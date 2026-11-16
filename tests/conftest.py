@@ -33,6 +33,7 @@ GLOBAL_FLAGS = FlagSet(
             "--error-on-no-transfer",
             "--cpuprofile",
             "--memprofile",
+            "--log-file",
             "--dry-run",
             "-n",
         }
@@ -53,6 +54,7 @@ GLOBAL_FLAGS = FlagSet(
             "--rc-addr",
             "--cpuprofile",
             "--memprofile",
+            "--log-file",
         }
     ),
 )

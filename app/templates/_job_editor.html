@@ -28,7 +28,7 @@
           {% if job %}
           <div class="button-row">
             <button type="submit" form="run-step-{{ preview.id }}">Run step</button>
-            <button class="secondary" type="submit" form="dry-run-step-{{ preview.id }}">Dry run step</button>
+            <button class="secondary" type="submit" form="dry-run-step-{{ preview.id }}"{% if preview.dry_run_refusal %} disabled title="{{ preview.dry_run_refusal }}"{% endif %}>Dry run step</button>
           </div>
           {% endif %}
         </div>
@@ -38,6 +38,9 @@
             {% for token in preview.tokens %}{{ token }}{% if not loop.last %} <wbr>{% endif %}{% endfor %}
           </div>
         </div>
+        {% if preview.dry_run_refusal and job %}
+        <p class="field-note">{{ preview.dry_run_refusal }}, so this step has no dry run.</p>
+        {% endif %}
         {% if preview.deletes %}
         <p class="destructive-note">This step {{ preview.deletes }}. Dry run step lists what it would delete.</p>
         {% endif %}
