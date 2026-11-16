@@ -1029,3 +1029,49 @@ async def test_a_slow_rclone_still_gets_its_own_limit_back(control_dir, tmp_path
     assert [params["rate"] for _, params in rclone.received] == ["64K", "8M", "1M", "8M"]
     rclone.release.set()
     await runner.wait_for_job_run(first.job_run_id)
+
+
+async def test_a_tick_during_the_takeover_is_put_right(control_dir, tmp_path, monkeypatch):
+    # rclone's ticker moves to the next slot between the runner reading its limit and taking
+    # its timetable over, so it keeps the earlier rate as the one it last applied: its next
+    # tick undoes a pause. The runner's next check puts the pause back, and resuming later
+    # gives the timetable's rate.
+    clock = [datetime(2026, 11, 16, 7, 59)]
+    monkeypatch.setattr(live_control, "_now", lambda: clock[0])
+    monkeypatch.setattr(runner_module, "FOLLOW_TIMETABLE_SECONDS", 0.01)
+    rclone = FakeRclone()
+    real_set_option = runner_module.set_rclone_bwlimit_option
+
+    async def set_option_after_a_tick(socket_path, rate):
+        clock[0] = datetime(2026, 11, 16, 8, 0)
+        rclone.tick()  # Between the read ("off") and the takeover.
+        await real_set_option(socket_path, rate)
+
+    monkeypatch.setattr(runner_module, "set_rclone_bwlimit_option", set_option_after_a_tick)
+    runner = LiveJobRunner(
+        tmp_path / "logs",
+        _session_factory(tmp_path / "runs.db"),
+        executor=rclone,
+        control_dir=control_dir,
+    )
+    job = _job()
+    job.env = {"RCLONE_BWLIMIT": "08:00,512k 23:00,off"}
+    first = runner.start_job(job, trigger="manual")
+    await rclone.started.wait()
+    await _known(runner, first.job_run_id)
+    await runner.pause(first.job_run_id)
+
+    rclone.tick()  # The option says "off", rclone last applied 512k: it sets "off".
+    assert rclone.state["rate"] == "off"
+    while rclone.state["rate"] != "64K":
+        await asyncio.sleep(0.01)
+    rclone.tick()  # Now rclone's option and its last rate agree: nothing more to change.
+    assert rclone.state["rate"] == "64K"
+
+    await runner.resume(first.job_run_id)
+    assert rclone.state["rate"] == "512k"
+    await runner.set_bandwidth(first.job_run_id, "1M")
+    await runner.set_bandwidth(first.job_run_id, None)
+    assert rclone.state["rate"] == "512k"
+    rclone.release.set()
+    await runner.wait_for_job_run(first.job_run_id)
