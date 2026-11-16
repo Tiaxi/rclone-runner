@@ -12,6 +12,7 @@ from typing import Protocol
 STATS_TAIL_BYTES = 1024 * 1024
 # Stored for a finished step whose log had no stats, so the log is not parsed again.
 STATS_UNAVAILABLE_JSON = "null"
+NOT_AVAILABLE = "Not available"
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,19 +245,21 @@ def step_transfer_stats(step_run: _StepRunStats) -> RcloneTransferStats | None:
 def step_stats_display(
     stats: RcloneTransferStats | None, status: str | None = None
 ) -> StepStatsDisplay:
-    if stats is not None and not (
+    if stats is None:
+        # rclone prints its totals only when its log level shows them (with -v, or
+        # --stats-log-level NOTICE), and a failed or canceled step may have stopped first: a
+        # log without them says nothing about what changed.
+        return _unavailable_display()
+    if status not in {"failed", "canceled"} and not (
         stats.transferred_bytes or stats.transferred_files or stats.deleted_files
     ):
-        stats = None if status not in {"failed", "canceled"} else stats
-    if stats is None:
-        # rclone prints no transfer line when there was nothing to do, so missing stats on a
-        # successful step mean no changes. A failed or canceled step may simply have stopped
-        # before printing them.
-        label = "Not available" if status in {"failed", "canceled"} else "No changes"
+        # Totals of zero, as rclone printed them: confirmed to have changed nothing. A failed
+        # or canceled step keeps its numbers.
+        label = "No changes"
         return StepStatsDisplay(
-            stats=None,
+            stats=stats,
             label=label,
-            available=False,
+            available=True,
             transferred_data_label=label,
             transferred_files_label=label,
             deleted_files_label=label,
@@ -274,6 +277,18 @@ def step_stats_display(
     )
 
 
+def _unavailable_display() -> StepStatsDisplay:
+    label = NOT_AVAILABLE
+    return StepStatsDisplay(
+        stats=None,
+        label=label,
+        available=False,
+        transferred_data_label=label,
+        transferred_files_label=label,
+        deleted_files_label=label,
+    )
+
+
 def pending_stats_display(label: str = "Pending") -> StepStatsDisplay:
     return StepStatsDisplay(
         stats=None,
@@ -285,21 +300,28 @@ def pending_stats_display(label: str = "Pending") -> StepStatsDisplay:
     )
 
 
-def run_stats_display(
-    values: list[RcloneTransferStats | None], *, unavailable_count: int = 0
-) -> RunStatsDisplay:
+def run_stats_display(values: list[RcloneTransferStats | None]) -> RunStatsDisplay:
+    """Totals of a run's finished steps. None stands for a step whose log had no totals.
+
+    With some steps unknown the totals are only a lower bound, and say so; with all of them
+    unknown there is nothing to add up.
+    """
     available = [value for value in values if value is not None]
+    has_unavailable = len(available) < len(values)
     transferred_bytes = sum(value.transferred_bytes for value in available)
     transferred_files = sum(value.transferred_files for value in available)
     deleted_files = sum(value.deleted_files for value in available)
+    labels = [format_byte_count(transferred_bytes), str(transferred_files), str(deleted_files)]
+    if has_unavailable:
+        labels = [f"at least {label}" for label in labels] if available else [NOT_AVAILABLE] * 3
     return RunStatsDisplay(
         transferred_bytes=transferred_bytes,
         transferred_files=transferred_files,
         deleted_files=deleted_files,
-        transferred_data_label=format_byte_count(transferred_bytes),
-        transferred_files_label=str(transferred_files),
-        deleted_files_label=str(deleted_files),
-        has_unavailable=False,
+        transferred_data_label=labels[0],
+        transferred_files_label=labels[1],
+        deleted_files_label=labels[2],
+        has_unavailable=has_unavailable,
     )
 
 

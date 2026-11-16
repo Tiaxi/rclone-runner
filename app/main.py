@@ -462,7 +462,7 @@ def _sources_context(job: JobRecord, db) -> dict[str, object]:
                 else None,
                 "dry_run": dry_run,
                 "next_estimate": format_estimate(estimate_seconds(dry_run["bytes"], speed))
-                if dry_run is not None and speed is not None
+                if dry_run is not None and dry_run["bytes"] is not None and speed is not None
                 else None,
                 "speed_note": speed.explanation
                 if speed is not None and speed != base_speed
@@ -551,9 +551,11 @@ def _latest_dry_run_stats(job: JobRecord, db) -> dict[int, dict[str, object]]:
         if not _is_dry_run(step_run):
             continue
         stats = _step_transfer_stats(step_run)
+        # bytes and files are None when the dry run's log had no totals: it can't tell how
+        # much the next sync uploads.
         latest[step_run.step_id] = {
-            "bytes": stats.transferred_bytes if stats is not None else 0,
-            "files": stats.transferred_files if stats is not None else 0,
+            "bytes": stats.transferred_bytes if stats is not None else None,
+            "files": stats.transferred_files if stats is not None else None,
             "at": step_run.started_at,
         }
         if len(latest) == len(step_ids):
@@ -1643,11 +1645,21 @@ def _history_row(view: str, record) -> dict[str, object]:
         return row
     if view == "jobs":
         stats = _job_run_stats(record)
-        row["transfer"] = _transfer_summary(
-            stats.transferred_bytes,
-            stats.transferred_files,
-            stats.deleted_files,
-            record.status,
+        steps_with_stats = sum(
+            _step_transfer_stats(step_run) is not None
+            for step_run in record.step_runs
+            if step_run.ended_at is not None
+        )
+        row["transfer"] = (
+            _transfer_summary(
+                stats.transferred_bytes,
+                stats.transferred_files,
+                stats.deleted_files,
+                record.status,
+                partial=stats.has_unavailable,
+            )
+            if steps_with_stats or not stats.has_unavailable
+            else _unavailable_transfer_summary(record.status)
         )
     elif view == "steps":
         stats = _step_transfer_stats(record)
@@ -1659,21 +1671,36 @@ def _history_row(view: str, record) -> dict[str, object]:
                 record.status,
             )
             if stats is not None
-            else _transfer_summary(0, 0, 0, record.status)
+            else _unavailable_transfer_summary(record.status)
         )
     return row
 
 
 def _transfer_summary(
-    transferred_bytes: int, transferred_files: int, deleted_files: int, status: str
+    transferred_bytes: int,
+    transferred_files: int,
+    deleted_files: int,
+    status: str,
+    *,
+    partial: bool = False,
 ) -> dict[str, str | None]:
-    if not (transferred_bytes or transferred_files or deleted_files):
-        # Nothing recorded: a finished successful run had nothing to do, but a failed or
-        # canceled one may have stopped before rclone printed its totals.
+    """A history row's transfer cell, from rclone's totals; partial when some steps' logs
+    had none, so the totals are only a lower bound."""
+    if not (transferred_bytes or transferred_files or deleted_files) and not partial:
+        # rclone reported totals of zero: a successful run had nothing to do. A failed or
+        # canceled one only stopped before doing anything.
         return {"data": "No changes" if status == "success" else "-", "detail": None}
     files = f"{transferred_files} file{'' if transferred_files == 1 else 's'}"
     detail = f"{files}, {deleted_files} deleted" if deleted_files else files
+    if partial:
+        detail = f"{detail}; some steps not available"
     return {"data": format_byte_count(transferred_bytes), "detail": detail}
+
+
+def _unavailable_transfer_summary(status: str) -> dict[str, str | None]:
+    # No totals in the logs: rclone printed none (it does only with -v or --stats-log-level
+    # NOTICE), or a failed or canceled step stopped before printing them.
+    return {"data": "Not available" if status == "success" else "-", "detail": None}
 
 
 def _start_console_run_record(

@@ -225,7 +225,7 @@ def test_job_notification_message_treats_naive_database_times_as_utc(tmp_path):
     assert "2026-05-01 05:00:42 EEST" in html
 
 
-def test_job_notification_message_marks_missing_step_stats_as_no_changes(tmp_path):
+def test_job_notification_message_marks_missing_step_stats_as_not_available(tmp_path):
     run = JobRunRecord(
         id=7,
         job_id=3,
@@ -271,11 +271,12 @@ def test_job_notification_message_marks_missing_step_stats_as_no_changes(tmp_pat
     html = message.get_body(("html",)).get_content()
     text = message.get_body(("plain",)).get_content()
 
-    assert "2 KiB" in html
-    assert "No changes" in html
-    assert "Stats unavailable" not in html
-    assert "Some step stats unavailable" not in html
-    assert "- Missing: SUCCESS (exit 0, 5m 0s), No changes" in text
+    # A log without rclone's totals doesn't mean nothing changed.
+    assert "at least 2 KiB" in html
+    assert "No changes" not in html
+    assert "Data transferred: at least 2 KiB" in text
+    assert "Some step stats unavailable" in text
+    assert "- Missing: SUCCESS (exit 0, 5m 0s), Not available" in text
 
 
 async def test_send_job_notification_uses_stored_settings_and_failure_log(tmp_path):

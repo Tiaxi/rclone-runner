@@ -17,7 +17,7 @@ from starlette.websockets import WebSocketDisconnect
 import app.main as main
 from app.config import settings
 from app.core.notifications import load_email_notification_settings
-from app.core.rclone_stats import RcloneTransferStats, stats_to_json
+from app.core.rclone_stats import STATS_UNAVAILABLE_JSON, RcloneTransferStats, stats_to_json
 from app.core.runner import LiveJobRunner
 from app.db import (
     Base,
@@ -598,7 +598,7 @@ async def test_job_run_detail_renders_run_totals_and_step_stats_from_stored_stat
             assert 'id="job-run-data-transferred"' in html
 
 
-async def test_job_run_detail_renders_no_changes_for_completed_step_without_stats():
+async def test_job_run_detail_renders_not_available_for_completed_step_without_stats():
     request = _request("/job-runs/1")
     with tempfile.TemporaryDirectory() as tmpdir:
         session_factory = _session_factory(Path(tmpdir) / "runs.db")
@@ -632,8 +632,11 @@ async def test_job_run_detail_renders_no_changes_for_completed_step_without_stat
             response = await main.job_run_detail(request, job_run.id, None, db)
             html = response.body.decode()
 
-            assert "No changes" in html
-            assert "some unavailable" not in html
+            # rclone prints its totals only at some log levels: no totals, no claim.
+            assert "No changes" not in html
+            assert "Not available" in html
+            history = main._history_row("jobs", job_run)
+            assert history["transfer"] == {"data": "Not available", "detail": None}
 
 
 async def test_run_detail_renders_step_stats_from_log_fallback_for_existing_runs():
@@ -2355,3 +2358,65 @@ async def test_log_retention_keeps_logs_of_recovered_runs_whose_process_lives_on
             response = await main.prune(None, None, db)
         assert response.headers["location"] == "/settings?pruned=1"
         assert not log_path.exists()
+
+
+async def test_a_dry_run_without_stats_gives_no_next_sync_estimate():
+    from app.core.estimates import save_expected_speed
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = _create_job_with_sources(db)
+            save_expected_speed(db, 10)
+            started = main.utc_now()
+            run = JobRunRecord(
+                job_id=job.id,
+                job_name=job.name,
+                trigger="manual-dry-run",
+                status="success",
+                started_at=started,
+                ended_at=started,
+            )
+            db.add(run)
+            db.flush()
+            db.add(
+                JobStepRunRecord(
+                    job_run_id=run.id,
+                    step_id=job.steps[0].id,
+                    step_name="Music",
+                    argv_json="[]",
+                    status="success",
+                    exit_code=0,
+                    log_path=str(Path(tmpdir) / "dry.log"),
+                    started_at=started,
+                    ended_at=started,
+                    transfer_stats_json=STATS_UNAVAILABLE_JSON,
+                )
+            )
+            db.commit()
+
+            page = await main.job_detail(_request("/"), job.id, None, db)
+            html = page.body.decode()
+            (music, _listing) = page.context["source_rows"]
+
+    # Not "No changes" and not an estimate of zero: the dry run's log had no totals.
+    assert music["dry_run"]["bytes"] is None
+    assert music["next_estimate"] is None
+    assert "Upload size not available from the dry run of" in html
+    assert "No changes" not in html
+
+
+def test_history_totals_say_when_some_steps_had_no_stats():
+    assert main._transfer_summary(2048, 1, 0, "success", partial=True) == {
+        "data": "2 KiB",
+        "detail": "1 file; some steps not available",
+    }
+    assert main._transfer_summary(0, 0, 0, "success", partial=True) == {
+        "data": "0 B",
+        "detail": "0 files; some steps not available",
+    }
+    assert main._unavailable_transfer_summary("success") == {
+        "data": "Not available",
+        "detail": None,
+    }
+    assert main._unavailable_transfer_summary("failed") == {"data": "-", "detail": None}
