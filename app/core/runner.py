@@ -20,6 +20,7 @@ from app.core.commands import (
     requests_dry_run,
     run_date,
     run_variables,
+    step_config_digest,
     with_dry_run_safeguards,
 )
 from app.core.live_control import (
@@ -181,6 +182,7 @@ class JobRunner:
                         exit_code=exit_code,
                         log_path=log_path,
                         transfer_stats=step_stats_from_log(argv, log_path),
+                        config_digest=step_config_digest(argv, job.env),
                     )
                 )
                 if exit_code != 0:
@@ -279,6 +281,7 @@ class LiveJobRunner:
                     job_run_id=job_run.id,
                     step_id=first_step.id,
                     step_name=first_step.name,
+                    config_digest=step_config_digest(first_argv, job.env),
                     argv_json=json.dumps(first_argv),
                     status="running",
                     exit_code=None,
@@ -661,6 +664,7 @@ class LiveJobRunner:
                 job_run_id=job_run_id,
                 step_id=step.id,
                 step_name=step.name,
+                config_digest=step_config_digest(argv, job.env),
                 argv_json=json.dumps(argv),
                 status="running",
                 exit_code=None,

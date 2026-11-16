@@ -230,3 +230,100 @@ def test_requests_dry_run_is_cautious_where_it_cant_tell(monkeypatch):
     monkeypatch.setattr(sources, "_flag_sets", {})
     assert requests_dry_run(["rclone", "sync", "--dry-run=false", "/a", "b:"], {})
     assert requests_dry_run(["rclone", "sync", "-nf- *.tmp", "/a", "b:"], {})
+
+
+def test_step_config_digest_ignores_what_doesnt_change_a_transfer():
+    from app.core.commands import build_step_argv, step_config_digest
+
+    def digest(command, env=None):
+        return step_config_digest(build_step_argv(command, "", {}), env or {})
+
+    base = digest("sync /a r:a --exclude '*.tmp'")
+    for same in (
+        "sync /a r:a --exclude '*.tmp' --dry-run",
+        "sync /a r:a --exclude '*.tmp' -vP",
+        "sync /a r:a --exclude '*.tmp' --bwlimit 8M --transfers=8 --stats 10s",
+        "sync /a r:a --exclude '*.tmp' --log-file /logs/x.log --log-level INFO",
+    ):
+        assert digest(same) == base, same
+    assert digest("sync /a r:a --exclude '*.tmp'", {"RCLONE_BWLIMIT": "1M"}) == base
+    for other in (
+        "sync /b r:a --exclude '*.tmp'",
+        "sync /a r:b --exclude '*.tmp'",
+        "sync /a r:a --exclude '*.log'",
+        "copy /a r:a --exclude '*.tmp'",
+    ):
+        assert digest(other) != base, other
+    assert digest("sync /a r:a --exclude '*.tmp'", {"RCLONE_CONFIG_R_TYPE": "s3"}) != base
+
+
+def test_step_config_digest_keeps_what_may_be_another_flags_value():
+    from app.core.commands import build_step_argv, step_config_digest
+
+    def digest(command, env=None):
+        return step_config_digest(build_step_argv(command, "", {}), env or {})
+
+    # After --exclude, "--progress" and "--dry-run" are patterns to exclude: other filters.
+    assert digest("copy /src /dest --exclude --progress") != digest(
+        "copy /src /dest --exclude --dry-run"
+    )
+    # After "--", everything is a path.
+    assert digest("copy -- /src --dry-run") != digest("copy -- /src --progress")
+    # Flags rclone's remote control takes, with their values, either way they're written.
+    base = digest("copy /src /dest")
+    assert digest("copy /src /dest --rc-user alice") == base
+    assert digest("copy /src /dest --rc-user=bob") == base
+    # Any setting of the job's may change what a remote is: another rclone.conf, say.
+    assert digest("copy /src /dest", {"XDG_CONFIG_HOME": "/other"}) != base
+    assert digest("copy /src /dest", {"RCLONE_TRANSFERS": "8"}) == base
+
+
+def test_step_config_digest_counts_backup_options_but_not_their_values():
+    from app.core.commands import build_step_argv, step_config_digest
+
+    def digest(command, env=None):
+        return step_config_digest(build_step_argv(command, "", {}), env or {})
+
+    # rclone counts moving a replaced file aside as transferred: whether it happens counts.
+    plain = digest("copy /src /dest")
+    dated = digest("copy /src /dest --backup-dir r:v/2026-11-15")
+    assert dated != plain
+    assert digest("copy /src /dest --backup-dir=r:v/2026-11-16") == dated
+    assert digest("copy /src /dest --suffix .bak") != plain
+    assert digest("copy /src /dest --suffix=.old") == digest("copy /src /dest --suffix .bak")
+    assert digest("copy /src /dest", {"RCLONE_BACKUP_DIR": "r:v/1"}) == digest(
+        "copy /src /dest", {"RCLONE_BACKUP_DIR": "r:v/2"}
+    )
+    assert digest("copy /src /dest", {"RCLONE_BACKUP_DIR": "r:v/1"}) != plain
+    # An empty value turns it off, whichever way it's written.
+    for empty in ("--backup-dir=", "--backup-dir ''", "--suffix=", "--suffix ''"):
+        assert digest(f"copy /src /dest {empty}") != digest(
+            f"copy /src /dest {empty.split('=')[0].split()[0]} x"
+        ), empty
+    assert digest("copy /src /dest", {"RCLONE_BACKUP_DIR": ""}) != digest(
+        "copy /src /dest", {"RCLONE_BACKUP_DIR": "r:v/1"}
+    )
+    assert digest("copy /src /dest", {"RCLONE_SUFFIX": ""}) != digest(
+        "copy /src /dest", {"RCLONE_SUFFIX": ".bak"}
+    )
+    # A remote control header, either way it's written.
+    assert digest("copy /src /dest --rc-response-header 'X-Foo: bar'") == plain
+    assert digest("copy /src /dest --rc-response-header='X-Foo: bar'") == plain
+
+
+def test_step_config_digest_keeps_flags_it_doesnt_know_with_what_follows():
+    from app.core.commands import build_step_argv, step_config_digest
+
+    def digest(command):
+        return step_config_digest(build_step_argv(command, "", {}), {})
+
+    # rclone takes --size-only as the date format here: no size-only comparison.
+    assert digest("copy /src /dst --size-only") != digest(
+        "copy /src /dst --stats-one-line-date-format --size-only"
+    )
+    # A date format itself changes nothing that would be transferred.
+    assert digest("copy /src /dst --stats-one-line-date-format %Y") == digest(
+        "copy /src /dst --stats-one-line-date-format=%H"
+    )
+    # A flag the digest doesn't know counts, and so does its value.
+    assert digest("copy /src /dst --rc-something x") != digest("copy /src /dst")

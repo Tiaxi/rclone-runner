@@ -116,3 +116,45 @@ def test_lifecycle_migration_preserves_transfer_stats_json_when_present(tmp_path
     assert stats_values == [
         ('{"transferred_bytes": 1, "transferred_files": 2, "deleted_files": 3}',)
     ]
+
+
+def test_config_digest_migration_adds_the_column_to_existing_step_runs(tmp_path, monkeypatch):
+    import app.db as db_module
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'runs.db'}")
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE job_step_runs (
+                id INTEGER PRIMARY KEY,
+                job_run_id INTEGER NOT NULL,
+                step_id INTEGER,
+                step_name VARCHAR(200) NOT NULL,
+                argv_json TEXT NOT NULL,
+                status VARCHAR(40) NOT NULL,
+                exit_code INTEGER,
+                log_path TEXT NOT NULL,
+                started_at DATETIME NOT NULL,
+                ended_at DATETIME,
+                transfer_stats_json TEXT
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            """
+            INSERT INTO job_step_runs (
+                id, job_run_id, step_id, step_name, argv_json, status, log_path, started_at
+            )
+            VALUES (1, 1, 1, 'old', '[]', 'success', 'old.log', '2026-04-26 12:00:00')
+            """
+        )
+    monkeypatch.setattr(db_module, "engine", engine)
+
+    db_module._migrate_config_digest_column()
+    db_module._migrate_config_digest_column()  # Once added, it is left alone.
+
+    columns = {column["name"] for column in inspect(engine).get_columns("job_step_runs")}
+    assert "config_digest" in columns
+    with engine.connect() as connection:
+        rows = connection.exec_driver_sql("SELECT step_name, config_digest FROM job_step_runs")
+        assert rows.all() == [("old", None)]

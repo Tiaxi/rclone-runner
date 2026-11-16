@@ -38,6 +38,8 @@ class StepRunResult:
     exit_code: int
     log_path: Path
     transfer_stats: RcloneTransferStats | None = None
+    # What a dry run of it measures (commands.step_config_digest).
+    config_digest: str | None = None
 
     @property
     def success(self) -> bool:

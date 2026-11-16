@@ -81,6 +81,8 @@ class JobStepRunRecord(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     transfer_stats_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The step's configuration when it ran (step_config_digest); None for older runs.
+    config_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     job_run: Mapped[JobRunRecord] = relationship(back_populates="step_runs")
 
 
@@ -132,6 +134,7 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _migrate_lifecycle_columns()
     _migrate_transfer_stats_column()
+    _migrate_config_digest_column()
 
 
 def _migrate_lifecycle_columns() -> None:
@@ -175,6 +178,19 @@ def _migrate_transfer_stats_column() -> None:
         return
     with engine.begin() as connection:
         connection.exec_driver_sql("ALTER TABLE job_step_runs ADD COLUMN transfer_stats_json TEXT")
+
+
+def _migrate_config_digest_column() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+    inspector = inspect(engine)
+    if "job_step_runs" not in set(inspector.get_table_names()):
+        return
+    columns = {column["name"] for column in inspector.get_columns("job_step_runs")}
+    if "config_digest" in columns:
+        return
+    with engine.begin() as connection:
+        connection.exec_driver_sql("ALTER TABLE job_step_runs ADD COLUMN config_digest VARCHAR(64)")
 
 
 def _needs_lifecycle_rebuild(inspector, table: str) -> bool:
@@ -310,6 +326,7 @@ def save_job_run(session: Session, result: JobRunResult) -> JobRunRecord:
                     if step_run.transfer_stats is not None
                     else None
                 ),
+                config_digest=step_run.config_digest,
             )
         )
     session.commit()
