@@ -961,3 +961,74 @@ async def test_live_runner_gives_every_step_the_run_start_date(monkeypatch):
     ]
     # A job's own variable with the same name wins.
     assert calls[1][-1] == "crypt:current/b-custom"
+
+
+@pytest.mark.asyncio
+async def test_live_runs_started_in_the_same_second_keep_separate_logs(monkeypatch):
+    from app.main import _delete_job_run
+
+    runs = 0
+
+    async def executor(argv, env, log_path):
+        with log_path.open("wb") as log_file:
+            log_file.write(f"run {runs}\n".encode())
+        return 0
+
+    started = datetime(2026, 11, 16, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(runner_module, "utc_now", lambda: started)
+    job = Job(
+        id=1,
+        name="backup",
+        common_args="",
+        env={},
+        steps=[JobStep(id=1, name="one", command="lsd secret:")],
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        runner = LiveJobRunner(Path(tmpdir), session_factory=session_factory, executor=executor)
+        steps = []
+        for _ in range(2):
+            runs += 1
+            step = runner.start_job(job, trigger="manual")
+            assert step is not None
+            await runner.wait_for_job_run(step.job_run_id)
+            steps.append(step)
+            # Let the runner mark the job as no longer running.
+            await asyncio.sleep(0)
+
+        first, second = (Path(step.log_path) for step in steps)
+        assert first != second
+        assert first.read_text() == "run 1\n"
+        assert second.read_text() == "run 2\n"
+
+        with session_factory() as db:
+            _delete_job_run(db, db.get(JobRunRecord, steps[0].job_run_id))
+            db.commit()
+        assert not first.exists()
+        assert second.read_text() == "run 2\n"
+
+
+@pytest.mark.asyncio
+async def test_simple_runs_started_in_the_same_second_keep_separate_logs(monkeypatch):
+    async def executor(argv, env, log_path):
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("output", encoding="utf-8")
+        return 0
+
+    started = datetime(2026, 11, 16, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(runner_module, "utc_now", lambda: started)
+    job = Job(
+        id=1,
+        name="backup",
+        common_args="",
+        env={},
+        steps=[JobStep(id=1, name="one", command="lsd secret:")],
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        runner = JobRunner(Path(tmpdir), executor=executor)
+        first = await runner.run_job(job, trigger="manual")
+        second = await runner.run_job(job, trigger="manual")
+
+    assert first.step_runs[0].log_path != second.step_runs[0].log_path

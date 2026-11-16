@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import secrets
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import date, datetime
@@ -118,7 +119,7 @@ class JobRunner:
         step_runs: list[StepRunResult] = []
         status = "success"
         try:
-            run_stamp = _stamp(started_at)
+            run_stamp = _run_stamp(started_at)
             today = run_date(started_at, settings.timezone)
             for step in _selected_steps(job, step_id):
                 argv = _step_argv(
@@ -128,7 +129,7 @@ class JobRunner:
                     dry_run,
                 )
                 step_started_at = utc_now()
-                log_path = self._log_root / f"job-{job.id}" / f"{run_stamp}-step-{step.id}.log"
+                log_path = _step_log_path(self._log_root, job, step, run_stamp)
                 if is_prune_command(argv):
                     exit_code = await self._prune(argv, job.env, log_path, today)
                 else:
@@ -210,7 +211,7 @@ class LiveJobRunner:
                 db.commit()
             return None
 
-        run_stamp = _stamp(now)
+        run_stamp = _run_stamp(now)
         common_args = _common_args(job, dry_run)
         # Every step of the run sees the same ${RUN_DATE}, even across midnight.
         env = _expansion_env(job, now)
@@ -225,8 +226,7 @@ class LiveJobRunner:
         try:
             first_step, first_argv = planned_steps[0]
             first_log_path = self._step_log_path(job, first_step, run_stamp)
-            first_log_path.parent.mkdir(parents=True, exist_ok=True)
-            first_log_path.touch(exist_ok=True)
+            _create_log(first_log_path)
 
             with self._session_factory() as db:
                 job_run = JobRunRecord(
@@ -365,7 +365,7 @@ class LiveJobRunner:
             await asyncio.wait(pending)
 
     def _step_log_path(self, job: Job, step: JobStep, run_stamp: str) -> Path:
-        return self._log_root / f"job-{job.id}" / f"{run_stamp}-step-{step.id}.log"
+        return _step_log_path(self._log_root, job, step, run_stamp)
 
     def cancel_job_run(self, job_run_id: int) -> bool:
         task = self._tasks.get(job_run_id)
@@ -538,8 +538,7 @@ class LiveJobRunner:
     ) -> JobStepRunRecord:
         now = utc_now()
         log_path = self._step_log_path(job, step, run_stamp)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.touch(exist_ok=True)
+        _create_log(log_path)
         with self._session_factory() as db:
             step_run = JobStepRunRecord(
                 job_run_id=job_run_id,
@@ -651,8 +650,20 @@ def _append_log(path: Path, text: str) -> None:
         logger.warning("Could not write to run log %s", path, exc_info=True)
 
 
-def _stamp(value: datetime) -> str:
-    return value.strftime("%Y%m%dT%H%M%SZ")
+def _run_stamp(value: datetime) -> str:
+    """A name for one run's logs: its start time, then a random part, so two runs of a job
+    started at the same moment still write and delete separate logs."""
+    return f"{value.strftime('%Y%m%dT%H%M%S%fZ')}-{secrets.token_hex(4)}"
+
+
+def _step_log_path(log_root: Path, job: Job, step: JobStep, run_stamp: str) -> Path:
+    return log_root / f"job-{job.id}" / f"{run_stamp}-step-{step.id}.log"
+
+
+def _create_log(path: Path) -> None:
+    """Create a new, empty step log; never reuse another run's."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch(exist_ok=False)
 
 
 def _expansion_env(job: Job, started_at: datetime) -> dict[str, str]:
