@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -180,9 +181,16 @@ def test_real_rclone_size_keeps_grouped_short_filters(tmp_path, common):
     (source / "keep.txt").write_bytes(b"x" * 5)
     (source / "omit.tmp").write_bytes(b"x" * 100)
 
-    command = size_command(build_rclone_argv(f"copy {source} {tmp_path / 'dst'}", common, {}))
+    config = tmp_path / "rclone.conf"
+    config.touch()
+    step = f"copy {source} {tmp_path / 'dst'}"
+    command = size_command(build_rclone_argv(step, f"--config {config} {common}", {}))
 
-    output = subprocess.run(command.argv, capture_output=True, text=True, check=True).stdout
+    # Only the command's own flags: RCLONE_* settings from the environment would add theirs.
+    env = {key: value for key, value in os.environ.items() if not key.startswith("RCLONE_")}
+    output = subprocess.run(
+        command.argv, capture_output=True, text=True, check=True, env=env
+    ).stdout
     assert command.source == str(source)
     assert parse_size_output(output) == sources.SourceSize(bytes=5, files=1)
 
