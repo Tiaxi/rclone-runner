@@ -120,9 +120,14 @@ async def _fake_rc_server(
     delay=0.0,
     options: dict | None = None,
     option_calls: list | None = None,
+    state: dict | None = None,
 ):
     """A stand-in for rclone's remote control API that records each core/bwlimit call, and
-    answers options/get and options/set from options, recording those in option_calls."""
+    answers options/get and options/set from options, recording those in option_calls.
+
+    With state, it keeps the limit there ("rate") like rclone: a core/bwlimit call without a
+    rate reads it, and isn't recorded.
+    """
 
     async def handle(reader, writer):
         head = await reader.readuntil(b"\r\n\r\n")
@@ -140,7 +145,11 @@ async def _fake_rc_server(
             if path == "/options/set" and options is not None:
                 options.update(params.get("main", {}))
             reply = {"main": dict(options or {})} if path == "/options/get" else {}
+        elif state is not None and "rate" not in params:
+            reply = _bwlimit_reply(state["rate"])
         else:
+            if state is not None:
+                state["rate"] = params["rate"]
             received.append((path, params))
             # rclone answers only once its transfers' current reads pass the old limit.
             await asyncio.sleep(delay)
@@ -193,6 +202,14 @@ class _Both:
             target.append(item)
 
 
+def _bwlimit_reply(rate):
+    """rclone's core/bwlimit reply for a rate it has."""
+    upload, _, download = rate.partition(":")
+    sides = [live_control.rate_bytes_per_second(side) for side in (upload, download or upload)]
+    tx, rx = (-1 if side is None else int(side) for side in sides)
+    return {"rate": rate, "bytesPerSecondTx": tx, "bytesPerSecondRx": rx, "bytesPerSecond": tx}
+
+
 def _fake_bwlimit(argv, env):
     """The --bwlimit option as rclone would read it: the command's last, else the
     environment's (the container's, then the job's)."""
@@ -208,9 +225,26 @@ def _fake_bwlimit(argv, env):
 class FakeRclone:
     """An executor that serves the remote control socket from its arguments, like rclone."""
 
-    def __init__(self, serve: bool = True, delay: float = 0.0, bwlimit: str | None = None):
+    def tick(self):
+        """rclone's timetable ticker: when its --bwlimit option gives another rate than the one
+        it applied last, it sets that rate, whatever the remote control set meanwhile."""
+        own = live_control.parse_bandwidth(self.options["BwLimit"], self.env)
+        now = own.rate_now() if own is not None else "off"
+        if now != self.applied:
+            self.applied = now
+            self.state["rate"] = now
+
+    def __init__(
+        self,
+        serve: bool = True,
+        delay: float = 0.0,
+        bwlimit: str | None = None,
+        start_delay: float = 0.0,
+    ):
         self.serve = serve
         self.delay = delay
+        # How long it takes to start listening.
+        self.start_delay = start_delay
         # What rclone answers for its --bwlimit option, when not what _fake_bwlimit reads.
         self.bwlimit = bwlimit
         self.calls: list[list[str]] = []
@@ -233,12 +267,19 @@ class FakeRclone:
             assert not socket_path.exists(), "a stale socket would stop rclone from starting"
             calls = self.received_by_socket.setdefault(socket_path.name, [])
             self.options = {"BwLimit": self.bwlimit or _fake_bwlimit(argv, env), "Transfers": 4}
+            # The limit rclone starts with: the one its option gives now.
+            self.env = env
+            own = live_control.parse_bandwidth(self.options["BwLimit"], env)
+            self.state = {"rate": own.rate_now() if own is not None else "off"}
+            self.applied = self.state["rate"]
+            await asyncio.sleep(self.start_delay)
             server = await _fake_rc_server(
                 socket_path,
                 _Both(self.received, calls),
                 delay=self.delay,
                 options=self.options,
                 option_calls=self.option_calls,
+                state=self.state,
             )
         self.started.set()
         await self.release.wait()
@@ -252,6 +293,13 @@ class FakeRclone:
             server.close()
             await server.wait_closed()
         return 0
+
+
+async def _known(runner, job_run_id):
+    """Wait until the running step's rclone has told the runner its own limit."""
+    control = runner._controls[job_run_id]
+    while not (control.job_limit_known and control.socket_path):
+        await asyncio.sleep(0.01)
 
 
 def _job(common_args="", commands=("sync /a remote:a",)):
@@ -311,6 +359,7 @@ async def test_runner_changes_the_running_step_and_carries_settings_forward(cont
     )
     job_run_id = first.job_run_id
     await rclone.started.wait()
+    await _known(runner, job_run_id)
 
     await runner.set_bandwidth(job_run_id, "8m")
     await runner.pause(job_run_id)
@@ -599,6 +648,7 @@ async def test_resuming_puts_back_the_jobs_own_limit_from_its_environment(
     job.env = env
     first = runner.start_job(job, trigger="manual")
     await rclone.started.wait()
+    await _known(runner, first.job_run_id)
 
     await runner.pause(first.job_run_id)
     await runner.resume(first.job_run_id)
@@ -625,6 +675,7 @@ async def test_resuming_puts_back_the_limit_rclone_reads_from_the_container(
     )
     first = runner.start_job(_job(), trigger="manual")
     await rclone.started.wait()
+    await _known(runner, first.job_run_id)
 
     await runner.pause(first.job_run_id)
     await runner.resume(first.job_run_id)
@@ -781,16 +832,16 @@ async def test_the_limit_put_back_is_rclones_own_reading_of_the_step(control_dir
     await runner.wait_for_job_run(first.job_run_id)
 
 
-async def test_a_resume_before_rclone_has_told_its_limit_waits_for_it(
+async def test_settings_wait_until_rclone_has_told_its_own_limit(
     control_dir, tmp_path, monkeypatch
 ):
-    # Until rclone has said what its own limit is, resuming has nothing to put back; once it
-    # has, the runner sets it.
+    # Until rclone has said what its own limit is, nothing is sent: it keeps that limit.
+    # Once it has, the step gets what it should have.
     rclone = FakeRclone()
     real_read = runner_module.read_rclone_options
     answer = asyncio.Event()
 
-    async def slow_read(socket_path, stop=None):
+    async def slow_read(socket_path, stop):
         await answer.wait()
         return await real_read(socket_path, stop)
 
@@ -806,12 +857,13 @@ async def test_a_resume_before_rclone_has_told_its_limit_waits_for_it(
     first = runner.start_job(job, trigger="manual")
     await rclone.started.wait()
     await runner.pause(first.job_run_id)
-    await runner.resume(first.job_run_id)
-    assert [params["rate"] for _, params in rclone.received] == ["64K"]
+    assert rclone.received == []
 
     answer.set()
-    while len(rclone.received) < 2:
+    await _known(runner, first.job_run_id)
+    while not rclone.received:
         await asyncio.sleep(0.01)
+    await runner.resume(first.job_run_id)
     assert [params["rate"] for _, params in rclone.received] == ["64K", "8M"]
     rclone.release.set()
     await runner.wait_for_job_run(first.job_run_id)
@@ -843,7 +895,7 @@ async def test_real_rclone_tells_its_own_limit_and_the_runner_takes_over_its_tim
         assert control.job_limit.rate_now() == "100Ki"
         socket_path = control.socket_path
         for _ in range(100):
-            options = await live_control.read_rclone_options(socket_path)
+            options = await live_control.read_rclone_options(socket_path, asyncio.Event())
             if options["BwLimit"] == "100Ki":
                 break  # Taken over: rclone has a single rate, and no timetable of its own.
             await asyncio.sleep(0.05)
@@ -880,3 +932,100 @@ def test_rates_read_numbers_as_rclones_go_parser_does(value, expected):
 def test_rates_rclone_rejects_are_not_read(value):
     with pytest.raises(RateError):
         live_control.rate_bytes_per_second(value)
+
+
+async def test_a_slot_change_before_the_takeover_cant_undo_a_pause(
+    control_dir, tmp_path, monkeypatch
+):
+    # rclone starts in one slot; the next begins before the runner takes over. The runner takes
+    # over with the rate rclone has then, so rclone's ticker finds nothing to change later.
+    clock = [datetime(2026, 11, 16, 7, 59)]
+    monkeypatch.setattr(live_control, "_now", lambda: clock[0])
+    rclone = FakeRclone()
+    real_read = runner_module.read_rclone_options
+    answer = asyncio.Event()
+
+    async def slow_read(socket_path, stop):
+        await answer.wait()
+        return await real_read(socket_path, stop)
+
+    monkeypatch.setattr(runner_module, "read_rclone_options", slow_read)
+    runner = LiveJobRunner(
+        tmp_path / "logs",
+        _session_factory(tmp_path / "runs.db"),
+        executor=rclone,
+        control_dir=control_dir,
+    )
+    job = _job()
+    job.env = {"RCLONE_BWLIMIT": "08:00,512k 23:00,off"}
+    first = runner.start_job(job, trigger="manual")
+    await rclone.started.wait()
+    clock[0] = datetime(2026, 11, 16, 8, 0)
+    rclone.tick()  # rclone moves to the 08:00 slot by itself.
+    answer.set()
+    await _known(runner, first.job_run_id)
+    while len(rclone.option_calls) < 2:
+        await asyncio.sleep(0.01)
+
+    await runner.pause(first.job_run_id)
+    rclone.tick()  # rclone's next minute: nothing to change.
+
+    assert rclone.state["rate"] == "64K"
+    assert rclone.option_calls[-1] == ("/options/set", {"main": {"BwLimit": "512k"}})
+    rclone.release.set()
+    await runner.wait_for_job_run(first.job_run_id)
+
+
+async def test_the_runner_puts_a_pause_back_if_rclone_changed_it(
+    control_dir, tmp_path, monkeypatch
+):
+    # Should rclone's ticker still change the limit (a slot changing just as the runner took
+    # over), the runner's next check sets the step's rate again.
+    monkeypatch.setattr(runner_module, "FOLLOW_TIMETABLE_SECONDS", 0.01)
+    rclone = FakeRclone()
+    runner = LiveJobRunner(
+        tmp_path / "logs",
+        _session_factory(tmp_path / "runs.db"),
+        executor=rclone,
+        control_dir=control_dir,
+    )
+    job = _job()
+    job.env = {"RCLONE_BWLIMIT": "00:00,1M 23:59,2M"}
+    first = runner.start_job(job, trigger="manual")
+    await rclone.started.wait()
+    await _known(runner, first.job_run_id)
+    await runner.pause(first.job_run_id)
+
+    rclone.state["rate"] = "3M"  # Changed behind the runner's back.
+    while rclone.state["rate"] != "64K":
+        await asyncio.sleep(0.01)
+    rclone.release.set()
+    await runner.wait_for_job_run(first.job_run_id)
+
+
+async def test_a_slow_rclone_still_gets_its_own_limit_back(control_dir, tmp_path, monkeypatch):
+    # The runner asks for rclone's own limit until rclone answers, however long it takes to
+    # start, so that resuming and clearing the run's limit put it back.
+    monkeypatch.setattr(live_control, "CONNECT_RETRY_SECONDS", 0.01)
+    monkeypatch.setattr(live_control, "MAX_CONNECT_RETRY_SECONDS", 0.02)
+    rclone = FakeRclone(start_delay=0.5)
+    runner = LiveJobRunner(
+        tmp_path / "logs",
+        _session_factory(tmp_path / "runs.db"),
+        executor=rclone,
+        control_dir=control_dir,
+    )
+    job = _job()
+    job.env = {"RCLONE_BWLIMIT": "8M"}
+    first = runner.start_job(job, trigger="manual")
+    await rclone.started.wait()
+    await _known(runner, first.job_run_id)
+
+    await runner.pause(first.job_run_id)
+    await runner.resume(first.job_run_id)
+    await runner.set_bandwidth(first.job_run_id, "1M")
+    await runner.set_bandwidth(first.job_run_id, None)
+
+    assert [params["rate"] for _, params in rclone.received] == ["64K", "8M", "1M", "8M"]
+    rclone.release.set()
+    await runner.wait_for_job_run(first.job_run_id)

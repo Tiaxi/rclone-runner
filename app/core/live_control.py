@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 import re
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, tzinfo
 from pathlib import Path
@@ -31,6 +32,7 @@ PAUSE_RATE_PER_TRANSFER = 16
 RCLONE_DEFAULT_TRANSFERS = 4
 CONNECT_ATTEMPTS = 10
 CONNECT_RETRY_SECONDS = 0.2
+MAX_CONNECT_RETRY_SECONDS = 2.0
 CONNECT_TIMEOUT_SECONDS = 5.0
 # rclone answers a limit change only after its transfers' current reads pass the old limit.
 BWLIMIT_REPLY_TIMEOUT_SECONDS = 300.0
@@ -411,13 +413,16 @@ class RunControl:
 
     def target_rate(self, for_new_process: bool = False) -> str | None:
         """The rate the step's rclone should have; None when nothing needs setting: a new
-        process starts with the job's own limit, and until rclone has told it, it isn't
-        known what to put back."""
+        process starts with the job's own limit. Until rclone has told the step's own limit,
+        nothing is set either: rclone keeps its own until the runner has taken it over (see
+        runner._follow_step), and then gets what it should have."""
+        if not self.job_limit_known:
+            return None
         if self.paused:
             return self.pause_rate
         if self.limit is not None:
             return self.limit
-        if for_new_process or not self.job_limit_known:
+        if for_new_process:
             return None
         return self.configured or "off"
 
@@ -466,18 +471,34 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-async def read_rclone_options(socket_path: Path, stop: asyncio.Event | None = None) -> dict:
-    """rclone's main options as it reads them from its flags and environment, waiting
-    briefly for it to start, but not once stop is set: then rclone has gone."""
-    for attempt in range(CONNECT_ATTEMPTS):
+async def read_rclone_options(socket_path: Path, stop: asyncio.Event) -> dict | None:
+    """rclone's main options as it reads them from its flags and environment, waiting for it
+    to start however long it takes, until stop is set: then rclone has gone, and it is None."""
+    delay = CONNECT_RETRY_SECONDS
+    while not stop.is_set():
         try:
             reply = await rc_call(socket_path, "options/get", {"blocks": "main"})
             return reply.get("main") or {}
         except FileNotFoundError, ConnectionRefusedError:
-            if attempt == CONNECT_ATTEMPTS - 1 or (stop is not None and stop.is_set()):
-                raise
-            await asyncio.sleep(CONNECT_RETRY_SECONDS)
-    return {}
+            with suppress(TimeoutError):
+                await asyncio.wait_for(stop.wait(), delay)
+            delay = min(delay * 2, MAX_CONNECT_RETRY_SECONDS)
+    return None
+
+
+def same_rate(rate: str, reply: dict) -> bool:
+    """Whether rclone's core/bwlimit reply has this rate, upload and download."""
+    upload, _, download = rate.partition(":")
+    try:
+        wanted = [rate_bytes_per_second(upload), rate_bytes_per_second(download or upload)]
+    except RateError:
+        return True  # Nothing to compare: leave it.
+    have = [reply.get("bytesPerSecondTx"), reply.get("bytesPerSecondRx")]
+    return all(
+        isinstance(current, int)
+        and (current < 0 if value is None else abs(current - int(value)) <= 1)
+        for value, current in zip(wanted, have, strict=True)
+    )
 
 
 async def set_rclone_bwlimit_option(socket_path: Path, rate: str) -> None:

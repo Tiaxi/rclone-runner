@@ -28,7 +28,9 @@ from app.core.live_control import (
     parse_bandwidth,
     pause_rate,
     pause_rate_for,
+    rc_call,
     read_rclone_options,
+    same_rate,
     set_rclone_bandwidth,
     set_rclone_bwlimit_option,
     supports_live_control,
@@ -55,9 +57,9 @@ OUTPUT_READ_SIZE = 64 * 1024
 # How long a live control request waits for rclone to confirm before returning anyway.
 APPLY_WAIT_SECONDS = 3.0
 TERMINATE_TIMEOUT_SECONDS = 5
-# How often the runner checks for the next slot of a step's timetable, which it follows in
-# rclone's place: rclone checks its own each minute.
-FOLLOW_TIMETABLE_SECONDS = 15.0
+# How often the runner checks the rate of a step whose timetable it follows in rclone's place:
+# rclone checks its own each minute.
+FOLLOW_TIMETABLE_SECONDS = 5.0
 FOLLOW_STOP_SECONDS = 1.0
 
 
@@ -447,39 +449,54 @@ class LiveJobRunner:
         """Learn the step's own limit and transfers from its rclone, and keep its limit right.
 
         rclone's own reading of its --bwlimit and RCLONE_BWLIMIT is what it does, flag values
-        and units and all. A timetable there would put its rate back at each change of slot,
-        ending a pause unseen, so the runner takes it over: rclone gets a single rate, and the
-        runner sets the timetable's next rate when its slot comes, unless paused or limited.
+        and units and all. Until it has told it, nothing is sent to the step (see
+        RunControl.target_rate), so rclone keeps the limit its own setting gives.
+
+        A timetable there would put its rate back at each change of slot, ending a pause
+        unseen, so the runner takes it over. rclone's ticker changes the limit only when its
+        timetable's rate differs from the one it last applied, which is the limit rclone has
+        now: replacing the timetable with that rate leaves it nothing to change. The runner
+        then sets each slot's rate itself, unless paused or limited, and checks that rclone
+        has the rate it should, in case a slot changed while it was taking over.
         """
         try:
             options = await read_rclone_options(socket_path, step_ended)
+            if options is None:
+                return  # The step ended first.
             transfers = options.get("Transfers")
             if isinstance(transfers, int) and transfers > 0:
                 control.pause_rate = pause_rate_for(transfers)
             if not control.job_limit_known:
                 control.job_limit = parse_bandwidth(options.get("BwLimit"), env)
-                control.job_limit_known = True
             timetable = control.job_limit is not None and control.job_limit.is_timetable
             if timetable:
-                await set_rclone_bwlimit_option(socket_path, control.job_limit.rate_now())
+                current = await rc_call(socket_path, "core/bwlimit", {})
+                await set_rclone_bwlimit_option(socket_path, str(current.get("rate", "off")))
         except (OSError, RcError) as exc:
             if not step_ended.is_set():
                 logger.warning("Could not read the running rclone's bandwidth limit: %s", exc)
             return
-        # Now the rate to put back is known. Unless rclone still has its own, because nothing
-        # was set for this step yet, set what the step should have: the run may have been
-        # paused or resumed meanwhile.
-        if control.paused or control.limit is not None or control.apply_socket == socket_path:
-            await self._apply_quietly(control)
-        if not timetable:
-            return
-        applied = control.target_rate()
-        while not step_ended.is_set():
+        control.job_limit_known = True
+        # Set what the step should have, if it isn't what rclone has now: the run may have
+        # been paused or limited meanwhile, or the timetable moved on.
+        await self._keep_rate(control, socket_path)
+        while timetable and not step_ended.is_set():
             with suppress(TimeoutError):
                 await asyncio.wait_for(step_ended.wait(), FOLLOW_TIMETABLE_SECONDS)
-            if not step_ended.is_set() and control.target_rate() != applied:
-                applied = control.target_rate()
-                await self._apply_quietly(control)
+            if not step_ended.is_set():
+                await self._keep_rate(control, socket_path)
+
+    async def _keep_rate(self, control: RunControl, socket_path: Path) -> None:
+        """Send the step's rate to its rclone if rclone has another one."""
+        target = control.target_rate()
+        if target is None:
+            return
+        try:
+            current = await rc_call(socket_path, "core/bwlimit", {})
+        except OSError, RcError:
+            return  # Gone, or the step ended: the next step starts with the setting.
+        if not same_rate(target, current):
+            await self._apply_quietly(control)
 
     def _start_background(self, coroutine) -> asyncio.Task[None]:
         task = asyncio.create_task(coroutine)
