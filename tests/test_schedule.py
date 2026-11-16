@@ -177,6 +177,10 @@ def test_invalid_weekdays_are_reported():
     assert "not a weekday" in scheduler_module.cron_error("0 2 * * funday")
     assert "backwards" in scheduler_module.cron_error("0 2 * * 5-1")
     assert cron_summary("0 2 * * 8") == "Custom cron: 0 2 * * 8"
+    # cron takes steps only on ranges and *.
+    for field in ("7/1", "1/2", "sun/2"):
+        assert "a step needs a range" in scheduler_module.cron_error(f"0 2 * * {field}")
+        assert cron_summary(f"0 2 * * {field}") == f"Custom cron: 0 2 * * {field}"
 
 
 def test_day_of_month_and_weekday_together_are_refused():

@@ -24,8 +24,9 @@ def normalize_cron(expression: str) -> str:
 def cron_weekdays(field: str) -> frozenset[int]:
     """The cron weekday numbers (0 = Sunday to 6 = Saturday) a weekday field selects.
 
-    Takes numbers 0-7 (7 is Sunday too), three-letter names, ranges, lists and steps, as cron
-    does: ``1-5``, ``mon-fri``, ``*/2``, ``0,6``, ``1-5/2``. Raises ValueError for anything else.
+    Takes numbers 0-7 (7 is Sunday too), three-letter names, ranges, lists and steps on
+    ranges, as cron does: ``1-5``, ``mon-fri``, ``*/2``, ``0,6``, ``1-5/2``. Raises ValueError
+    for anything else, including a step on a single day (``1/2``), which cron doesn't take.
     """
     days: set[int] = set()
     for part in field.lower().split(","):
@@ -46,8 +47,9 @@ def _weekday_range(value: str, part: str, *, has_step: bool) -> tuple[int, int]:
     first_text, separator, last_text = value.partition("-")
     first = _weekday(first_text, part)
     if not separator:
-        # As in cron, "1/2" steps from Monday to the end of the week.
-        return (first, 6) if has_step else (first, first)
+        if has_step:
+            raise ValueError(f"{part!r}: a step needs a range or *, such as 1-5/2 or */2")
+        return first, first
     last = _weekday(last_text, part)
     if last == 0 and first > 0:
         last = 7  # "fri-sun" and "5-0" end on the Sunday after.
@@ -119,6 +121,8 @@ def _day_names(field: str) -> str | None:
     except ValueError:
         return None
     ordered = [day for day in _DISPLAY_ORDER if day in days]
+    if not ordered:
+        return None
     if len(ordered) == 7:
         return "every day"
     names = [_FULL_NAMES[day] for day in ordered]

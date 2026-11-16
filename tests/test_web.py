@@ -2208,3 +2208,24 @@ async def test_saved_job_with_refused_schedule_says_it_is_not_scheduled():
             assert "not both" in listing.body.decode()
             assert "Not scheduled" in listing.body.decode()
             assert "This job is not scheduled until its schedule is fixed." in detail.body.decode()
+
+
+@pytest.mark.parametrize("cron", ["0 2 * * 7/1", "0 2 1 * 1", "0 2 * * 8"])
+async def test_job_forms_report_refused_weekday_schedules(monkeypatch, cron):
+    monkeypatch.setattr(main, "sync_schedules", lambda db: None)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            response = await main.create_job(
+                _request("/jobs", "POST"), None, None, db, **_job_form(cron=cron)
+            )
+            job = JobRecord(name="backup", cron="", enabled=True, common_args="", env_json="{}")
+            db.add(job)
+            db.commit()
+            update = await main.update_job(
+                _request(f"/jobs/{job.id}", "POST"), job.id, None, None, db, **_job_form(cron=cron)
+            )
+
+    for page in (response, update):
+        assert page.status_code == 400
+        assert "Invalid cron schedule" in page.body.decode()
