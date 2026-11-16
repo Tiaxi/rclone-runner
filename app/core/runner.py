@@ -22,7 +22,7 @@ from app.core.commands import (
 from app.core.live_control import (
     RcError,
     RunControl,
-    configured_rate,
+    job_bandwidth,
     normalize_rate,
     pause_rate,
     set_rclone_bandwidth,
@@ -493,12 +493,15 @@ class LiveJobRunner:
             # Not an rclone process with a control socket: bandwidth changes and pauses wait
             # for the next step.
             if control is not None:
-                control.configured = None
+                control.job_limit = None
             return await self._prune(argv, env, log_path, today)
         if control is None or self._control_dir is None:
             return await self._executor(argv, env, log_path)
-        control.configured = configured_rate(argv)
-        control.pause_rate = pause_rate(argv)
+        # What this step's rclone starts with, to put back after a pause or the run's limit:
+        # its --bwlimit, or RCLONE_BWLIMIT from the container's or the job's environment.
+        rclone_env = child_environment(env)
+        control.job_limit = job_bandwidth(argv, rclone_env)
+        control.pause_rate = pause_rate(argv, rclone_env)
         if not supports_live_control(argv):
             return await self._executor(argv, env, log_path)
         socket_path = self._control_dir / f"step-{step_run.id}.sock"

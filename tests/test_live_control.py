@@ -2,6 +2,7 @@ import asyncio
 import json
 import shutil
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from app.core.live_control import (
     RcError,
     RunControl,
     configured_rate,
+    job_bandwidth,
     normalize_rate,
     pause_rate,
     rate_label,
@@ -89,7 +91,7 @@ def test_live_control_skips_commands_with_their_own_remote_control():
 
 
 def test_run_control_target_rates():
-    control = RunControl(configured="2M")
+    control = RunControl(job_limit=job_bandwidth(["rclone", "sync", "--bwlimit", "2M"], {}))
     assert control.target_rate() == "2M"
     assert control.target_rate(for_new_process=True) is None
     control.limit = "8M"
@@ -99,7 +101,7 @@ def test_run_control_target_rates():
     assert control.spawn_args(Path("/s.sock"))[-1] == "--bwlimit=64K"
     control.paused = False
     control.limit = None
-    control.configured = None
+    control.job_limit = None
     assert control.target_rate() == "off"
     assert not any(arg.startswith("--bwlimit") for arg in control.spawn_args(Path("/s.sock")))
 
@@ -236,7 +238,7 @@ async def test_runner_adds_control_flags_without_storing_them(control_dir, tmp_p
         "limit": None,
         "limit_label": None,
         "label": "Not limited",
-        "detail": "From the job's arguments",
+        "detail": "The job sets no limit",
         "pause_label": "64 KiB/s",
         "source": "job",
     }
@@ -474,3 +476,111 @@ async def test_real_rclone_accepts_the_control_flags(control_dir, tmp_path):
     finally:
         process.kill()
         await process.wait()
+
+
+def test_job_bandwidth_reads_the_command_then_the_environment():
+    sync = ["rclone", "sync", "a", "b"]
+    from_env = job_bandwidth(sync, {"RCLONE_BWLIMIT": "8M"})
+    assert (from_env.rate, from_env.source) == ("8M", "environment")
+    # A --bwlimit in the command wins over the environment, as in rclone.
+    assert job_bandwidth([*sync, "--bwlimit=2m"], {"RCLONE_BWLIMIT": "8M"}).rate == "2M"
+    assert job_bandwidth(sync, {}) is None
+    assert job_bandwidth(sync, {"RCLONE_BWLIMIT": "fast"}) is None
+
+
+def test_job_bandwidth_follows_timetables():
+    limit = job_bandwidth(["rclone", "sync", "--bwlimit", "08:00,512k 12:00,10M 23:00,off"], {})
+    assert limit.is_timetable
+    monday = datetime(2026, 11, 16)
+    assert limit.rate_at(monday.replace(hour=7, minute=59)) == "off"  # From 23:00 the day before.
+    assert limit.rate_at(monday.replace(hour=8)) == "512K"
+    assert limit.rate_at(monday.replace(hour=12, minute=30)) == "10M"
+    assert limit.rate_at(monday.replace(hour=23, minute=1)) == "off"
+
+    weekly = job_bandwidth(
+        ["rclone", "sync", "a", "b"],
+        {"RCLONE_BWLIMIT": "Mon-08:00,512 Fri-23:59,10M:1M Sat-10:00,1M Sunday-20:00,off"},
+    )
+    assert weekly.source == "environment"
+    assert weekly.rate_at(datetime(2026, 11, 18, 12)) == "512"  # Wednesday
+    assert weekly.rate_at(datetime(2026, 11, 21, 9)) == "10M:1M"  # Saturday morning
+    assert weekly.rate_at(datetime(2026, 11, 22, 21)) == "off"  # Sunday evening
+    # Early Monday is still Sunday evening's rate: the week wraps around.
+    assert weekly.rate_at(datetime(2026, 11, 16, 7, 59)) == "off"
+
+    for bad in ("8:00,1M 12:00,2M", "08:00,1M Funday-12:00,2M", "25:00,1M", "08:00,lots"):
+        assert job_bandwidth(["rclone", "sync", "--bwlimit", bad], {}) is None
+
+
+def test_pause_rate_reads_transfers_from_the_environment_too():
+    assert pause_rate(["rclone", "sync"], {"RCLONE_TRANSFERS": "8"}) == "128K"
+    assert pause_rate(["rclone", "sync", "--transfers=2"], {"RCLONE_TRANSFERS": "8"}) == "32K"
+
+
+@pytest.mark.parametrize(
+    ("env", "now", "restored", "detail"),
+    [
+        ({"RCLONE_BWLIMIT": "8M"}, None, "8M", "From the job's RCLONE_BWLIMIT"),
+        (
+            {"RCLONE_BWLIMIT": "08:00,512k 23:00,off"},
+            datetime(2026, 11, 16, 9),
+            "512K",
+            "Now, by the timetable in the job's RCLONE_BWLIMIT",
+        ),
+        (
+            {"RCLONE_BWLIMIT": "08:00,512k 23:00,off"},
+            datetime(2026, 11, 16, 23, 30),
+            "off",
+            "Now, by the timetable in the job's RCLONE_BWLIMIT",
+        ),
+    ],
+)
+async def test_resuming_puts_back_the_jobs_own_limit_from_its_environment(
+    control_dir, tmp_path, monkeypatch, env, now, restored, detail
+):
+    if now is not None:
+        monkeypatch.setattr(live_control, "_now", lambda: now)
+    rclone = FakeRclone()
+    runner = LiveJobRunner(
+        tmp_path / "logs",
+        _session_factory(tmp_path / "runs.db"),
+        executor=rclone,
+        control_dir=control_dir,
+    )
+    job = _job()
+    job.env = env
+    first = runner.start_job(job, trigger="manual")
+    await rclone.started.wait()
+
+    await runner.pause(first.job_run_id)
+    await runner.resume(first.job_run_id)
+    await runner.set_bandwidth(first.job_run_id, "1M")
+    await runner.set_bandwidth(first.job_run_id, None)
+
+    # Not "off": resuming and clearing the run's limit go back to what the job set.
+    assert [params["rate"] for _, params in rclone.received] == ["64K", restored, "1M", restored]
+    assert runner.control_state(first.job_run_id)["detail"] == detail
+    rclone.release.set()
+    await runner.wait_for_job_run(first.job_run_id)
+
+
+async def test_resuming_puts_back_the_limit_rclone_reads_from_the_container(
+    control_dir, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("RCLONE_BWLIMIT", "4M")
+    rclone = FakeRclone()
+    runner = LiveJobRunner(
+        tmp_path / "logs",
+        _session_factory(tmp_path / "runs.db"),
+        executor=rclone,
+        control_dir=control_dir,
+    )
+    first = runner.start_job(_job(), trigger="manual")
+    await rclone.started.wait()
+
+    await runner.pause(first.job_run_id)
+    await runner.resume(first.job_run_id)
+
+    assert [params["rate"] for _, params in rclone.received] == ["64K", "4M"]
+    rclone.release.set()
+    await runner.wait_for_job_run(first.job_run_id)

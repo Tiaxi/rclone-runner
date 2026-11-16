@@ -19,7 +19,8 @@ import asyncio
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -88,14 +89,20 @@ def with_flags(argv: list[str], flags: list[str]) -> list[str]:
     return [*argv[:2], *flags, *argv[2:]]
 
 
-def configured_rate(argv: list[str]) -> str | None:
-    """The single --bwlimit value in a command, or None when unset or a timetable."""
+def _flag_value(argv: list[str], flag: str) -> str | None:
+    """The last value a command gives a flag (rclone uses the last), or None."""
     value = None
     for index, arg in enumerate(argv):
-        if arg == "--bwlimit" and index + 1 < len(argv):
+        if arg == flag and index + 1 < len(argv):
             value = argv[index + 1]
-        elif arg.startswith("--bwlimit="):
+        elif arg.startswith(f"{flag}="):
             value = arg.split("=", 1)[1]
+    return value
+
+
+def configured_rate(argv: list[str]) -> str | None:
+    """The single --bwlimit value in a command, or None when unset or a timetable."""
+    value = _flag_value(argv, "--bwlimit")
     if value is None:
         return None
     try:
@@ -104,17 +111,118 @@ def configured_rate(argv: list[str]) -> str | None:
         return None
 
 
-def pause_rate(argv: list[str]) -> str:
+# Python's weekday numbers, from Monday; rclone takes short or full English names.
+_DAYS = {
+    name: number
+    for number, names in enumerate(
+        [
+            ("mon", "monday"),
+            ("tue", "tuesday"),
+            ("wed", "wednesday"),
+            ("thu", "thursday"),
+            ("fri", "friday"),
+            ("sat", "saturday"),
+            ("sun", "sunday"),
+        ]
+    )
+    for name in names
+}
+_TIME = re.compile(r"^(?:(?P<day>[a-z]+)-)?(?P<hour>[0-9]{2}):(?P<minute>[0-9]{2})$", re.ASCII)
+_MINUTES_PER_DAY = 24 * 60
+
+
+@dataclass(frozen=True)
+class JobBandwidth:
+    """A step's own bandwidth limit, as rclone reads it: the last --bwlimit in its command,
+    else RCLONE_BWLIMIT in its environment. Either may be a timetable, such as
+    "08:00,512k 23:00,off" or "Mon-08:00,1M Sat-00:00,off", which rclone follows by itself
+    but which its remote control can't set: only the rate in force now can be put back."""
+
+    value: str
+    source: str  # "arguments" or "environment"
+    # (minute of the week from Monday 00:00, rate), sorted; empty for a single rate.
+    timetable: tuple[tuple[int, str], ...] = field(default=())
+    rate: str | None = None
+
+    @property
+    def is_timetable(self) -> bool:
+        return bool(self.timetable)
+
+    def rate_at(self, now: datetime) -> str:
+        """The rate rclone uses at this local time."""
+        if not self.timetable:
+            return self.rate or "off"
+        minute = now.weekday() * _MINUTES_PER_DAY + now.hour * 60 + now.minute
+        current = self.timetable[-1][1]  # Before the week's first entry: the last one's.
+        for start, rate in self.timetable:
+            if start > minute:
+                break
+            current = rate
+        return current
+
+
+def job_bandwidth(argv: list[str], env: dict[str, str]) -> JobBandwidth | None:
+    """The bandwidth limit a step starts with, from its command or environment, or None.
+
+    env is the step's whole environment (the container's and the job's): rclone reads
+    RCLONE_BWLIMIT from it when the command has no --bwlimit.
+    """
+    value = _flag_value(argv, "--bwlimit")
+    source = "arguments"
+    if value is None:
+        value = env.get("RCLONE_BWLIMIT")
+        source = "environment"
+    if value is None or not value.strip():
+        return None
+    if "," not in value:
+        try:
+            rate = normalize_rate(value)
+        except RateError:
+            logger.warning("Could not read the bandwidth limit %r", value)
+            return None
+        return JobBandwidth(value=value, source=source, rate=rate)
+    try:
+        timetable = _parse_timetable(value)
+    except RateError, ValueError:
+        logger.warning("Could not read the bandwidth timetable %r", value)
+        return None
+    return JobBandwidth(value=value, source=source, timetable=timetable)
+
+
+def _parse_timetable(value: str) -> tuple[tuple[int, str], ...]:
+    """rclone's timetable: entries "HH:MM,rate" (every day) or "Day-HH:MM,rate"."""
+    entries: dict[int, str] = {}
+    for entry in value.split():
+        when, separator, rate_text = entry.partition(",")
+        match = _TIME.match(when.lower())
+        if not separator or match is None:
+            raise ValueError(f"not a timetable entry: {entry!r}")
+        hour, minute = int(match["hour"]), int(match["minute"])
+        if hour > 23 or minute > 59:
+            raise ValueError(f"not a time: {when!r}")
+        rate = normalize_rate(rate_text)
+        day = match["day"]
+        if day is None:
+            days = range(7)
+        elif day in _DAYS:
+            days = [_DAYS[day]]
+        else:
+            raise ValueError(f"not a day: {day!r}")
+        for weekday in days:
+            entries[weekday * _MINUTES_PER_DAY + hour * 60 + minute] = rate
+    if not entries:
+        raise ValueError("empty timetable")
+    return tuple(sorted(entries.items()))
+
+
+def pause_rate(argv: list[str], env: dict[str, str] | None = None) -> str:
     """The throttle for pausing this command: a little per parallel transfer."""
     transfers = RCLONE_DEFAULT_TRANSFERS
-    for index, arg in enumerate(argv):
-        value = None
-        if arg == "--transfers" and index + 1 < len(argv):
-            value = argv[index + 1]
-        elif arg.startswith("--transfers="):
-            value = arg.split("=", 1)[1]
-        if value is not None and value.isascii() and value.isdigit():
-            transfers = max(1, int(value))
+    value = _flag_value(argv, "--transfers")
+    if value is None:
+        value = (env or {}).get("RCLONE_TRANSFERS")
+    if value is not None and value.isascii() and value.isdigit():
+        transfers = max(1, int(value))
     return f"{PAUSE_RATE_PER_TRANSFER * transfers}K"
 
 
@@ -132,7 +240,8 @@ class RunControl:
     limit: str | None = None
     paused: bool = False
     socket_path: Path | None = None
-    configured: str | None = None
+    # The current step's own limit, put back when a pause or the run's limit ends.
+    job_limit: JobBandwidth | None = None
     pause_rate: str = f"{PAUSE_RATE_PER_TRANSFER * RCLONE_DEFAULT_TRANSFERS}K"
     # The one task sending limit changes to one step's rclone, so they arrive in order, and
     # the socket it sends to: a new step needs a new task.
@@ -148,13 +257,28 @@ class RunControl:
             args.append(f"--bwlimit={rate}")
         return args
 
+    @property
+    def configured(self) -> str | None:
+        """The rate the job's own setting gives now, or None without one."""
+        if self.job_limit is None:
+            return None
+        return self.job_limit.rate_at(_now())
+
     def target_rate(self, for_new_process: bool = False) -> str | None:
         if self.paused:
             return self.pause_rate
         if self.limit is not None:
             return self.limit
-        # A new process already starts with the job's own --bwlimit.
+        # A new process already starts with the job's own --bwlimit or RCLONE_BWLIMIT.
         return None if for_new_process else (self.configured or "off")
+
+    def _job_limit_detail(self) -> str:
+        if self.job_limit is None:
+            return "The job sets no limit"
+        where = "arguments" if self.job_limit.source == "arguments" else "RCLONE_BWLIMIT"
+        if self.job_limit.is_timetable:
+            return f"Now, by the timetable in the job's {where}"
+        return f"From the job's {where}"
 
     def state(self) -> dict[str, object]:
         available = self.socket_path is not None
@@ -169,7 +293,7 @@ class RunControl:
             detail = "Takes effect when the next step starts"
         else:
             label = rate_label(self.limit or self.configured)
-            detail = "Set for this run" if self.limit is not None else "From the job's arguments"
+            detail = "Set for this run" if self.limit is not None else self._job_limit_detail()
         return {
             "available": available,
             "paused": self.paused,
@@ -181,6 +305,16 @@ class RunControl:
             "pause_label": rate_label(self.pause_rate),
             "source": "run" if self.limit is not None else "job",
         }
+
+
+def _now() -> datetime:
+    """The local time a timetable is read in: the app's time zone, which is the container's,
+    as rclone's own clock is."""
+    from zoneinfo import ZoneInfo
+
+    from app.config import settings
+
+    return datetime.now(ZoneInfo(settings.timezone))
 
 
 async def set_rclone_bandwidth(socket_path: Path, rate: str) -> None:

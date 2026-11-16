@@ -2465,3 +2465,38 @@ async def test_a_run_in_progress_does_not_report_its_totals_as_exact():
         "transferred_files": "at least 1",
         "deleted_files": "at least 0",
     }
+
+
+async def test_estimates_are_capped_by_a_bwlimit_from_the_jobs_environment():
+    from app.core.estimates import save_expected_speed
+    from app.core.sources import size_command
+
+    gib = 1024**3
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            env = {"RCLONE_BWLIMIT": "1M"}
+            job = JobRecord(
+                name="backup", cron="", enabled=True, common_args="", env_json=json.dumps(env)
+            )
+            job.steps.append(JobStepRecord(position=1, name="Slow", command="sync /b r:b"))
+            db.add(job)
+            save_expected_speed(db, 100)
+            argv = main.build_step_argv("sync /b r:b", "", {})
+            db.add(
+                SourceMeasurementRecord(
+                    key=size_command(argv, env).key,
+                    source="/b",
+                    status="success",
+                    bytes=36 * gib,
+                    files=10,
+                    started_at=main.utc_now(),
+                    measured_at=main.utc_now(),
+                )
+            )
+            db.commit()
+
+            (slow,) = main._sources_context(job, db)["source_rows"]
+
+    # rclone reads RCLONE_BWLIMIT like --bwlimit: 36 GiB at 1 MiB/s is about 10 hours.
+    assert slow["full_estimate"] == "about 10 h 15 min"

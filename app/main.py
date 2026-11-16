@@ -33,6 +33,7 @@ from app.config import runtime_warnings, settings, startup_permission_error
 from app.core.commands import (
     CommandPolicyError,
     build_step_argv,
+    child_environment,
     effective_run_date,
     parse_console_command,
     run_variables,
@@ -48,7 +49,7 @@ from app.core.estimates import (
     observed_speed,
     save_expected_speed,
 )
-from app.core.live_control import RateError, RcError, configured_rate, rate_label
+from app.core.live_control import RateError, RcError, job_bandwidth, rate_label
 from app.core.logs import read_log_append, read_log_chunk
 from app.core.models import utc_now
 from app.core.notifications import (
@@ -417,6 +418,7 @@ def _step_commands(job: JobRecord):
 
 def _sources_context(job: JobRecord, db) -> dict[str, object]:
     steps = _step_commands(job)
+    rclone_env = child_environment(parse_env_lines(env_to_lines(job.env_json)))
     keys = [command.key for _step, _argv, command in steps if command is not None]
     records = {
         record.key: record
@@ -436,9 +438,12 @@ def _sources_context(job: JobRecord, db) -> dict[str, object]:
     for step, argv, command in steps:
         measurement = records.get(command.key) if command is not None else None
         measured = measurement is not None and measurement.bytes is not None
-        # A step's own --bwlimit caps only that step.
+        # A step's own limit caps only that step; a timetable's rates vary, so it doesn't.
+        limit = job_bandwidth(argv or [], rclone_env)
         speed = choose_speed(
-            observed, expected, bwlimit_bytes_per_second(configured_rate(argv or []))
+            observed,
+            expected,
+            bwlimit_bytes_per_second(limit.rate if limit is not None else None),
         )
         full_seconds = None
         if command is not None:
