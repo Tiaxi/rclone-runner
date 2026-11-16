@@ -120,3 +120,73 @@ def _session_factory(database_path: Path):
     engine = create_engine(f"sqlite:///{database_path}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
     return sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+
+FIXED_NOW = datetime(2026, 11, 16, 12, 0, tzinfo=ZoneInfo(settings.timezone))  # a Monday
+
+
+def _next_weekdays(expression: str, count: int = 7) -> list[str]:
+    trigger = scheduler_module.cron_trigger(expression)
+    fire_times = []
+    previous = None
+    now = FIXED_NOW
+    for _ in range(count):
+        fire_time = trigger.get_next_fire_time(previous, now)
+        fire_times.append(fire_time.strftime("%a"))
+        previous = fire_time
+        now = fire_time
+    return fire_times
+
+
+def test_numeric_weekdays_follow_cron_numbering():
+    # The summary and the actual fire dates agree: 0 and 7 are Sunday, 1 is Monday.
+    assert cron_summary("0 2 * * 0") == "Weekly on Sunday at 02:00"
+    assert _next_weekdays("0 2 * * 0", 2) == ["Sun", "Sun"]
+    assert cron_summary("0 2 * * 7") == "Weekly on Sunday at 02:00"
+    assert _next_weekdays("0 2 * * 7", 1) == ["Sun"]
+    assert cron_summary("0 2 * * 1") == "Weekly on Monday at 02:00"
+    assert scheduler_module.next_run_time("0 2 * * 1", now=FIXED_NOW) == datetime(
+        2026, 11, 23, 2, 0, tzinfo=FIXED_NOW.tzinfo
+    )
+
+
+def test_weekday_ranges_lists_and_steps_follow_cron_numbering():
+    assert _next_weekdays("0 2 * * 1-5", 5) == ["Tue", "Wed", "Thu", "Fri", "Mon"]
+    assert cron_summary("0 2 * * 1-5") == "Weekly on Monday–Friday at 02:00"
+    # In cron, */2 is Sunday, Tuesday, Thursday and Saturday.
+    assert _next_weekdays("0 2 * * */2", 4) == ["Tue", "Thu", "Sat", "Sun"]
+    assert cron_summary("0 2 * * */2") == (
+        "Weekly on Tuesday, Thursday, Saturday and Sunday at 02:00"
+    )
+    assert _next_weekdays("0 2 * * 0,6", 2) == ["Sat", "Sun"]
+    assert cron_summary("0 2 * * 0,6") == "Weekly on Saturday and Sunday at 02:00"
+    assert _next_weekdays("0 2 * * 5-7", 3) == ["Fri", "Sat", "Sun"]
+    assert _next_weekdays("0 2 * * 1-5/2", 3) == ["Wed", "Fri", "Mon"]
+    assert cron_summary("0 2 * * 0-6") == "Weekly on every day at 02:00"
+
+
+def test_named_weekdays_keep_working():
+    assert _next_weekdays("0 2 * * mon-fri", 5) == ["Tue", "Wed", "Thu", "Fri", "Mon"]
+    assert _next_weekdays("0 2 * * SUN", 1) == ["Sun"]
+    assert _next_weekdays("0 2 * * fri-sun", 3) == ["Fri", "Sat", "Sun"]
+    assert cron_summary("0 2 * * sat,sun") == "Weekly on Saturday and Sunday at 02:00"
+
+
+def test_invalid_weekdays_are_reported():
+    assert "not a weekday" in scheduler_module.cron_error("0 2 * * 8")
+    assert "not a weekday" in scheduler_module.cron_error("0 2 * * funday")
+    assert "backwards" in scheduler_module.cron_error("0 2 * * 5-1")
+    assert cron_summary("0 2 * * 8") == "Custom cron: 0 2 * * 8"
+    # cron takes steps only on ranges and *.
+    for field in ("7/1", "1/2", "sun/2"):
+        assert "a step needs a range" in scheduler_module.cron_error(f"0 2 * * {field}")
+        assert cron_summary(f"0 2 * * {field}") == f"Custom cron: 0 2 * * {field}"
+
+
+def test_day_of_month_and_weekday_together_are_refused():
+    # cron runs on either day; APScheduler would only run when both match.
+    assert "not both" in scheduler_module.cron_error("0 2 1 * 1")
+    assert "not both" in scheduler_module.cron_error("0 2 1-7 * mon")
+    # A field starting with * leaves cron matching both, which APScheduler does too.
+    assert scheduler_module.cron_error("0 2 */2 * 1") is None
+    assert scheduler_module.cron_error("0 2 1 * */2") is None

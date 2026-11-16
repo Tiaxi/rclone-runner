@@ -78,6 +78,7 @@
             {{ local_time(item.next_run) }}
             {% else %}
             Not scheduled
+            {% if item.schedule_error %}<div class="table-subtext">{{ item.schedule_error }}</div>{% endif %}
             {% endif %}
           </div>
         </td>

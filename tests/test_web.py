@@ -2188,3 +2188,44 @@ async def test_job_editor_marks_prune_steps_as_destructive():
     assert response.context["jobs"][0]["run_warning"] == f" Step Prune {deletes}."
     for page_html in (html, jobs_html):
         assert f"return confirm({json.dumps(run_confirm)})" in page_html
+
+
+async def test_saved_job_with_refused_schedule_says_it_is_not_scheduled():
+    # Saved before day-of-month plus weekday schedules were refused: it is no longer run on
+    # a schedule, so the job pages must say why.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            job = JobRecord(
+                name="backup", cron="0 2 1 * 1", enabled=True, common_args="", env_json="{}"
+            )
+            db.add(job)
+            db.commit()
+
+            listing = await main.jobs(_request("/jobs"), None, db)
+            detail = await main.job_detail(_request(f"/jobs/{job.id}"), job.id, None, db)
+
+            assert "not both" in listing.body.decode()
+            assert "Not scheduled" in listing.body.decode()
+            assert "This job is not scheduled until its schedule is fixed." in detail.body.decode()
+
+
+@pytest.mark.parametrize("cron", ["0 2 * * 7/1", "0 2 1 * 1", "0 2 * * 8"])
+async def test_job_forms_report_refused_weekday_schedules(monkeypatch, cron):
+    monkeypatch.setattr(main, "sync_schedules", lambda db: None)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        session_factory = _session_factory(Path(tmpdir) / "runs.db")
+        with session_factory() as db:
+            response = await main.create_job(
+                _request("/jobs", "POST"), None, None, db, **_job_form(cron=cron)
+            )
+            job = JobRecord(name="backup", cron="", enabled=True, common_args="", env_json="{}")
+            db.add(job)
+            db.commit()
+            update = await main.update_job(
+                _request(f"/jobs/{job.id}", "POST"), job.id, None, None, db, **_job_form(cron=cron)
+            )
+
+    for page in (response, update):
+        assert page.status_code == 400
+        assert "Invalid cron schedule" in page.body.decode()
