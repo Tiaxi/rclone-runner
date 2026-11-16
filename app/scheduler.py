@@ -9,7 +9,7 @@ from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.core.schedule import normalize_cron
+from app.core.schedule import normalize_cron, restricts_day_and_weekday, scheduler_weekdays
 from app.db import JobRecord, SessionLocal, record_to_job
 from app.runner_service import runner
 
@@ -29,12 +29,17 @@ def cron_trigger(expression: str) -> CronTrigger:
             f"Cron must have 5 fields (minute hour day month weekday), got {len(fields)}."
         )
     minute, hour, day, month, day_of_week = fields
+    if restricts_day_and_weekday(day, day_of_week):
+        raise ValueError(
+            "set the day of the month or the weekday, not both: cron would run on days "
+            "matching either one, which this scheduler can't do. Use * for one of them."
+        )
     return CronTrigger(
         minute=minute,
         hour=hour,
         day=day,
         month=month,
-        day_of_week=day_of_week,
+        day_of_week=scheduler_weekdays(day_of_week),
         timezone=ZoneInfo(settings.timezone),
     )
 

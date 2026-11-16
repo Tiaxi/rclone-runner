@@ -89,6 +89,10 @@ Back up the data and rclone-config folders. Together they hold your jobs, histor
 
 ## Writing jobs
 
+The **schedule** is a standard five-field cron expression, such as `0 2 * * 1-5` for 02:00 on
+weekdays. Weekdays are `0`-`7` (`0` and `7` are Sunday) or `sun`-`sat`. Set either the day of
+the month or the weekday, not both. Leave it empty to run the job by hand only.
+
 Each step is a name and an rclone command, separated by `|`:
 
 ```text

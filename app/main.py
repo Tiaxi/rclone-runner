@@ -366,6 +366,7 @@ def _job_detail_context(job: JobRecord, db) -> dict[str, object]:
     return _sources_context(job, db) | {
         "job": job,
         "schedule_summary": cron_summary(job.cron),
+        "schedule_error": cron_error(job.cron),
         "env_lines": env_to_lines(job.env_json),
         "steps_text": _steps_to_text(job.steps),
         "command_previews": _command_previews(job),
@@ -1410,6 +1411,7 @@ def _job_rows(records: list[JobRecord], db) -> list[dict[str, object]]:
             "record": record,
             "run_warning": _run_warning(record),
             "schedule_summary": cron_summary(record.cron),
+            "schedule_error": cron_error(record.cron),
             "last_run": latest_runs.get(record.id),
             "next_run": next_run_time(record.cron) if record.enabled else None,
         }

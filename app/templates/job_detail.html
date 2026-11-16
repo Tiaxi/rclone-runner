@@ -31,6 +31,10 @@
 <p class="notice">This is a copy, and it is disabled. Edit it, then tick Enabled and save to schedule it.</p>
 {% endif %}
 
+{% if schedule_error and job.enabled %}
+<p class="notice" role="alert">This job is not scheduled until its schedule is fixed. {{ schedule_error }}</p>
+{% endif %}
+
 {% if delete_blocked %}
 <p class="notice">This job is running. It must finish or be canceled before deletion.</p>
 {% endif %}
