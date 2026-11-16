@@ -443,7 +443,9 @@ def _sources_context(job: JobRecord, db) -> dict[str, object]:
         speed = choose_speed(
             observed,
             expected,
-            bwlimit_bytes_per_second(limit.rate if limit is not None else None),
+            bwlimit_bytes_per_second(
+                limit.value if limit is not None and not limit.is_timetable else None
+            ),
         )
         full_seconds = None
         if command is not None:

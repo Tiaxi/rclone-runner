@@ -50,6 +50,9 @@ OUTPUT_READ_SIZE = 64 * 1024
 # How long a live control request waits for rclone to confirm before returning anyway.
 APPLY_WAIT_SECONDS = 3.0
 TERMINATE_TIMEOUT_SECONDS = 5
+# How often a pause or run limit is sent again to a step following a timetable: rclone checks
+# its timetable each minute.
+HOLD_OVERRIDE_SECONDS = 30.0
 
 
 async def subprocess_executor(argv: list[str], env: dict[str, str], log_path: Path) -> int:
@@ -428,10 +431,22 @@ class LiveJobRunner:
         except RcError as exc:
             logger.warning("Could not apply the run's bandwidth setting to a new step: %s", exc)
 
-    def _start_background(self, coroutine) -> None:
+    async def _hold_override(self, control: RunControl, socket_path: Path) -> None:
+        """Keep a pause or the run's limit on a step that follows a timetable.
+
+        rclone puts its timetable's rate back each time the timetable moves to another slot,
+        which would end a pause unseen; sending the setting again soon after restores it.
+        """
+        while control.socket_path == socket_path:
+            await asyncio.sleep(HOLD_OVERRIDE_SECONDS)
+            if control.socket_path == socket_path and (control.paused or control.limit):
+                await self._apply_quietly(control)
+
+    def _start_background(self, coroutine) -> asyncio.Task[None]:
         task = asyncio.create_task(coroutine)
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
+        return task
 
     async def wait_for_job_run(self, job_run_id: int) -> None:
         task = self._tasks.get(job_run_id)
@@ -511,13 +526,18 @@ class LiveJobRunner:
         spawn_argv = with_flags(argv, control.spawn_args(socket_path))
         control.socket_path = socket_path
         if control.target_rate(for_new_process=True) is not None:
-            # The job's own --bwlimit comes after ours on the command line and wins, so send
-            # the run's setting through the socket as soon as rclone is listening.
+            # The job's own limit beats or replaces ours on the command line (see spawn_args),
+            # so send the run's setting through the socket as soon as rclone is listening.
             self._start_background(self._apply_quietly(control))
+        hold = None
+        if control.job_limit is not None and control.job_limit.is_timetable:
+            hold = self._start_background(self._hold_override(control, socket_path))
         try:
             return await self._executor(spawn_argv, env, log_path)
         finally:
             control.socket_path = None
+            if hold is not None:
+                hold.cancel()
             socket_path.unlink(missing_ok=True)
 
     def _get_first_step_run(self, job_run_id: int) -> JobStepRunRecord:

@@ -98,10 +98,12 @@ def test_run_control_target_rates():
     assert control.target_rate() == "8M"
     control.paused = True
     assert control.target_rate() == "64K"
+    # The job's own limit beats or replaces one on the command line: it goes by the socket.
+    assert not any(arg.startswith("--bwlimit") for arg in control.spawn_args(Path("/s.sock")))
+    control.job_limit = None
     assert control.spawn_args(Path("/s.sock"))[-1] == "--bwlimit=64K"
     control.paused = False
     control.limit = None
-    control.job_limit = None
     assert control.target_rate() == "off"
     assert not any(arg.startswith("--bwlimit") for arg in control.spawn_args(Path("/s.sock")))
 
@@ -268,13 +270,13 @@ async def test_runner_changes_the_running_step_and_carries_settings_forward(cont
     assert [params["rate"] for _, params in rclone.received] == ["8M", "64K"]
     assert runner.control_state(job_run_id)["label"] == "Paused"
 
-    # The next step starts paused. Its command line has the pause rate, but the job's own
-    # --bwlimit comes later and wins there, so the runner also sends it once rclone is up.
+    # The next step starts paused. The job's own --bwlimit would win on the command line, so
+    # the runner sends the pause once rclone is up.
     rclone.release.set()
     while len(rclone.calls) < 2:
         await asyncio.sleep(0.01)
     await rclone.started.wait()
-    assert "--bwlimit=64K" in rclone.calls[1][2:6]
+    assert "--bwlimit=64K" not in rclone.calls[1]
     while len(rclone.received) < 3:
         await asyncio.sleep(0.01)
     assert rclone.received[2][1]["rate"] == "64K"
@@ -481,9 +483,9 @@ async def test_real_rclone_accepts_the_control_flags(control_dir, tmp_path):
 def test_job_bandwidth_reads_the_command_then_the_environment():
     sync = ["rclone", "sync", "a", "b"]
     from_env = job_bandwidth(sync, {"RCLONE_BWLIMIT": "8M"})
-    assert (from_env.rate, from_env.source) == ("8M", "environment")
+    assert (from_env.value, from_env.source) == ("8M", "environment")
     # A --bwlimit in the command wins over the environment, as in rclone.
-    assert job_bandwidth([*sync, "--bwlimit=2m"], {"RCLONE_BWLIMIT": "8M"}).rate == "2M"
+    assert job_bandwidth([*sync, "--bwlimit=2m"], {"RCLONE_BWLIMIT": "8M"}).value == "2m"
     assert job_bandwidth(sync, {}) is None
     assert job_bandwidth(sync, {"RCLONE_BWLIMIT": "fast"}) is None
 
@@ -493,7 +495,7 @@ def test_job_bandwidth_follows_timetables():
     assert limit.is_timetable
     monday = datetime(2026, 11, 16)
     assert limit.rate_at(monday.replace(hour=7, minute=59)) == "off"  # From 23:00 the day before.
-    assert limit.rate_at(monday.replace(hour=8)) == "512K"
+    assert limit.rate_at(monday.replace(hour=8)) == "512k"
     assert limit.rate_at(monday.replace(hour=12, minute=30)) == "10M"
     assert limit.rate_at(monday.replace(hour=23, minute=1)) == "off"
 
@@ -524,7 +526,7 @@ def test_pause_rate_reads_transfers_from_the_environment_too():
         (
             {"RCLONE_BWLIMIT": "08:00,512k 23:00,off"},
             datetime(2026, 11, 16, 9),
-            "512K",
+            "512k",
             "Now, by the timetable in the job's RCLONE_BWLIMIT",
         ),
         (
@@ -582,5 +584,115 @@ async def test_resuming_puts_back_the_limit_rclone_reads_from_the_container(
     await runner.resume(first.job_run_id)
 
     assert [params["rate"] for _, params in rclone.received] == ["64K", "4M"]
+    rclone.release.set()
+    await runner.wait_for_job_run(first.job_run_id)
+
+
+def test_job_bandwidth_takes_rclones_separators_and_units():
+    # rclone splits timetables on spaces and semicolons.
+    limit = job_bandwidth(["rclone", "sync"], {"RCLONE_BWLIMIT": "00:00,1M;23:59,2M"})
+    assert limit.is_timetable
+    assert limit.rate_at(datetime(2026, 11, 16, 12)) == "1M"
+    assert limit.rate_at(datetime(2026, 11, 16, 23, 59)) == "2M"
+    # rclone's units, kept as written: rclone reads them again when they are put back.
+    for value in ("8MiB", "8Mi", "8m", "512B", "750", "1.5G", "8MiB:1Mi", "08:00,8MiB 23:00,off"):
+        assert job_bandwidth(["rclone", "sync", f"--bwlimit={value}"], {}).value == value
+    # rclone rejects these, so the step would not start with them.
+    for value in ("8MB", "8Q", "fast", "8:", "08:00,8MB"):
+        assert job_bandwidth(["rclone", "sync", f"--bwlimit={value}"], {}) is None
+
+
+def test_rate_labels_and_estimates_read_rclones_units():
+    from app.core.estimates import bwlimit_bytes_per_second
+
+    assert rate_label("8MiB") == "8 MiB/s"
+    assert rate_label("8Mi") == "8 MiB/s"
+    assert rate_label("512B") == "512 B/s"
+    assert rate_label("750") == "750 KiB/s"
+    assert rate_label("8MiB:1Mi") == "8 MiB/s up, 1 MiB/s down"
+    assert live_control.rate_bytes_per_second("8MiB") == 8 * 1024**2
+    assert live_control.rate_bytes_per_second("512B") == 512
+    assert bwlimit_bytes_per_second("8MiB:1M") == 8 * 1024**2
+    assert bwlimit_bytes_per_second("off") is None
+    assert bwlimit_bytes_per_second("0") is None
+
+
+@pytest.mark.parametrize(
+    ("tz", "expected"),
+    [
+        ("UTC", "1M"),  # 07:24 UTC: still the 00:00 slot.
+        (":Europe/Helsinki", "2M"),  # 09:24 in Helsinki.
+        ("", "1M"),  # Empty is UTC for Go.
+        ("Not/AZone", "1M"),  # Unknown is UTC for Go.
+    ],
+)
+def test_timetables_follow_rclones_time_zone_not_the_apps(monkeypatch, tz, expected):
+    from datetime import UTC
+
+    monkeypatch.setattr(live_control, "_now", lambda: datetime(2026, 11, 16, 7, 24, tzinfo=UTC))
+    limit = job_bandwidth(["rclone", "sync"], {"RCLONE_BWLIMIT": "00:00,1M 08:00,2M", "TZ": tz})
+    assert limit.rate_now() == expected
+
+
+async def test_a_pause_carried_into_a_step_keeps_its_environment_timetable(
+    control_dir, tmp_path, monkeypatch
+):
+    # The next step starts paused. A --bwlimit on its command line would replace the
+    # timetable rclone reads from RCLONE_BWLIMIT for good, so the pause goes by the socket.
+    monkeypatch.setattr(live_control, "_now", lambda: datetime(2026, 11, 16, 9))
+    rclone = FakeRclone()
+    runner = LiveJobRunner(
+        tmp_path / "logs",
+        _session_factory(tmp_path / "runs.db"),
+        executor=rclone,
+        control_dir=control_dir,
+    )
+    job = _job(commands=("sync /a remote:a", "sync /b remote:b"))
+    job.env = {"RCLONE_BWLIMIT": "08:00,512k 23:00,off"}
+    first = runner.start_job(job, trigger="manual")
+    await rclone.started.wait()
+    await runner.pause(first.job_run_id)
+    rclone.release.set()
+    while len(rclone.calls) < 2:
+        await asyncio.sleep(0.01)
+    await rclone.started.wait()
+
+    assert not any(arg.startswith("--bwlimit") for arg in rclone.calls[1])
+    while len(rclone.received_by_socket.get("step-2.sock", [])) < 1:
+        await asyncio.sleep(0.01)
+    assert rclone.received_by_socket["step-2.sock"][0][1]["rate"] == "64K"
+    await runner.resume(first.job_run_id)
+    assert rclone.received_by_socket["step-2.sock"][-1][1]["rate"] == "512k"
+    rclone.release.set()
+    await runner.wait_for_job_run(first.job_run_id)
+
+
+async def test_a_pause_on_a_timetable_step_is_held_across_its_slot_changes(
+    control_dir, tmp_path, monkeypatch
+):
+    # rclone puts its timetable's rate back when the timetable moves to another slot, which
+    # would end a pause unseen: the runner sends the pause again.
+    monkeypatch.setattr(runner_module, "HOLD_OVERRIDE_SECONDS", 0.01)
+    rclone = FakeRclone()
+    runner = LiveJobRunner(
+        tmp_path / "logs",
+        _session_factory(tmp_path / "runs.db"),
+        executor=rclone,
+        control_dir=control_dir,
+    )
+    job = _job()
+    job.env = {"RCLONE_BWLIMIT": "08:00,512k 23:00,off"}
+    first = runner.start_job(job, trigger="manual")
+    await rclone.started.wait()
+    await runner.pause(first.job_run_id)
+    while len(rclone.received) < 3:
+        await asyncio.sleep(0.01)
+    assert {params["rate"] for _, params in rclone.received} == {"64K"}
+
+    await runner.resume(first.job_run_id)
+    sent = len(rclone.received)
+    await asyncio.sleep(0.1)
+    # Once resumed, rclone follows its timetable by itself again.
+    assert len(rclone.received) == sent
     rclone.release.set()
     await runner.wait_for_job_run(first.job_run_id)
